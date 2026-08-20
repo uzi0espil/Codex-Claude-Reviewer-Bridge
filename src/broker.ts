@@ -14,6 +14,7 @@ import { buildPublishedFeedback } from "./published-feedback.js";
 import { checkpointDecisionError, createCheckpoint, forcePublishError } from "./checkpoint-policy.js";
 import { startStreamedJsonResponse } from "./streamed-json-response.js";
 import { buildQuestionAdvisoryPrompt, createQuestionAdvisory } from "./question-advisory.js";
+import { migrateClaudeSessionLifecycle, recordClaudeSession } from "./claude-session.js";
 
 type Release = { kind: "allow" } | { kind: "feedback"; text: string };
 type Waiter = { resolve: (release: Release) => void; response: ServerResponse; onClose: () => void };
@@ -388,6 +389,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   if (req.url === "/pair/claude" && req.method === "POST") {
     let pair = store.ensure(String(body.feature), String(body.projectRoot));
     pair = store.update(pair.feature, (value) => {
+      migrateClaudeSessionLifecycle(value);
       value.claudeSessionId = String(body.sessionId || value.claudeSessionId || randomUUID());
     });
     return send(res, 200, publicPair(pair));
@@ -485,7 +487,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   if (req.url === "/hook/prompt" && req.method === "POST") {
     const input = body.input as ClaudeHookInput;
     const pair = store.update(String(body.feature), (value) => {
-      value.claudeSessionId = input.session_id;
+      recordClaudeSession(value, input.session_id, true);
     });
     let context = pair.queuedClaudeContext
       ? buildPublishedFeedback(pair.queuedClaudeContext)
@@ -507,8 +509,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   if (req.url === "/hook/session" && req.method === "POST") {
     const input = body.input as ClaudeHookInput;
     const pair = store.update(String(body.feature), (value) => {
-      value.claudeSessionId = input.session_id;
-      value.claudeSessionStarted = true;
+      recordClaudeSession(value, input.session_id, false);
     });
     return send(res, 200, publicPair(pair));
   }
@@ -523,7 +524,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       return send(res, 200, { accepted: true, duplicate: true, id: advisory.id });
     }
     store.update(feature, (value) => {
-      value.claudeSessionId = input.session_id;
+      recordClaudeSession(value, input.session_id, true);
       value.questionAdvisoryQueue = [...(value.questionAdvisoryQueue ?? []), advisory];
       value.seenQuestionAdvisoryIds = [...(value.seenQuestionAdvisoryIds ?? []), advisory.id].slice(-100);
     });
@@ -541,6 +542,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const pendingId = store.newPendingId();
     const checkpoint = createCheckpoint(pair, pendingId, input.last_assistant_message);
     const current = store.update(pair.feature, (value) => {
+      recordClaudeSession(value, input.session_id, true);
       value.status = "reviewing";
       value.checkpointSequence = checkpoint.sequence;
       value.pending = checkpoint;

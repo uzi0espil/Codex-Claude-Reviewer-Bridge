@@ -46,6 +46,7 @@ export interface FeaturePair {
   projectRoot: string;
   claudeSessionId?: string;
   claudeSessionStarted?: boolean;
+  claudeSessionLifecycleVersion?: number;
   codexThreadId?: string;
   mode: BridgeMode;
   status: PairStatus;

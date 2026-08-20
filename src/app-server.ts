@@ -40,7 +40,7 @@ export class AppServerClient extends EventEmitter {
       this.emit("close");
     });
     await this.request("initialize", {
-      clientInfo: { name: "claude-codex-review-bridge", title: "Claude-Codex Review Bridge", version: "0.2.0" },
+      clientInfo: { name: "claude-codex-review-bridge", title: "Claude-Codex Review Bridge", version: "0.2.1" },
       capabilities: { experimentalApi: true, requestAttestation: false }
     });
     this.notify("initialized", {});

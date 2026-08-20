@@ -30,6 +30,12 @@ is injected into the Codex thread once. Later checkpoints contain only Claude's
 latest assistant message; Codex reads the current worktree for authoritative
 state.
 
+The broker reserves a Claude UUID before launch, but `SessionStart` only proves
+that Claude observed it. The session becomes resumable after `UserPromptSubmit`
+or later durable conversation activity. Versioned state migration clears the
+older false-positive flag for promptless startups, such as a CLI update that
+closes the terminals before the first user message.
+
 ## Manual approval
 
 The Stop endpoint flushes response headers immediately and sends JSON-compatible

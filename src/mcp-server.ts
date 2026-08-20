@@ -4,7 +4,7 @@ import { z } from "zod";
 import { bridgeRequest } from "./bridge-client.js";
 import { writePolicyFile } from "./policy-store.js";
 
-const server = new McpServer({ name: "claude-codex-review-bridge", version: "0.2.0" });
+const server = new McpServer({ name: "claude-codex-review-bridge", version: "0.2.1" });
 
 function result(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };

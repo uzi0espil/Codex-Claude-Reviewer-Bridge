@@ -13,6 +13,7 @@ import { buildReviewPrompt, composeReviewPolicy } from "../review-prompt.js";
 import { StateStore } from "../store.js";
 import { FeaturePair } from "../types.js";
 import { buildQuestionAdvisoryPrompt, createQuestionAdvisory, questionsFromHook } from "../question-advisory.js";
+import { migrateClaudeSessionLifecycle, recordClaudeSession } from "../claude-session.js";
 
 function pair(overrides: Partial<FeaturePair> = {}): FeaturePair {
   return {
@@ -31,6 +32,31 @@ function pair(overrides: Partial<FeaturePair> = {}): FeaturePair {
 test("feature names become stable routing keys", () => {
   assert.equal(featureKey(" Checkout Retry / UI "), "checkout-retry-ui");
   assert.throws(() => featureKey(" --- "));
+});
+
+test("Claude sessions become resumable only after durable conversation activity", () => {
+  const current = pair({ claudeSessionId: "reserved-id", pmSeeded: false });
+  migrateClaudeSessionLifecycle(current);
+  assert.equal(current.claudeSessionStarted, false);
+
+  recordClaudeSession(current, "observed-id", false);
+  assert.equal(current.claudeSessionStarted, false);
+  assert.equal(current.claudeSessionId, "observed-id");
+
+  recordClaudeSession(current, "persisted-id", true);
+  assert.equal(current.claudeSessionStarted, true);
+  recordClaudeSession(current, "persisted-id", false);
+  assert.equal(current.claudeSessionStarted, true);
+});
+
+test("legacy Claude session state repairs false resumability after promptless startup", () => {
+  const promptless = pair({ claudeSessionStarted: true, pmSeeded: false });
+  migrateClaudeSessionLifecycle(promptless);
+  assert.equal(promptless.claudeSessionStarted, false);
+
+  const established = pair({ claudeSessionStarted: true, pmSeeded: true });
+  migrateClaudeSessionLifecycle(established);
+  assert.equal(established.claudeSessionStarted, true);
 });
 
 test("state persists immutable routing and mutable mode", () => {
