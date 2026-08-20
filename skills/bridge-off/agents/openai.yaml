@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bridge Off"
+  short_description: "Disable review and question interception"
+  default_prompt: "Use $bridge-off to disable the bridge for this workstream."

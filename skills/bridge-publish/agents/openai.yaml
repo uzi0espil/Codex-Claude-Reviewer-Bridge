@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bridge Publish"
+  short_description: "Publish an approved checkpoint review to Claude"
+  default_prompt: "Use $bridge-publish to send the latest approved review to Claude."

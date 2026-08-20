@@ -1,0 +1,4 @@
+# Persistent human-approved review mode. Bridge-injected turns remain read-only.
+default_permissions = "bridge-review"
+approval_policy = "on-request"
+web_search = "live"

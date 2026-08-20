@@ -1,0 +1,4 @@
+# Interactive paired reviewer preset; bridge-injected turns remain stricter (`never`).
+default_permissions = "bridge-review"
+approval_policy = "on-request"
+web_search = "live"

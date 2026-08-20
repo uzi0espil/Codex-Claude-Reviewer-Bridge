@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bridge Status"
+  short_description: "Inspect bridge routing, reviews, and questions"
+  default_prompt: "Use $bridge-status to show the current workstream's bridge state."

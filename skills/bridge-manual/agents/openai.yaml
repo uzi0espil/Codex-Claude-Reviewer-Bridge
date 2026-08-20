@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bridge Manual"
+  short_description: "Keep every Claude Stop under human review"
+  default_prompt: "Use $bridge-manual to keep this workstream under persistent manual review."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bridge Force Publish"
+  short_description: "Recover an unheld review after disconnection"
+  default_prompt: "Use $bridge-force-publish to queue an unheld recovery review for Claude."

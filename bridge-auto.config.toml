@@ -1,0 +1,4 @@
+# Interactive paired reviewer preset; automatic bridge turns are forced read-only.
+default_permissions = "bridge-review"
+approval_policy = "on-request"
+web_search = "live"

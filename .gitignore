@@ -1,0 +1,42 @@
+# Codex authentication and machine-local identity
+/auth.json
+/installation_id
+/cap_sid
+
+# Codex runtime state
+/.sandbox/
+/.tmp/
+/cache/
+/log/
+/sessions/
+/thread-writer-locks/
+/tmp/
+/plugins/cache/
+/skills/.system/
+/history.jsonl
+/session_index.jsonl
+/models_cache.json
+/version.json
+/.personality_migration
+/.sandbox_migration
+/sandbox.*.log
+/*.sqlite
+/*.sqlite-shm
+/*.sqlite-wal
+
+# Future bridge/runtime output
+/runtime/
+/reviews/
+/dist/
+/node_modules/
+
+# Machine-local generated integration files
+/bridge.local.json
+/claude-bridge.settings.json
+/config.toml
+
+# Local editor and OS files
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db

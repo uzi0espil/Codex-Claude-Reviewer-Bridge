@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bridge Cancel"
+  short_description: "Release Claude without publishing feedback"
+  default_prompt: "Use $bridge-cancel to release the latest held Claude Stop without feedback."

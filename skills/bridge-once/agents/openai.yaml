@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bridge Once"
+  short_description: "Review and hold the next Claude response"
+  default_prompt: "Use $bridge-once to review Claude's next completed response."

@@ -1,0 +1,4 @@
+# Interactive paired reviewer with Stop interception disabled.
+default_permissions = "bridge-review"
+approval_policy = "on-request"
+web_search = "live"

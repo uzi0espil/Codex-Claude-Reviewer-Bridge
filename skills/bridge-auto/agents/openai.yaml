@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bridge Auto"
+  short_description: "Run a bounded automatic review loop"
+  default_prompt: "Use $bridge-auto to arm bounded automatic review for this workstream."
