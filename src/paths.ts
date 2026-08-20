@@ -8,6 +8,7 @@ export const statePath = path.join(runtimeDirectory, "state.json");
 export const endpointPath = path.join(runtimeDirectory, "endpoint.json");
 export const logPath = path.join(runtimeDirectory, "bridge.log");
 export const reviewPolicyPath = path.join(reviewerRoot, "review-policy.md");
+export const localReviewPolicyPath = path.join(reviewerRoot, "review-policy.local.md");
 
 export function featureKey(value: string): string {
   const key = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");

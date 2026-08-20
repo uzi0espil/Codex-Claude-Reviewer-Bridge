@@ -1,150 +1,134 @@
-# Bootstrap another application
+# Bootstrap an application
 
-This bridge is designed as a private reviewer home paired with one target
-application. Repeat the process with a separate bridge folder when applications
-need different reviewer policies, credentials, or tool integrations.
+The public repository is a factory; a generated reviewer instance belongs to one
+application for its entire lifetime. Create another instance for every unrelated
+repository so Codex memories, sessions, skills, policy, and runtime state cannot
+mix across applications.
 
-## 1. Place the reviewer outside the application
+## 1. Create the isolated instance
 
-Copy or clone this folder beside the target repository, not inside it. Keeping
-the reviewer separate prevents its prompt, skills, authentication, and runtime
-state from becoming part of the application's normal Claude context.
-
-Do not commit generated `config.toml`, `bridge.local.json`,
-`claude-bridge.settings.json`, `runtime/`, or Codex authentication files.
-
-## 2. Prepare project-readable context
-
-Codex should learn the application from the same authoritative artifacts used
-by maintainers:
-
-- root and component `AGENTS.md` or `CLAUDE.md` files;
-- architecture decision records and specifications;
-- plans or change artifacts;
-- project-owned skills relevant to the affected domain;
-- code, tests, migrations, and the current diff.
-
-Put routing instructions in the target repository's root guidance. Explain
-where architecture decisions, specifications, and component instructions live.
-Avoid copying large project manuals into the bridge.
-
-## 3. Add private review policy
-
-Edit `review-policy.md` when the independent reviewer needs checks that should
-remain outside the application repository. Keep it concise and procedural.
-
-Useful additions include:
-
-- mandatory commands or evidence for security-sensitive areas;
-- required browser routes, breakpoints, themes, and test accounts;
-- architecture boundaries that commonly regress;
-- how to distinguish blocking findings from suggestions;
-- conditions that require `needs_user` in automatic mode.
-
-Do not paste application secrets, production credentials, or another review
-agent's conclusions into the policy.
-
-## 4. Generate the local integration
-
-Run from the bridge folder:
+Keep a reusable checkout of the public template, then run:
 
 ```powershell
-.\scripts\Setup-ReviewBridge.ps1 `
-  -ProjectRoot 'C:\path\to\your-app' `
+.\scripts\New-ReviewerInstance.ps1 `
+  -ProjectRoot 'C:\dev\YourApp' `
+  -Destination 'C:\dev\YourApp-reviewer' `
   -ProjectName 'Your App'
 ```
 
-Use `-SkipPlaywright` for projects that do not require browser review. Setup:
+Omit `-Destination` to create `<application>-reviewer` beside the application.
+Use `-SkipPlaywright` for an application that does not need browser review and
+`-DeviceAuth` when local browser login is unsuitable. `-TemplateRepository` can
+select a trusted private fork instead of the factory checkout's `origin`.
 
-1. verifies Node, npm, Claude Code, Codex CLI, and the Git worktree;
-2. installs dependencies and runs the bridge test suite;
-3. writes the project mapping used by launch scripts;
-4. generates Claude hooks with absolute paths and reviewer-home deny rules;
-5. generates the dedicated Codex configuration and permission profiles.
+The factory rejects a reviewer destination inside the application, a non-empty
+destination, a target that is not a Git repository, and a default factory
+checkout that is dirty or not synchronized with its upstream. It also validates
+the cloned workflow before setup or login, preventing a newer local factory
+script from silently generating an older instance. If a later step fails, it
+leaves the clone in place and reports the exact recovery script; it does not
+delete partially initialized state.
 
-Re-run setup after moving either folder. Review the generated Claude deny rules
-if the bridge path contains unusual wildcard characters.
-
-## 5. Authenticate the dedicated reviewer
+For manual recovery inside an existing clone, run:
 
 ```powershell
+.\scripts\Setup-ReviewBridge.ps1 -ProjectRoot 'C:\dev\YourApp'
 .\scripts\Initialize-Reviewer.ps1
 ```
 
-Add `-DeviceAuth` when browser-based local login is unsuitable. Authentication
-is stored in this ignored reviewer home rather than the application's normal
-Codex home.
+Setup is idempotent for the bound application but rejects a different project
+root. A reviewer instance cannot be repurposed.
 
-## 6. Start a workstream
+## 2. Generate the private policy
+
+The factory starts the policy workflow after authentication. Resume it anytime:
+
+```powershell
+.\scripts\Start-PolicySetup.ps1
+```
+
+`$bridge-init-policy` first inspects repository guidance, project skills,
+architecture decisions, specifications, CI, manifests, tests, migrations, and
+frontend structure. It asks only about durable choices that cannot be inferred.
+It then previews a complete initial policy or update diff and waits for explicit
+approval.
+
+The approved overlay is written to ignored `review-policy.local.md` through one
+path-fixed MCP tool with optimistic hash checking. The application worktree stays
+read-only. Never include secrets, passwords, production credentials, or findings
+about one transient feature in the policy.
+
+If the workflow is skipped, `Start-Pair.ps1` warns and reviews with the generic
+tracked policy until initialization is completed.
+
+## 3. Start and use a pair
+
+From the generated instance:
 
 ```powershell
 .\scripts\Start-Pair.ps1 -Feature 'billing-retry-policy'
 ```
 
-Use a stable feature name for the life of one task. It is the lookup key for the
-stored Claude session UUID and Codex thread UUID; matching terminal titles alone
-do not route messages.
+Use one stable feature name for one task. It selects immutable Claude and Codex
+session UUIDs; matching terminal titles do not route messages. Use a new feature
+name for unrelated work inside the same application.
 
-The normal flow is:
+The normal loop is:
 
 1. Submit the product or task brief in Claude.
-2. Claude creates a plan, design, specification, or implementation handoff.
+2. Claude produces a design, specification, implementation, or verification handoff.
 3. The Stop hook starts a read-only review in the persistent Codex thread.
-4. Read the Codex review and use `$bridge-publish` or `$bridge-cancel`.
-5. Continue until the workstream is complete; `manual` mode remains armed.
+4. Inspect the review and invoke `$bridge-publish` or `$bridge-cancel`.
+5. Continue until the workstream is complete; manual mode remains armed.
 
-Use a new feature name and Codex thread for unrelated work.
+Claude `AskUserQuestion` calls are mirrored as read-only Codex advisories. Discuss
+the recommendation in Codex, then answer personally in Claude. Advisories are
+not publishable checkpoints.
 
-During investigation, a structured Claude `AskUserQuestion` is mirrored into
-the same Codex thread as a read-only advisory. Claude remains waiting in its own
-question UI. Discuss or challenge Codex's recommendation there, then answer
-Claude yourself. Do not use `$bridge-publish` for question advisories.
+## 4. Validate a new instance
 
-## 7. Validate the integration
+Exercise these cases before relying on it:
 
-Before relying on it, exercise all of these cases:
-
+- Confirm `bridge.local.json` contains the intended canonical project root and a
+  unique instance ID.
+- Confirm `review-policy.local.md` appears only in the sibling reviewer and is
+  ignored by Git.
+- Attempt setup with a second repository and confirm immutable binding rejects it.
 - Wait more than six minutes before publishing and confirm the Stop remains held.
-- Publish unchanged feedback and confirm immediate `stop-hook` delivery.
-- Publish an edited subset and confirm Claude receives the composed findings,
-  not the editing instruction.
-- Let Claude produce a newer Stop while an older review is pending and confirm
-  latest-checkpoint-wins behavior.
-- Restart after a disconnected Stop and confirm `next-prompt` recovery.
-- Have Claude call `AskUserQuestion`; confirm Codex receives the structured
-  choices while Claude stays waiting, then answer manually in Claude.
-- Trigger a question while Codex is busy and confirm it starts after the active
-  turn completes without polling.
-- If applicable, run a frontend checkpoint and confirm Playwright can reach the
-  application, authentication state, and required routes.
-- Switch an interactive reviewer to `bridge-write` only after an explicit user
-  implementation request, then switch back to `bridge-review`.
+- Publish an edited subset and confirm Claude receives composed findings rather
+  than editing instructions.
+- Let Claude finish again during a pending review and confirm the latest checkpoint wins.
+- Restart after a disconnected Stop and confirm next-prompt recovery.
+- Trigger `AskUserQuestion` while Codex is idle and busy; confirm Claude still
+  waits for the user's own answer.
+- For frontend work, confirm Playwright can reach required routes and states.
+- Request implementation explicitly, confirm `bridge-write` is used only for that
+  work, and return to `bridge-review` afterward.
 
-Inspect `runtime/bridge.log` and `$bridge-status` when routing is unclear.
+Use `runtime/bridge.log` and `$bridge-status` when routing is unclear.
 
-## 8. Tailor tools without changing the bridge protocol
+## 5. Update without mixing state
 
-Add project-specific MCP servers to the generated Codex configuration or teach
-setup to generate them. Keep protocol tools under the `review_bridge_*`
-namespace. Application tools should use their own namespaces.
+Run:
 
-If the application requires Linux or macOS launchers, port the PowerShell
-scripts while preserving these contracts:
+```powershell
+.\scripts\Update-ReviewerInstance.ps1
+```
 
-- one persistent feature-to-session mapping;
-- a private loopback endpoint with bearer authentication;
-- fail-open Claude hooks when the broker is genuinely unavailable;
-- checkpoint-bound publication;
-- read-only injected reviews;
-- heartbeat streaming while human approval is pending.
+The updater requires a clean tracked reviewer worktree, fetches `origin`, and
+performs only a fast-forward merge. It then reruns setup and validation for the
+same immutable application mapping. Ignored policy, Codex home state, credentials,
+sessions, feature mappings, and logs remain untouched.
 
-## 9. Prepare for distribution
+If tracked files were customized, commit or resolve them before updating. The
+updater never runs `reset`, deletes the instance, or silently resolves conflicts.
 
-Before sharing the bridge beyond a trusted team:
+## 6. Distribution boundaries
 
-- select an explicit open-source or commercial license;
-- add CI on every supported operating system and Node version;
-- pin and routinely update dependencies;
-- publish a threat model and responsible disclosure path;
-- document compatibility with tested CLI versions;
-- add release notes and a migration policy for persisted bridge state.
+- Keep application names and policy out of the public template runtime.
+- Keep generated integration files, auth, state databases, runtime, and the local
+  policy ignored.
+- Add application-specific MCP servers only to that application's setup flow.
+- Keep protocol tools under `review_bridge_*`; use separate namespaces for
+  application tools.
+- Port the PowerShell factory and launchers before claiming Linux or macOS support.

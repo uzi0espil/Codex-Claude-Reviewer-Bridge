@@ -7,8 +7,9 @@ import { checkpointDecisionError, createCheckpoint, forcePublishError } from "..
 import { stopHookOutput } from "../claude-hook-output.js";
 import { modeAfterUserDecision } from "../mode-policy.js";
 import { featureKey } from "../paths.js";
+import { maxReviewPolicyBytes, readPolicyFile, writePolicyFile } from "../policy-store.js";
 import { buildPublishedFeedback } from "../published-feedback.js";
-import { buildReviewPrompt } from "../review-prompt.js";
+import { buildReviewPrompt, composeReviewPolicy } from "../review-prompt.js";
 import { StateStore } from "../store.js";
 import { FeaturePair } from "../types.js";
 import { buildQuestionAdvisoryPrompt, createQuestionAdvisory, questionsFromHook } from "../question-advisory.js";
@@ -60,6 +61,31 @@ test("review prompts are independent, evidence-driven, and read-only", () => {
   assert.match(prompt, /worktree/i);
   assert.match(prompt, /strictly read-only/i);
   assert.match(prompt, /Latest Claude message:\nImplementation complete\./);
+});
+
+test("application review policy overlays the generic baseline", () => {
+  assert.equal(composeReviewPolicy("Baseline", ""), "Baseline");
+  assert.match(composeReviewPolicy("Baseline", "Require browser evidence."), /Baseline[\s\S]*Application-specific[\s\S]*browser evidence/);
+});
+
+test("policy writes are bounded and protected by an expected hash", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-policy-test-"));
+  const filename = path.join(directory, "review-policy.local.md");
+  try {
+    const created = writePolicyFile("# Local policy", null, filename);
+    assert.equal(created.created, true);
+    assert.equal(readPolicyFile(filename)?.sha256, created.sha256);
+    assert.equal(fs.readFileSync(filename, "utf8"), "# Local policy\n");
+    assert.throws(() => writePolicyFile("# Stale", null, filename), /changed since it was inspected/i);
+
+    const updated = writePolicyFile("# Updated policy", created.sha256.toUpperCase(), filename);
+    assert.equal(updated.created, false);
+    assert.equal(fs.readFileSync(filename, "utf8"), "# Updated policy\n");
+    assert.throws(() => writePolicyFile(" ", updated.sha256, filename), /cannot be empty/i);
+    assert.throws(() => writePolicyFile("x".repeat(maxReviewPolicyBytes), updated.sha256, filename), /byte limit/i);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("new checkpoints supersede unpublished work monotonically", () => {

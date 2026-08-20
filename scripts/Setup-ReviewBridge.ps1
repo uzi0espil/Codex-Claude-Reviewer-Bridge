@@ -12,6 +12,16 @@ if (-not (Test-Path -LiteralPath (Join-Path $resolvedProject '.git'))) {
 }
 if (-not $ProjectName) { $ProjectName = Split-Path -Leaf $resolvedProject }
 
+$localConfigPath = Join-Path $reviewerRoot 'bridge.local.json'
+$existingConfig = $null
+if (Test-Path -LiteralPath $localConfigPath -PathType Leaf) {
+    $existingConfig = Get-Content -Raw -LiteralPath $localConfigPath | ConvertFrom-Json
+    $existingProject = (Resolve-Path -LiteralPath $existingConfig.projectRoot).Path
+    if (-not [string]::Equals($existingProject, $resolvedProject, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "This reviewer instance is already bound to '$existingProject'. Create a new reviewer instance for '$resolvedProject'."
+    }
+}
+
 foreach ($command in @('node', 'npm', 'codex', 'claude')) {
     if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
         throw "Required command '$command' was not found on PATH."
@@ -38,12 +48,27 @@ try {
     Pop-Location
 }
 
+$package = Get-Content -Raw -LiteralPath (Join-Path $reviewerRoot 'package.json') | ConvertFrom-Json
+$instanceId = if ($existingConfig -and $existingConfig.PSObject.Properties.Name -contains 'instanceId') {
+    $existingConfig.instanceId
+} else {
+    [Guid]::NewGuid().ToString()
+}
+$configuredAt = if ($existingConfig -and $existingConfig.PSObject.Properties.Name -contains 'configuredAt') {
+    $existingConfig.configuredAt
+} else {
+    [DateTime]::UtcNow.ToString('o')
+}
 $localConfig = [ordered]@{
+    instanceId = $instanceId
     projectName = $ProjectName
     projectRoot = $resolvedProject
-    configuredAt = [DateTime]::UtcNow.ToString('o')
+    templateVersion = $package.version
+    playwrightEnabled = -not [bool]$SkipPlaywright
+    configuredAt = $configuredAt
+    updatedAt = [DateTime]::UtcNow.ToString('o')
 }
-Write-Utf8NoBom (Join-Path $reviewerRoot 'bridge.local.json') ($localConfig | ConvertTo-Json -Depth 5)
+Write-Utf8NoBom $localConfigPath ($localConfig | ConvertTo-Json -Depth 5)
 
 $hookScript = Join-Path $reviewerRoot 'dist\claude-hook.js'
 $reviewerLeaf = Split-Path -Leaf $reviewerRoot
@@ -95,6 +120,10 @@ foreach ($tool in @('set_mode','publish','force_publish','status','cancel')) {
     $configLines += 'approval_mode = "approve"'
 }
 
+$configLines += ''
+$configLines += '[mcp_servers.review_bridge.tools.review_bridge_write_policy]'
+$configLines += 'approval_mode = "prompt"'
+
 if (-not $SkipPlaywright) {
     $playwrightMcp = Join-Path $reviewerRoot 'node_modules\@playwright\mcp\cli.js'
     if (-not (Test-Path -LiteralPath $playwrightMcp)) { throw 'Playwright MCP was not installed.' }
@@ -131,4 +160,4 @@ $configLines += @(
 Write-Utf8NoBom (Join-Path $reviewerRoot 'config.toml') ($configLines -join [Environment]::NewLine)
 
 Write-Host "Review bridge installed for '$ProjectName' at $resolvedProject"
-Write-Host 'Next: run scripts\Initialize-Reviewer.ps1, then scripts\Start-Pair.ps1 -Feature <name>.'
+Write-Host 'Next: run scripts\Initialize-Reviewer.ps1, then scripts\Start-PolicySetup.ps1.'

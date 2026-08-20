@@ -35,4 +35,6 @@ user request and the `bridge-write` permission profile.
 - State validation gaps precisely. Never claim a check was run when it was not.
 - If there are no material findings, say so and name residual risks.
 
-The application-specific additions to this policy are in `review-policy.md`.
+The tracked generic policy is in `review-policy.md`. Application-specific
+additions are generated in the ignored `review-policy.local.md`; use
+`$bridge-init-policy` to create or refresh them.

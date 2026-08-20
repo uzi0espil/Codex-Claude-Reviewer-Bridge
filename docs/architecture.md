@@ -1,5 +1,14 @@
 # Architecture
 
+## Instance boundary
+
+The source repository is a template factory. Every generated reviewer clone is
+permanently bound to one canonical application root and becomes that
+application's `CODEX_HOME`. Its memories, sessions, skills, credentials, policy,
+and bridge state are therefore isolated from unrelated repositories. Setup and
+launch scripts treat an explicit project path as a consistency check and reject
+rebinding.
+
 ## Components
 
 - **Claude hooks** send `SessionStart`, `UserPromptSubmit`, `PreToolUse` for
@@ -8,8 +17,8 @@
   held Stop responses.
 - **Codex app-server** owns persistent review threads and executes injected
   read-only review turns.
-- **Codex MCP server** exposes status, mode, publish, cancel, and recovery tools
-  to the interactive reviewer.
+- **Codex MCP server** exposes status, mode, publish, cancel, recovery, and one
+  path-fixed application-policy writer to the interactive reviewer.
 - **Codex terminal** connects remotely to the broker-managed app-server so hook
   turns and user conversation share one visible thread.
 
@@ -85,3 +94,9 @@ full transcript path.
 The generated Claude settings deny normal Claude tools access to the reviewer
 home. This reduces accidental prompt discovery but is not an operating-system
 sandbox: both processes run under the same user account.
+
+The tracked `review-policy.md` is the generic baseline. An approved,
+application-specific `review-policy.local.md` is ignored and merged after it.
+The policy writer accepts no path, uses an expected SHA-256 to reject stale
+updates, and is configured to prompt for user approval. It never writes the
+application repository.

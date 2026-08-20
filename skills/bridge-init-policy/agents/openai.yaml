@@ -1,0 +1,4 @@
+interface:
+  display_name: "Initialize Review Policy"
+  short_description: "Build a project-specific reviewer policy"
+  default_prompt: "Use $bridge-init-policy to inspect this project and create its private review policy."

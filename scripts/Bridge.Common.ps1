@@ -3,6 +3,7 @@ Set-StrictMode -Version Latest
 $script:ReviewerRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $script:BridgeEndpointPath = Join-Path $script:ReviewerRoot 'runtime\endpoint.json'
 $script:BridgeLocalConfigPath = Join-Path $script:ReviewerRoot 'bridge.local.json'
+$script:ReviewPolicyLocalPath = Join-Path $script:ReviewerRoot 'review-policy.local.md'
 
 function Get-ReviewBridgeLocalConfig {
     if (-not (Test-Path -LiteralPath $script:BridgeLocalConfigPath)) {
@@ -13,8 +14,19 @@ function Get-ReviewBridgeLocalConfig {
 
 function Resolve-ReviewBridgeProjectRoot {
     param([string]$ProjectRoot)
-    $candidate = if ($ProjectRoot) { $ProjectRoot } else { (Get-ReviewBridgeLocalConfig).projectRoot }
-    (Resolve-Path -LiteralPath $candidate).Path
+    $config = Get-ReviewBridgeLocalConfig
+    $boundProject = (Resolve-Path -LiteralPath $config.projectRoot).Path
+    if (-not $ProjectRoot) { return $boundProject }
+
+    $requestedProject = (Resolve-Path -LiteralPath $ProjectRoot).Path
+    if (-not [string]::Equals($boundProject, $requestedProject, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "This reviewer instance is permanently bound to '$boundProject', not '$requestedProject'. Create a separate reviewer instance for the other repository."
+    }
+    return $boundProject
+}
+
+function Test-ReviewBridgePolicyInitialized {
+    Test-Path -LiteralPath $script:ReviewPolicyLocalPath -PathType Leaf
 }
 
 function Get-ReviewBridgeEndpoint {

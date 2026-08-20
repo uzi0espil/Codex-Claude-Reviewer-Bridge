@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { reviewPolicyPath } from "./paths.js";
+import { localReviewPolicyPath, reviewPolicyPath } from "./paths.js";
 import { FeaturePair, PendingReview } from "./types.js";
 
 const fallbackPolicy = [
@@ -10,9 +10,20 @@ const fallbackPolicy = [
 ].join("\n");
 
 export function readReviewPolicy(): string {
-  if (!fs.existsSync(reviewPolicyPath)) return fallbackPolicy;
-  const policy = fs.readFileSync(reviewPolicyPath, "utf8").trim();
-  return policy || fallbackPolicy;
+  const baseline = fs.existsSync(reviewPolicyPath)
+    ? fs.readFileSync(reviewPolicyPath, "utf8").trim()
+    : fallbackPolicy;
+  const local = fs.existsSync(localReviewPolicyPath)
+    ? fs.readFileSync(localReviewPolicyPath, "utf8").trim()
+    : "";
+  return composeReviewPolicy(baseline, local);
+}
+
+export function composeReviewPolicy(baseline: string, local: string): string {
+  const base = baseline.trim() || fallbackPolicy;
+  const overlay = local.trim();
+  if (!overlay) return base;
+  return `${base}\n\n## Application-specific review policy\n\n${overlay}`;
 }
 
 export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint?: PendingReview): string {

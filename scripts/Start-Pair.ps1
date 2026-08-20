@@ -8,6 +8,9 @@ param(
 
 . (Join-Path $PSScriptRoot 'Bridge.Common.ps1')
 $resolvedProject = Resolve-ReviewBridgeProjectRoot $ProjectRoot
+if (-not (Test-ReviewBridgePolicyInitialized)) {
+    Write-Warning "No application-specific review policy exists. The generic baseline will be used. Run '$script:ReviewerRoot\scripts\Start-PolicySetup.ps1' to create one."
+}
 
 function ConvertTo-ChildProcessArgument {
     param([AllowEmptyString()][string]$Value)
