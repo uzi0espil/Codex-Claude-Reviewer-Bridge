@@ -34,7 +34,7 @@ Keep the reviewer as a sibling, never inside the application repository.
 
 - Windows PowerShell 5.1+ or Bash
 - Git
-- Node.js 20 or newer
+- Node.js 22 or newer
 - Claude Code available as `claude`
 - Codex CLI available as `codex`
 - A Git repository to review
@@ -204,6 +204,22 @@ just update -- --ref origin/main
 Use `just reviewer -- <command> ...` as an escape hatch for any command exposed
 by `scripts/reviewer.mjs`. The PowerShell and Bash entrypoints remain fully
 supported and do not require Just.
+
+## Releases
+
+Releases are deliberate. Merging to `main` runs validation but does not publish
+a version. To release, manually run the **CI** workflow against `main`; its
+semantic-release job starts only after the quality and compatibility jobs pass.
+
+Semantic-release derives the next version from Conventional Commit messages,
+updates `package.json` and `package-lock.json`, creates a release commit and
+`vX.Y.Z` tag, and publishes GitHub release notes. The package is private and is
+never published to npm. Do not edit the package version manually.
+
+- `fix:` creates a patch release.
+- `feat:` creates a minor release.
+- A breaking-change footer or `!` creates a major release.
+- Documentation, test, and maintenance-only commits do not create a release.
 
 ## Security model
 

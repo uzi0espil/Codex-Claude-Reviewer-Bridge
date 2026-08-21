@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { bridgeVersion } from "./version.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -40,7 +41,7 @@ export class AppServerClient extends EventEmitter {
       this.emit("close");
     });
     await this.request("initialize", {
-      clientInfo: { name: "claude-codex-review-bridge", title: "Claude-Codex Review Bridge", version: "0.3.0" },
+      clientInfo: { name: "claude-codex-review-bridge", title: "Claude-Codex Review Bridge", version: bridgeVersion },
       capabilities: { experimentalApi: true, requestAttestation: false }
     });
     this.notify("initialized", {});
