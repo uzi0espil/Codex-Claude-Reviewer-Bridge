@@ -21,6 +21,9 @@ rebinding.
   path-fixed application-policy writer to the interactive reviewer.
 - **Codex terminal** connects remotely to the broker-managed app-server so hook
   turns and user conversation share one visible thread.
+- **Reviewer CLI** owns cross-platform instance creation, setup, updates, process
+  lifecycle, and terminal launching. PowerShell and Bash are thin adapters to the
+  same dependency-free Node entrypoint.
 
 ## Routing and context
 
@@ -75,6 +78,14 @@ One unpublished checkpoint may be current per feature. A newer Claude Stop:
 
 Publish and cancel require the latest checkpoint UUID. Stale decisions are
 rejected rather than silently applied to newer work.
+
+Broker startup is serialized with an atomic runtime lock. A caller first checks
+the loopback health endpoint, waits for an active startup, and recovers a lock
+whose owner exited (or whose owner metadata remained incomplete for more than a
+minute). Shutdown is an authenticated
+broker request rather than a platform-specific PID kill. It releases held Stop
+hooks without feedback, terminates the managed Codex app-server, removes the
+endpoint file, and exits.
 
 ## Modes
 

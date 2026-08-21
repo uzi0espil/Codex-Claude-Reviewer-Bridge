@@ -26,6 +26,7 @@ const questionTransitions = new Map<string, Promise<void>>();
 const token = randomBytes(32).toString("hex");
 let appProcess: ChildProcess | undefined;
 let app: AppServerClient;
+let shutdownBroker: () => void = () => undefined;
 
 function log(message: string): void {
   fs.mkdirSync(runtimeDirectory, { recursive: true });
@@ -386,6 +387,12 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   const body = await readJson(req);
   const feature = body.feature ? featureKey(String(body.feature)) : undefined;
 
+  if (req.url === "/shutdown" && req.method === "POST") {
+    send(res, 200, { ok: true });
+    setImmediate(shutdownBroker);
+    return;
+  }
+
   if (req.url === "/pair/claude" && req.method === "POST") {
     let pair = store.ensure(String(body.feature), String(body.projectRoot));
     pair = store.update(pair.feature, (value) => {
@@ -609,14 +616,20 @@ async function main(): Promise<void> {
     log(`Bridge ready at ${endpoint.url}`);
   });
 
+  let shuttingDown = false;
   const shutdown = (): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    for (const pendingId of [...waiters.keys()]) release(pendingId, { kind: "allow" });
     try {
       const endpoint = JSON.parse(fs.readFileSync(endpointPath, "utf8")) as EndpointFile;
       if (endpoint.pid === process.pid) fs.unlinkSync(endpointPath);
     } catch { /* already gone or owned by another broker */ }
     appProcess?.kill();
     server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 4_000).unref();
   };
+  shutdownBroker = shutdown;
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 }

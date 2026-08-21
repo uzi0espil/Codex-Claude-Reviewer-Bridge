@@ -6,7 +6,7 @@ import test from "node:test";
 import { checkpointDecisionError, createCheckpoint, forcePublishError } from "../checkpoint-policy.js";
 import { stopHookOutput } from "../claude-hook-output.js";
 import { modeAfterUserDecision } from "../mode-policy.js";
-import { featureKey } from "../paths.js";
+import { featureKey, reviewerRoot } from "../paths.js";
 import { maxReviewPolicyBytes, readPolicyFile, writePolicyFile } from "../policy-store.js";
 import { buildPublishedFeedback } from "../published-feedback.js";
 import { buildReviewPrompt, composeReviewPolicy } from "../review-prompt.js";
@@ -14,6 +14,7 @@ import { StateStore } from "../store.js";
 import { FeaturePair } from "../types.js";
 import { buildQuestionAdvisoryPrompt, createQuestionAdvisory, questionsFromHook } from "../question-advisory.js";
 import { migrateClaudeSessionLifecycle, recordClaudeSession } from "../claude-session.js";
+import { bridgeVersion } from "../version.js";
 
 function pair(overrides: Partial<FeaturePair> = {}): FeaturePair {
   return {
@@ -32,6 +33,11 @@ function pair(overrides: Partial<FeaturePair> = {}): FeaturePair {
 test("feature names become stable routing keys", () => {
   assert.equal(featureKey(" Checkout Retry / UI "), "checkout-retry-ui");
   assert.throws(() => featureKey(" --- "));
+});
+
+test("runtime metadata uses the package version", () => {
+  const metadata = JSON.parse(fs.readFileSync(path.join(reviewerRoot, "package.json"), "utf8"));
+  assert.equal(bridgeVersion, metadata.version);
 });
 
 test("Claude sessions become resumable only after durable conversation activity", () => {

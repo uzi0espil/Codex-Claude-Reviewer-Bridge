@@ -10,10 +10,19 @@ mix across applications.
 Keep a reusable checkout of the public template, then run:
 
 ```powershell
-.\scripts\New-ReviewerInstance.ps1 `
-  -ProjectRoot 'C:\dev\YourApp' `
-  -Destination 'C:\dev\YourApp-reviewer' `
-  -ProjectName 'Your App'
+.\scripts\powershell\reviewer.ps1 create `
+  --project-root 'C:\dev\YourApp' `
+  --destination 'C:\dev\YourApp-reviewer' `
+  --project-name 'Your App'
+```
+
+On Linux or macOS:
+
+```bash
+./scripts/shell/reviewer.sh create \
+  --project-root /home/me/dev/YourApp \
+  --destination /home/me/dev/YourApp-reviewer \
+  --project-name 'Your App'
 ```
 
 Omit `-Destination` to create `<application>-reviewer` beside the application.
@@ -32,8 +41,13 @@ delete partially initialized state.
 For manual recovery inside an existing clone, run:
 
 ```powershell
-.\scripts\Setup-ReviewBridge.ps1 -ProjectRoot 'C:\dev\YourApp'
-.\scripts\Initialize-Reviewer.ps1
+.\scripts\powershell\reviewer.ps1 setup --project-root 'C:\dev\YourApp'
+.\scripts\powershell\reviewer.ps1 login
+```
+
+```bash
+./scripts/shell/reviewer.sh setup --project-root /home/me/dev/YourApp
+./scripts/shell/reviewer.sh login
 ```
 
 Setup is idempotent for the bound application but rejects a different project
@@ -44,7 +58,11 @@ root. A reviewer instance cannot be repurposed.
 The factory starts the policy workflow after authentication. Resume it anytime:
 
 ```powershell
-.\scripts\Start-PolicySetup.ps1
+.\scripts\powershell\reviewer.ps1 policy
+```
+
+```bash
+./scripts/shell/reviewer.sh policy
 ```
 
 `$bridge-init-policy` first inspects repository guidance, project skills,
@@ -58,7 +76,7 @@ path-fixed MCP tool with optimistic hash checking. The application worktree stay
 read-only. Never include secrets, passwords, production credentials, or findings
 about one transient feature in the policy.
 
-If the workflow is skipped, `Start-Pair.ps1` warns and reviews with the generic
+If the workflow is skipped, `start-pair` warns and reviews with the generic
 tracked policy until initialization is completed.
 
 ## 3. Start and use a pair
@@ -66,8 +84,22 @@ tracked policy until initialization is completed.
 From the generated instance:
 
 ```powershell
-.\scripts\Start-Pair.ps1 -Feature 'billing-retry-policy'
+.\scripts\powershell\reviewer.ps1 start-pair --feature 'billing-retry-policy'
 ```
+
+```bash
+./scripts/shell/reviewer.sh start-pair --feature billing-retry-policy
+```
+
+The Unix launcher detects Terminal on macOS and common Linux terminal emulators.
+If none is available, it prints separate `start-coder` and `start-reviewer`
+commands. Force that portable fallback with `--terminal print`. WSL follows this
+Linux behavior but is not an explicit terminal-launch compatibility target.
+
+Arguments following `--` are passed unchanged to Claude. PowerShell users use
+`--passthrough` for the same purpose because PowerShell consumes a literal `--`
+before a script receives it. The corresponding `start-reviewer` and `policy`
+commands pass their trailing arguments to Codex.
 
 Use one stable feature name for one task. It selects immutable Claude and Codex
 session UUIDs; matching terminal titles do not route messages. Use a new feature
@@ -112,11 +144,15 @@ Use `runtime/bridge.log` and `$bridge-status` when routing is unclear.
 Run:
 
 ```powershell
-.\scripts\Update-ReviewerInstance.ps1
+.\scripts\powershell\reviewer.ps1 update
 ```
 
-The updater requires a clean tracked reviewer worktree, fetches `origin`, and
-performs only a fast-forward merge. It then reruns setup and validation for the
+```bash
+./scripts/shell/reviewer.sh update
+```
+
+The updater requires a clean tracked reviewer worktree, fetches `origin`,
+gracefully stops the broker, and performs only a fast-forward merge. It then reruns setup and validation for the
 same immutable application mapping. Ignored policy, Codex home state, credentials,
 sessions, feature mappings, and logs remain untouched.
 
@@ -130,5 +166,6 @@ updater never runs `reset`, deletes the instance, or silently resolves conflicts
   policy ignored.
 - Add application-specific MCP servers only to that application's setup flow.
 - Keep protocol tools under `review_bridge_*`; use separate namespaces for
-  application tools.
-- Port the PowerShell factory and launchers before claiming Linux or macOS support.
+application tools.
+- Keep platform-specific wrappers thin; orchestration belongs in
+  `scripts/reviewer.mjs` so PowerShell and Bash retain identical behavior.

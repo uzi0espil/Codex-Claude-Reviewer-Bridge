@@ -1,0 +1,3 @@
+scripts/shell/*.sh text eol=lf
+scripts/reviewer.mjs text eol=lf
+justfile text eol=lf
