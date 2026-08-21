@@ -9,9 +9,9 @@ instance with its own Codex home, memories, sessions, policy, credentials, and
 bridge state. An instance is permanently bound to one application repository.
 
 ```text
-C:\dev\
-|-- MyApp\
-`-- MyApp-reviewer\
+dev/
+|-- MyApp/
+`-- MyApp-reviewer/
 ```
 
 Keep the reviewer as a sibling, never inside the application repository.
@@ -32,22 +32,31 @@ Keep the reviewer as a sibling, never inside the application repository.
 
 ## Requirements
 
-- Windows PowerShell 5.1 or newer
+- Windows PowerShell 5.1+ or Bash
 - Git
-- Node.js 22 or newer
+- Node.js 20 or newer
 - Claude Code available as `claude`
 - Codex CLI available as `codex`
 - A Git repository to review
 
-The TypeScript runtime is portable, but the included factory, launch, and setup
-scripts are currently Windows-first.
+[`just`](https://just.systems/) 1.52 or newer is optional. When installed, the root
+`justfile` provides the same commands on Windows, Linux, and macOS without
+choosing a platform-specific wrapper.
+
+Windows, native Linux, and macOS are supported. WSL uses the Linux workflow on a
+best-effort basis; when a graphical terminal cannot be launched, the bridge
+prints the two commands to run manually.
 
 ## Create an application reviewer
 
 First clone this repository as a reusable factory checkout. From that checkout:
 
 ```powershell
-.\scripts\New-ReviewerInstance.ps1 -ProjectRoot 'C:\dev\MyApp'
+.\scripts\powershell\reviewer.ps1 create --project-root 'C:\dev\MyApp'
+```
+
+```bash
+./scripts/shell/reviewer.sh create --project-root /home/me/dev/MyApp
 ```
 
 The factory checkout must be clean and synchronized with its upstream. This
@@ -70,7 +79,11 @@ another location outside the application. The factory:
 If policy setup is cancelled, resume it from the generated instance:
 
 ```powershell
-.\scripts\Start-PolicySetup.ps1
+.\scripts\powershell\reviewer.ps1 policy
+```
+
+```bash
+./scripts/shell/reviewer.sh policy
 ```
 
 Pairing remains available without the application-specific policy, but prints a
@@ -81,12 +94,32 @@ warning and uses the tracked generic baseline.
 From the generated reviewer instance:
 
 ```powershell
-.\scripts\Start-Pair.ps1 -Feature 'your-feature-name'
+.\scripts\powershell\reviewer.ps1 start-pair --feature 'your-feature-name'
+```
+
+```bash
+./scripts/shell/reviewer.sh start-pair --feature your-feature-name
 ```
 
 This opens paired Claude and Codex terminals. The first Claude user prompt seeds
 the persistent Codex thread once. Later checkpoints contain only Claude's latest
 assistant message; Codex inspects the worktree for authoritative state.
+
+`start-pair` automatically opens two PowerShell windows on Windows, Terminal on
+macOS, or a recognized graphical terminal on Linux. Use `--terminal print` (or
+PowerShell `--terminal print`) to print the exact two commands instead. Arguments
+after `--` are forwarded unchanged to Claude:
+
+```bash
+./scripts/shell/reviewer.sh start-pair --feature api-retry -- --model opus
+```
+
+PowerShell consumes the literal `--` before a script can receive it, so its
+wrapper provides `--passthrough` as the equivalent delimiter:
+
+```powershell
+.\scripts\powershell\reviewer.ps1 start-pair --feature api-retry --passthrough --model opus
+```
 
 When Claude uses `AskUserQuestion`, the structured question and choices are sent
 to the same Codex thread for read-only advice. Claude continues waiting for the
@@ -124,14 +157,53 @@ or the public bridge template. Do not put secrets or credentials in it.
 From a generated reviewer instance with a clean tracked worktree:
 
 ```powershell
-.\scripts\Update-ReviewerInstance.ps1
+.\scripts\powershell\reviewer.ps1 update
 ```
 
-The updater fetches the configured upstream, accepts only a fast-forward update,
-runs setup and tests again, and preserves ignored policy, authentication,
-memories, sessions, runtime state, and feature mappings. It never resets or
+```bash
+./scripts/shell/reviewer.sh update
+```
+
+The updater fetches the configured upstream, gracefully stops the running
+broker, accepts only a fast-forward update, runs setup and tests again, and
+preserves ignored policy, authentication, memories, sessions, runtime state,
+and feature mappings. It never resets or
 overwrites tracked local changes. Pass `-Ref <remote-ref>` only when the current
 branch has no configured upstream or a deliberate alternate ref is required.
+The Bash equivalent is `--ref <remote-ref>`.
+
+## Optional Just commands
+
+Run `just` to list the available recipes. The common workflow becomes:
+
+```text
+just create /path/to/MyApp
+just policy
+just pair my-feature
+just server
+just stop
+just update
+```
+
+On Windows, paths may use their normal drive-letter form, for example
+`just create 'C:\dev\MyApp'`. Put a `--` before options or arguments that begin
+with a dash. For example, Claude arguments after the feature name are forwarded
+unchanged:
+
+```text
+just pair api-retry -- --model opus
+```
+
+Factory or reviewer options use the same convention:
+
+```text
+just create /path/to/MyApp -- --destination /path/to/MyApp-reviewer
+just update -- --ref origin/main
+```
+
+Use `just reviewer -- <command> ...` as an escape hatch for any command exposed
+by `scripts/reviewer.mjs`. The PowerShell and Bash entrypoints remain fully
+supported and do not require Just.
 
 ## Security model
 

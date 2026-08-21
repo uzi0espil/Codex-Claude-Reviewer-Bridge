@@ -1,6 +1,6 @@
 {
   "name": "claude-codex-review-bridge",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "A local, human-controlled bridge between Claude Code and a persistent Codex review session.",
   "private": true,
   "license": "Apache-2.0",
@@ -13,9 +13,12 @@
   },
   "homepage": "https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge#readme",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/test/*.test.js",
+    "test": "npm run build && node --test dist/test/*.test.js scripts/test/*.test.mjs",
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

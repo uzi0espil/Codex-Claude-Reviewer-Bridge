@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: extractions/setup-just@v4
+      - run: npm ci
+      - run: just --fmt --check
+      - run: just reviewer -- help
+      - run: npm run check
+      - run: npm test
+      - name: Validate Bash entrypoint
+        if: runner.os != 'Windows'
+        run: ./scripts/shell/reviewer.sh help
+      - name: Validate PowerShell compatibility scripts
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $errors = @()
+          Get-ChildItem .\scripts\powershell\*.ps1 -Recurse | ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors)
+            $errors += $parseErrors
+          }
+          if ($errors.Count) { throw ($errors | Out-String) }
+          .\scripts\powershell\reviewer.ps1 help
