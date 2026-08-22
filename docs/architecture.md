@@ -17,10 +17,12 @@ rebinding.
   held Stop responses.
 - **Codex app-server** owns persistent review threads and executes injected
   read-only review turns.
+- **App-server proxy** multiplexes the broker and one interactive Codex terminal
+  over the broker's single upstream app-server connection.
 - **Codex MCP server** exposes status, mode, publish, cancel, recovery, and one
   path-fixed application-policy writer to the interactive reviewer.
-- **Codex terminal** connects remotely to the broker-managed app-server so hook
-  turns and user conversation share one visible thread.
+- **Codex terminal** connects remotely to the broker-managed proxy so hook turns
+  and user conversation share one visible thread and notification stream.
 - **Reviewer CLI** owns cross-platform instance creation, setup, updates, process
   lifecycle, and terminal launching. PowerShell and Bash are thin adapters to the
   same dependency-free Node entrypoint.
@@ -104,12 +106,14 @@ first line is a bridge-owned receipt containing checkpoint identity, elapsed
 time, outcome, review-round count, and the response headline. Every automatic
 turn also writes its complete report atomically beneath ignored `reviews/` and
 stores only the latest receipt metadata in pair state. `reviewer report` reads
-that file directly; it does not start a model turn. This is the deterministic
-fallback when the experimental remote Codex TUI does not redraw a turn started
-by the broker's separate app-server client. The report is never used as Stop
-feedback, queued Claude context, or an injected second Codex history item. Only
-`once` disarms itself after a user decision; `manual` and `auto` remain armed
-until explicitly switched off.
+that file directly; it does not start a model turn. This remains a deterministic
+fallback because Codex's remote app-server protocol is experimental. The proxy
+intercepts the terminal's duplicate initialization, remaps bidirectional
+JSON-RPC request IDs, and forwards upstream notifications to the terminal while
+the broker consumes the same events. The report is never used as Stop feedback,
+queued Claude context, or an injected second Codex history item. Only `once`
+disarms itself after a user decision; `manual` and `auto` remain armed until
+explicitly switched off.
 
 All hook-injected Codex turns use `approvalPolicy: never`, a read-only sandbox,
 and network access for research. Interactive write access is a separate explicit
@@ -122,7 +126,8 @@ the latest automatic-cycle receipt, question-advisory routing metadata, and
 queued feedback. Ignored `reviews/` contains out-of-band automatic review
 reports. `runtime/endpoint.json`
 contains the ephemeral loopback URL,
-bearer token, app-server URL, and broker PID. The bridge never needs Claude's
+bearer token, reviewer proxy URL, and broker PID. Both app-server sockets bind
+only to loopback. The bridge never needs Claude's
 full transcript path.
 
 The generated Claude settings deny normal Claude tools access to the reviewer

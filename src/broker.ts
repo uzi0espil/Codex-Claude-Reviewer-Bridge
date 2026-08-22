@@ -5,6 +5,7 @@ import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawn, ChildProcess } from "node:child_process";
 import { AppServerClient, CompletedTurn } from "./app-server.js";
+import { AppServerProxy } from "./app-server-proxy.js";
 import { endpointPath, featureKey, logPath, reportsDirectory, reviewerRoot, runtimeDirectory } from "./paths.js";
 import { StateStore } from "./store.js";
 import { AutoCycleReceipt, AutoReviewDecision, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
@@ -34,6 +35,7 @@ const questionTransitions = new Map<string, Promise<void>>();
 const token = randomBytes(32).toString("hex");
 let appProcess: ChildProcess | undefined;
 let app: AppServerClient;
+let appProxy: AppServerProxy | undefined;
 let shutdownBroker: () => void = () => undefined;
 
 function log(message: string): void {
@@ -94,8 +96,9 @@ async function startAppServer(): Promise<string> {
     try {
       await app.connect();
       app.on("turnCompleted", (turn: CompletedTurn) => void handleTurnCompleted(turn));
-      log(`Codex app-server ready at ${url}`);
-      return url;
+      appProxy = await AppServerProxy.start(app);
+      log(`Codex app-server ready at ${url}; reviewer proxy ready at ${appProxy.url}`);
+      return appProxy.url;
     } catch (error) {
       lastError = error;
       await new Promise((resolve) => setTimeout(resolve, 125));
@@ -672,6 +675,8 @@ async function main(): Promise<void> {
       if (endpoint.pid === process.pid) fs.unlinkSync(endpointPath);
     } catch { /* already gone or owned by another broker */ }
     appProcess?.kill();
+    appProxy?.close();
+    app.close();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 4_000).unref();
   };

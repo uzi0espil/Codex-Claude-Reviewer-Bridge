@@ -143,10 +143,11 @@ accepting, changing, or rejecting findings based on project evidence.
 Automatic reviews use a control-only MCP decision and display ordinary Markdown
 instead of JSON. A passing cycle releases Claude and shows its compact report as
 a user-only Stop-hook message. Its first line includes the checkpoint, elapsed
-time, decision, and review headline so the completion is still verifiable when
-an experimental remote Codex terminal does not redraw a broker-initiated turn.
-The complete report is also saved under ignored `reviews/`; print the latest one
-without invoking either model:
+time, decision, and review headline. The reviewer terminal connects through a
+local single-upstream proxy so broker-initiated turn notifications use the same
+app-server stream as the interactive session. Because that Codex remote protocol
+is experimental, the complete report is also saved under ignored `reviews/`;
+print the latest one without invoking either model:
 
 ```text
 just report your-feature-name
