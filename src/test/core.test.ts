@@ -15,7 +15,13 @@ import { FeaturePair } from "../types.js";
 import { buildQuestionAdvisoryPrompt, createQuestionAdvisory, questionsFromHook } from "../question-advisory.js";
 import { migrateClaudeSessionLifecycle, recordClaudeSession } from "../claude-session.js";
 import { bridgeVersion } from "../version.js";
-import { autoDecisionError, buildAutoCycleMessage, resolveAutoReview } from "../auto-review.js";
+import {
+  autoDecisionError,
+  buildAutoCycleMessage,
+  createAutoCycleReceipt,
+  formatAutoCycleReport,
+  resolveAutoReview
+} from "../auto-review.js";
 
 function pair(overrides: Partial<FeaturePair> = {}): FeaturePair {
   return {
@@ -82,12 +88,27 @@ test("state persists immutable routing and mutable mode", () => {
         autoDecision: "needs_user",
         createdAt: new Date(1).toISOString()
       };
+      current.lastAutoCycle = {
+        feature: "feature-one",
+        checkpointId: "checkpoint-persisted",
+        checkpointSequence: 1,
+        codexTurnId: "turn-persisted",
+        decision: "needs_user",
+        outcome: "waiting-user",
+        reviewRound: 1,
+        startedAt: new Date(1).toISOString(),
+        completedAt: new Date(2).toISOString(),
+        durationMs: 1,
+        headline: "Choose a tradeoff.",
+        reportPath: "reviews/feature-one/checkpoint-1.md"
+      };
     });
     const reloaded = new StateStore(filename).get("feature-one");
     assert.equal(reloaded?.claudeSessionId, "claude-id");
     assert.equal(reloaded?.codexThreadId, "codex-id");
     assert.equal(reloaded?.mode, "once");
     assert.equal(reloaded?.pending?.autoDecision, "needs_user");
+    assert.equal(reloaded?.lastAutoCycle?.reportPath, "reviews/feature-one/checkpoint-1.md");
     assert.throws(() => store.ensure("Feature One", path.dirname(directory)));
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
@@ -255,10 +276,26 @@ test("automatic review resolutions preserve readable prose and enforce the revis
     reason: "needs-user"
   });
 
-  const message = buildAutoCycleMessage("All findings are resolved.", 3);
-  assert.match(message, /passed after 3 review rounds/i);
+  current.pending!.autoDecision = "pass";
+  const receipt = createAutoCycleReceipt(
+    current,
+    "turn-auto",
+    "passed",
+    "All findings are resolved.\n\nValidated locally.",
+    new Date(5_002).toISOString()
+  );
+  receipt.reportPath = "reviews/checkout-retry/checkpoint-2.md";
+  const message = buildAutoCycleMessage("All findings are resolved.", receipt);
+  assert.match(message, /Codex completed checkpoint #2 in 5\.0s/i);
+  assert.match(message, /PASS after 3 review rounds/i);
   assert.match(message, /All findings are resolved/);
-  assert.ok(buildAutoCycleMessage("x".repeat(12_000), 1).length <= 9_500);
+  assert.match(message.split("\n")[0], /All findings are resolved/);
+  assert.match(message.split("\n")[0], /just report checkout-retry/);
+  assert.match(message, /reviews\/checkout-retry\/checkpoint-2\.md/);
+  const report = formatAutoCycleReport(current.displayName, receipt, "All findings are resolved.");
+  assert.match(report, /Codex turn: turn-auto/);
+  assert.match(report, /Duration: 5\.0 seconds/);
+  assert.ok(buildAutoCycleMessage("x".repeat(12_000), receipt).length <= 9_500);
 });
 
 test("AskUserQuestion hook input becomes a generic read-only advisory", () => {

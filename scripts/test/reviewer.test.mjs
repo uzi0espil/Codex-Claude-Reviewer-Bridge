@@ -12,6 +12,7 @@ import {
   codexConfig,
   parseArguments,
   powershellQuote,
+  readLatestAutoReport,
   shellQuote,
   terminalLaunchSpec,
   tomlLiteral,
@@ -34,6 +35,29 @@ test("rejects unknown CLI options", () => {
   assert.throws(() => parseArguments(["--unknown"]), /Unknown option/);
   assert.throws(() => validateCommandArguments("stop", { feature: "x" }, []), /not valid for stop/);
   assert.throws(() => validateCommandArguments("setup", {}, ["--model", "x"]), /does not accept/);
+});
+
+test("reads the latest automatic report outside model history and rejects escaped paths", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "reviewer-report-"));
+  try {
+    const reportDirectory = path.join(temporary, "reviews", "feature-one");
+    fs.mkdirSync(path.join(temporary, "runtime"), { recursive: true });
+    fs.mkdirSync(reportDirectory, { recursive: true });
+    fs.writeFileSync(path.join(reportDirectory, "checkpoint-2.md"), "# Stored report\n", "utf8");
+    const state = {
+      version: 1,
+      pairs: {
+        "feature-one": { lastAutoCycle: { reportPath: "reviews/feature-one/checkpoint-2.md" } }
+      }
+    };
+    fs.writeFileSync(path.join(temporary, "runtime", "state.json"), `${JSON.stringify(state)}\n`, "utf8");
+    assert.equal(readLatestAutoReport("Feature One", temporary), "# Stored report\n");
+    state.pairs["feature-one"].lastAutoCycle.reportPath = "../outside.md";
+    fs.writeFileSync(path.join(temporary, "runtime", "state.json"), `${JSON.stringify(state)}\n`, "utf8");
+    assert.throws(() => readLatestAutoReport("feature-one", temporary), /path is invalid/i);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
 });
 
 test("quotes Bash, PowerShell, and TOML literals without interpolation", () => {

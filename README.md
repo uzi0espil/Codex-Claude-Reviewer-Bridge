@@ -142,8 +142,23 @@ accepting, changing, or rejecting findings based on project evidence.
 
 Automatic reviews use a control-only MCP decision and display ordinary Markdown
 instead of JSON. A passing cycle releases Claude and shows its compact report as
-a user-only Stop-hook message. The report is not feedback to Claude and is not
-added as a second Codex history item.
+a user-only Stop-hook message. Its first line includes the checkpoint, elapsed
+time, decision, and review headline so the completion is still verifiable when
+an experimental remote Codex terminal does not redraw a broker-initiated turn.
+The complete report is also saved under ignored `reviews/`; print the latest one
+without invoking either model:
+
+```text
+just report your-feature-name
+```
+
+Without Just, use
+`.\scripts\powershell\reviewer.ps1 report --feature your-feature-name` on
+Windows or `./scripts/shell/reviewer.sh report --feature your-feature-name` on
+macOS/Linux.
+
+The report is not feedback to Claude and is not added as a second Codex history
+item.
 
 ## Policy and project context
 
@@ -185,6 +200,7 @@ Run `just` to list the available recipes. The common workflow becomes:
 just create /path/to/MyApp
 just policy
 just pair my-feature
+just report my-feature
 just server
 just stop
 just update

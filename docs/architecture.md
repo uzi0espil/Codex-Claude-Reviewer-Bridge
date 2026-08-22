@@ -100,9 +100,16 @@ endpoint file, and exits.
 
 On `pass`, the Stop hook allows Claude to finish and uses its user-facing
 `systemMessage` field to display the already-generated Codex cycle report. The
-report is never used as Stop feedback, queued Claude context, or an injected
-second Codex history item. Only `once` disarms itself after a user decision; `manual`
-and `auto` remain armed until explicitly switched off.
+first line is a bridge-owned receipt containing checkpoint identity, elapsed
+time, outcome, review-round count, and the response headline. Every automatic
+turn also writes its complete report atomically beneath ignored `reviews/` and
+stores only the latest receipt metadata in pair state. `reviewer report` reads
+that file directly; it does not start a model turn. This is the deterministic
+fallback when the experimental remote Codex TUI does not redraw a turn started
+by the broker's separate app-server client. The report is never used as Stop
+feedback, queued Claude context, or an injected second Codex history item. Only
+`once` disarms itself after a user decision; `manual` and `auto` remain armed
+until explicitly switched off.
 
 All hook-injected Codex turns use `approvalPolicy: never`, a read-only sandbox,
 and network access for research. Interactive write access is a separate explicit
@@ -111,7 +118,9 @@ permission profile and does not weaken injected checkpoint reviews.
 ## Persistence and privacy
 
 Ignored `runtime/state.json` contains pair identifiers, pending checkpoints,
-question-advisory routing metadata, and queued feedback. `runtime/endpoint.json`
+the latest automatic-cycle receipt, question-advisory routing metadata, and
+queued feedback. Ignored `reviews/` contains out-of-band automatic review
+reports. `runtime/endpoint.json`
 contains the ephemeral loopback URL,
 bearer token, app-server URL, and broker PID. The bridge never needs Claude's
 full transcript path.

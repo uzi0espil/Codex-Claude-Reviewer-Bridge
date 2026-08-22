@@ -13,4 +13,7 @@ Automatic reviews return normal Markdown. Their control decision is recorded
 separately by the bridge. `needs_user`, a missing control decision, or the cycle
 limit pauses the exact checkpoint for human review without changing modes. A
 passing cycle displays its report to the user through Claude's Stop-hook UI; it
-is not sent to Claude as feedback or added as a second Codex history item.
+is not sent to Claude as feedback or added as a second Codex history item. The
+first line identifies the checkpoint, elapsed time, decision, and headline. The
+complete report is saved outside both model histories; tell the user to run
+`just report <feature>` if an experimental remote terminal did not display it.

@@ -42,6 +42,10 @@ try {
     invoke(["reviewer", "--", "start-reviewer", "--feature", "raw feature", "--", "--model", "o3"]),
     ["start-reviewer", "--feature", "raw feature", "--", "--model", "o3"],
   );
+  assert.deepEqual(
+    invoke(["report", "feature name"]),
+    ["report", "--feature", "feature name"],
+  );
   console.log("Just recipe argument forwarding passed.");
 } finally {
   fs.rmSync(fixture, { recursive: true, force: true });

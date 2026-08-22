@@ -41,6 +41,8 @@ function runNpm(script) {
       return runReviewer(["start-pair", "--feature", args[0], ...args.slice(1)]);
     case "server":
       return runReviewer(["ensure"]);
+    case "report":
+      return runReviewer(["report", "--feature", args[0]]);
     case "stop":
       return runReviewer(["stop"]);
     case "update":
@@ -87,6 +89,11 @@ pair feature *claude_args:
 # Ensure the local review bridge server is running.
 [script("node")]
 server:
+    {{ runner }}
+
+# Print the latest automatic review report without adding model context.
+[script("node")]
+report feature:
     {{ runner }}
 
 # Gracefully stop the local review bridge server.

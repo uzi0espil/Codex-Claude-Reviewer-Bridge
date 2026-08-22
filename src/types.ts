@@ -23,6 +23,21 @@ export interface PendingReview {
 
 export type AutoReviewDecision = "pass" | "revise" | "needs_user";
 
+export interface AutoCycleReceipt {
+  feature: string;
+  checkpointId: string;
+  checkpointSequence?: number;
+  codexTurnId: string;
+  decision: AutoReviewDecision | "missing";
+  outcome: "passed" | "revision-sent" | "waiting-user";
+  reviewRound: number;
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  headline: string;
+  reportPath?: string;
+}
+
 export interface ClaudeQuestionOption {
   label: string;
   description?: string;
@@ -63,6 +78,7 @@ export interface FeaturePair {
   activeQuestionAdvisory?: QuestionAdvisory;
   seenQuestionAdvisoryIds?: string[];
   lastCodexResponse?: string;
+  lastAutoCycle?: AutoCycleReceipt;
   lastForcedPublishAt?: string;
   lastForcedPublishThreadId?: string;
   updatedAt: string;

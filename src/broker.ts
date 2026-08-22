@@ -5,14 +5,20 @@ import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawn, ChildProcess } from "node:child_process";
 import { AppServerClient, CompletedTurn } from "./app-server.js";
-import { endpointPath, featureKey, logPath, reviewerRoot, runtimeDirectory } from "./paths.js";
+import { endpointPath, featureKey, logPath, reportsDirectory, reviewerRoot, runtimeDirectory } from "./paths.js";
 import { StateStore } from "./store.js";
-import { AutoReviewDecision, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
+import { AutoCycleReceipt, AutoReviewDecision, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
 import { buildReviewPrompt } from "./review-prompt.js";
 import { modeAfterUserDecision } from "./mode-policy.js";
 import { buildPublishedFeedback } from "./published-feedback.js";
 import { checkpointDecisionError, createCheckpoint, forcePublishError } from "./checkpoint-policy.js";
-import { autoDecisionError, buildAutoCycleMessage, resolveAutoReview } from "./auto-review.js";
+import {
+  autoDecisionError,
+  buildAutoCycleMessage,
+  createAutoCycleReceipt,
+  formatAutoCycleReport,
+  resolveAutoReview
+} from "./auto-review.js";
 import { startStreamedJsonResponse } from "./streamed-json-response.js";
 import { buildQuestionAdvisoryPrompt, createQuestionAdvisory } from "./question-advisory.js";
 import { migrateClaudeSessionLifecycle, recordClaudeSession } from "./claude-session.js";
@@ -33,6 +39,23 @@ let shutdownBroker: () => void = () => undefined;
 function log(message: string): void {
   fs.mkdirSync(runtimeDirectory, { recursive: true });
   fs.appendFileSync(logPath, `${new Date().toISOString()} ${message}\n`);
+}
+
+function persistAutoCycleReport(pair: FeaturePair, receipt: AutoCycleReceipt, response: string): AutoCycleReceipt {
+  const sequence = receipt.checkpointSequence ? `checkpoint-${receipt.checkpointSequence}` : `checkpoint-${receipt.checkpointId}`;
+  const relativePath = path.join("reviews", pair.feature, `${sequence}.md`);
+  const absolutePath = path.join(reportsDirectory, pair.feature, `${sequence}.md`);
+  const temporaryPath = `${absolutePath}.${process.pid}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    fs.writeFileSync(temporaryPath, formatAutoCycleReport(pair.displayName, receipt, response), { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temporaryPath, absolutePath);
+    return { ...receipt, reportPath: relativePath.split(path.sep).join("/") };
+  } catch (error) {
+    try { fs.rmSync(temporaryPath, { force: true }); } catch { /* best effort */ }
+    log(`Could not persist automatic review report for checkpoint ${receipt.checkpointId}: ${String(error)}`);
+    return receipt;
+  }
 }
 
 async function freePort(): Promise<number> {
@@ -147,6 +170,7 @@ async function startReview(pair: FeaturePair, pendingId: string): Promise<void> 
   store.update(pair.feature, (value) => {
     if (value.pending?.id === pendingId) value.pending.codexTurnId = turnId;
   });
+  log(`Started Codex review turn ${turnId} for ${pair.feature} checkpoint ${pendingId}.`);
 }
 
 function scheduleQuestionAdvisory(feature: string): void {
@@ -270,33 +294,54 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
 
   const resolution = resolveAutoReview(pair, turn.text);
   if (resolution.kind === "pass") {
-    const systemMessage = buildAutoCycleMessage(resolution.summary, resolution.reviewRounds);
+    const receipt = persistAutoCycleReport(
+      pair,
+      createAutoCycleReceipt(pair, turn.turnId, "passed", resolution.summary),
+      resolution.summary
+    );
+    const systemMessage = buildAutoCycleMessage(resolution.summary, receipt);
     store.update(pair.feature, (value) => {
       value.status = "passed";
       value.autoRound = 0;
       value.lastCodexResponse = turn.text;
+      value.lastAutoCycle = receipt;
       value.pending = undefined;
     });
+    log(`Completed ${pair.feature} checkpoint ${pendingId} as pass in ${receipt.durationMs}ms; report ${receipt.reportPath ?? "not saved"}.`);
     release(pendingId, { kind: "allow", systemMessage });
     return;
   }
   if (resolution.kind === "revise") {
+    const receipt = persistAutoCycleReport(
+      pair,
+      createAutoCycleReceipt(pair, turn.turnId, "revision-sent", resolution.feedback),
+      resolution.feedback
+    );
     const feedback = buildPublishedFeedback(resolution.feedback);
     store.update(pair.feature, (value) => {
       value.status = "waiting-claude";
       value.autoRound += 1;
       value.lastCodexResponse = resolution.feedback;
+      value.lastAutoCycle = receipt;
       value.pending = undefined;
     });
+    log(`Completed ${pair.feature} checkpoint ${pendingId} as revise in ${receipt.durationMs}ms; report ${receipt.reportPath ?? "not saved"}.`);
     release(pendingId, { kind: "feedback", text: feedback });
     return;
   }
   log(`Auto response requires user review: ${resolution.reason}.`);
+  const receipt = persistAutoCycleReport(
+    pair,
+    createAutoCycleReceipt(pair, turn.turnId, "waiting-user", resolution.response),
+    resolution.response
+  );
   store.update(pair.feature, (value) => {
     value.status = "waiting-user";
     value.lastCodexResponse = resolution.response;
+    value.lastAutoCycle = receipt;
     if (value.pending) value.pending.codexResponse = resolution.response;
   });
+  log(`Completed ${pair.feature} checkpoint ${pendingId} awaiting user in ${receipt.durationMs}ms; report ${receipt.reportPath ?? "not saved"}.`);
 }
 
 function finishQuestionAdvisory(turn: CompletedTurn): void {
@@ -349,6 +394,7 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
     initialPrompt: pair.initialPrompt ? "[held until Codex thread is ready]" : undefined,
     queuedClaudeContext: pair.queuedClaudeContext ? "[queued for Claude's next prompt]" : undefined,
     lastCodexResponse: pair.lastCodexResponse ? "[held by bridge]" : undefined,
+    lastAutoCycle: pair.lastAutoCycle ? { ...pair.lastAutoCycle, headline: "[stored out of band]" } : undefined,
     questionAdvisoryQueue: pair.questionAdvisoryQueue?.map((item) => ({ id: item.id, createdAt: item.createdAt })),
     activeQuestionAdvisory: pair.activeQuestionAdvisory ? {
       id: pair.activeQuestionAdvisory.id,
