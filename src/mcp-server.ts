@@ -21,6 +21,15 @@ server.registerTool("review_bridge_status", {
   inputSchema: z.object({ feature: z.string() })
 }, async ({ feature }) => result(await bridgeRequest("/status", { feature })));
 
+server.registerTool("review_bridge_record_auto_decision", {
+  description: "Record the control decision for the exact automatic review checkpoint. This does not publish feedback, release Claude, or modify project files. Call exactly once near the end of an injected auto-review turn, then return a normal Markdown response.",
+  inputSchema: z.object({
+    feature: z.string(),
+    checkpointId: z.string(),
+    decision: z.enum(["pass", "revise", "needs_user"])
+  })
+}, async ({ feature, checkpointId, decision }) => result(await bridgeRequest("/auto-decision", { feature, checkpointId, decision })));
+
 server.registerTool("review_bridge_publish", {
   description: "Publish a completed Codex review for the exact latest checkpoint; reports whether it released a held Stop hook or queued delivery for Claude's next prompt.",
   inputSchema: z.object({ feature: z.string(), checkpointId: z.string(), feedback: z.string().optional() })

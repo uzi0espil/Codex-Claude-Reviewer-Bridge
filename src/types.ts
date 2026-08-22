@@ -17,8 +17,11 @@ export interface PendingReview {
   claudeMessage: string;
   codexTurnId?: string;
   codexResponse?: string;
+  autoDecision?: AutoReviewDecision;
   createdAt: string;
 }
+
+export type AutoReviewDecision = "pass" | "revise" | "needs_user";
 
 export interface ClaudeQuestionOption {
   label: string;
@@ -93,10 +96,4 @@ export interface ClaudeHookInput {
     [key: string]: unknown;
   };
   tool_use_id?: string;
-}
-
-export interface AutoReviewResult {
-  decision: "pass" | "revise" | "needs_user";
-  feedback: string;
-  summary: string;
 }

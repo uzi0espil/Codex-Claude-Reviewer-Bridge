@@ -78,25 +78,14 @@ export class AppServerClient extends EventEmitter {
     });
   }
 
-  async startReview(threadId: string, projectRoot: string, prompt: string, auto: boolean): Promise<string> {
-    const outputSchema = auto ? {
-      type: "object",
-      additionalProperties: false,
-      required: ["decision", "feedback", "summary"],
-      properties: {
-        decision: { type: "string", enum: ["pass", "revise", "needs_user"] },
-        feedback: { type: "string" },
-        summary: { type: "string" }
-      }
-    } : undefined;
+  async startReview(threadId: string, projectRoot: string, prompt: string): Promise<string> {
     const result = await this.request("turn/start", {
       threadId,
       cwd: projectRoot,
       runtimeWorkspaceRoots: [projectRoot],
       approvalPolicy: "never",
       sandboxPolicy: { type: "readOnly", networkAccess: true },
-      input: [{ type: "text", text: prompt, text_elements: [] }],
-      outputSchema
+      input: [{ type: "text", text: prompt, text_elements: [] }]
     });
     return String(result.turn.id);
   }

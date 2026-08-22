@@ -15,6 +15,7 @@ import { FeaturePair } from "../types.js";
 import { buildQuestionAdvisoryPrompt, createQuestionAdvisory, questionsFromHook } from "../question-advisory.js";
 import { migrateClaudeSessionLifecycle, recordClaudeSession } from "../claude-session.js";
 import { bridgeVersion } from "../version.js";
+import { autoDecisionError, buildAutoCycleMessage, resolveAutoReview } from "../auto-review.js";
 
 function pair(overrides: Partial<FeaturePair> = {}): FeaturePair {
   return {
@@ -75,11 +76,18 @@ test("state persists immutable routing and mutable mode", () => {
       current.claudeSessionId = "claude-id";
       current.codexThreadId = "codex-id";
       current.mode = "once";
+      current.pending = {
+        id: "checkpoint-persisted",
+        claudeMessage: "Done",
+        autoDecision: "needs_user",
+        createdAt: new Date(1).toISOString()
+      };
     });
     const reloaded = new StateStore(filename).get("feature-one");
     assert.equal(reloaded?.claudeSessionId, "claude-id");
     assert.equal(reloaded?.codexThreadId, "codex-id");
     assert.equal(reloaded?.mode, "once");
+    assert.equal(reloaded?.pending?.autoDecision, "needs_user");
     assert.throws(() => store.ensure("Feature One", path.dirname(directory)));
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
@@ -93,6 +101,19 @@ test("review prompts are independent, evidence-driven, and read-only", () => {
   assert.match(prompt, /worktree/i);
   assert.match(prompt, /strictly read-only/i);
   assert.match(prompt, /Latest Claude message:\nImplementation complete\./);
+});
+
+test("automatic review prompts request a control tool and human-readable response", () => {
+  const current = pair({
+    mode: "auto",
+    status: "reviewing",
+    pending: { id: "checkpoint-auto", sequence: 1, claudeMessage: "Done", createdAt: new Date(1).toISOString() }
+  });
+  const prompt = buildReviewPrompt(current, "Implementation complete.", current.pending);
+  assert.match(prompt, /review_bridge_record_auto_decision/);
+  assert.match(prompt, /normal Markdown response/i);
+  assert.match(prompt, /never emit JSON/i);
+  assert.match(prompt, /what Claude completed/i);
 });
 
 test("application review policy overlays the generic baseline", () => {
@@ -162,12 +183,82 @@ test("published feedback blocks Claude and remains advisory", () => {
     reason: feedback,
     systemMessage: "Reviewer Agent's review received; Claude is now challenging or adapting it."
   });
+  assert.deepEqual(stopHookOutput({
+    kind: "allow",
+    systemMessage: "Automatic review cycle complete."
+  }), { systemMessage: "Automatic review cycle complete." });
 });
 
-test("manual mode persists until explicitly disabled", () => {
+test("persistent modes remain armed until explicitly disabled", () => {
   assert.equal(modeAfterUserDecision("manual"), "manual");
   assert.equal(modeAfterUserDecision("once"), "off");
-  assert.equal(modeAfterUserDecision("auto"), "off");
+  assert.equal(modeAfterUserDecision("auto"), "auto");
+  assert.equal(modeAfterUserDecision("off"), "off");
+});
+
+test("automatic decisions bind to the active reviewing checkpoint", () => {
+  const current = pair({
+    mode: "auto",
+    status: "reviewing",
+    pending: { id: "checkpoint-auto", sequence: 2, claudeMessage: "Done", createdAt: new Date(2).toISOString() }
+  });
+  assert.equal(autoDecisionError(current, "checkpoint-auto", "revise"), undefined);
+  assert.match(autoDecisionError(current, "stale", "revise") ?? "", /not the active automatic checkpoint/i);
+  assert.match(autoDecisionError(current, "checkpoint-auto", "invalid") ?? "", /invalid automatic decision/i);
+  current.pending!.autoDecision = "revise";
+  assert.match(autoDecisionError(current, "checkpoint-auto", "pass") ?? "", /already recorded/i);
+  current.pending!.autoDecision = undefined;
+  current.mode = "manual";
+  assert.match(autoDecisionError(current, "checkpoint-auto", "pass") ?? "", /mode auto/i);
+});
+
+test("automatic review resolutions preserve readable prose and enforce the revision limit", () => {
+  const current = pair({
+    mode: "auto",
+    status: "reviewing",
+    autoRound: 1,
+    pending: {
+      id: "checkpoint-auto",
+      sequence: 2,
+      claudeMessage: "Done",
+      autoDecision: "revise",
+      createdAt: new Date(2).toISOString()
+    }
+  });
+  assert.deepEqual(resolveAutoReview(current, "Fix the reconnect race."), {
+    kind: "revise",
+    feedback: "Fix the reconnect race."
+  });
+
+  current.autoRound = 3;
+  assert.deepEqual(resolveAutoReview(current, "The revision limit needs a decision."), {
+    kind: "waiting-user",
+    response: "The revision limit needs a decision.",
+    reason: "round-limit"
+  });
+
+  current.autoRound = 2;
+  current.pending!.autoDecision = "pass";
+  assert.deepEqual(resolveAutoReview(current, "All findings are resolved."), {
+    kind: "pass",
+    reviewRounds: 3,
+    summary: "All findings are resolved."
+  });
+
+  current.pending!.autoDecision = undefined;
+  assert.equal(resolveAutoReview(current, "Readable fallback.").kind, "waiting-user");
+
+  current.pending!.autoDecision = "needs_user";
+  assert.deepEqual(resolveAutoReview(current, "Choose the compatibility tradeoff."), {
+    kind: "waiting-user",
+    response: "Choose the compatibility tradeoff.",
+    reason: "needs-user"
+  });
+
+  const message = buildAutoCycleMessage("All findings are resolved.", 3);
+  assert.match(message, /passed after 3 review rounds/i);
+  assert.match(message, /All findings are resolved/);
+  assert.ok(buildAutoCycleMessage("x".repeat(12_000), 1).length <= 9_500);
 });
 
 test("AskUserQuestion hook input becomes a generic read-only advisory", () => {

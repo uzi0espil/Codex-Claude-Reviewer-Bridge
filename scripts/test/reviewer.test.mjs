@@ -79,6 +79,7 @@ test("generates portable Claude hooks and Codex configuration", () => {
   const config = codexConfig("/tmp/project with spaces", true);
   assert.match(config, /web_search = "live"/);
   assert.match(config, /\[permissions\.bridge-review\]/);
+  assert.match(config, /review_bridge_record_auto_decision/);
   assert.doesNotMatch(config, /mcp_servers\.playwright/);
 });
 
@@ -134,7 +135,9 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     assert.equal(local.templateVersion, "test-version");
     assert.equal(local.playwrightEnabled, false);
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "claude-bridge.settings.json"), "utf8")).hooks.Stop[0].hooks[0].command, "node");
-    assert.match(fs.readFileSync(path.join(instance, "config.toml"), "utf8"), /\[permissions\.bridge-write\]/);
+    const generatedConfig = fs.readFileSync(path.join(instance, "config.toml"), "utf8");
+    assert.match(generatedConfig, /\[permissions\.bridge-write\]/);
+    assert.match(generatedConfig, /review_bridge_record_auto_decision/);
 
     const rebound = spawnSync(process.execPath, [cli, "setup", "--project-root", secondProject, "--skip-playwright"], {
       cwd: instance, env: environment, encoding: "utf8"

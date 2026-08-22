@@ -28,7 +28,11 @@ export function composeReviewPolicy(baseline: string, local: string): string {
 
 export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint?: PendingReview): string {
   const autoContract = pair.mode === "auto"
-    ? "Return only the requested structured decision. Use revise only for actionable material defects; use needs_user for a choice, unavailable required validation, or ambiguity that should not be decided autonomously."
+    ? [
+        "This is an automatic review turn. After completing the assessment, call `review_bridge_record_auto_decision` exactly once with this feature, the exact checkpoint ID above, and one decision: `pass`, `revise`, or `needs_user`.",
+        "Use `revise` only for actionable material defects. Use `needs_user` for a choice, unavailable required validation, ambiguity that should not be decided autonomously, or when the automatic revision limit is exhausted.",
+        "Then give the user a concise, normal Markdown response; never emit JSON. For `revise`, make that response the complete actionable feedback that Claude should receive. For `needs_user`, explain the decision required. For `pass`, make it a compact cycle report covering what Claude completed, what Codex advised during the cycle, validation performed, and residual risks."
+      ].join("\n")
     : "Give the user a concise review with findings first. The user will decide whether and what to send back to Claude.";
   return [
     `[Review bridge checkpoint: ${pair.displayName}]`,

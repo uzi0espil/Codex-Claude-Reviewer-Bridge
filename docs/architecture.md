@@ -91,10 +91,18 @@ endpoint file, and exits.
 
 - `manual`: every Stop is reviewed and held for human approval; remains armed.
 - `once`: the next Stop is reviewed; a user decision turns the bridge off.
-- `auto`: structured pass/revise/needs-user decisions, bounded to three revise
-  cycles.
+- `auto`: persistent automatic review, bounded to three unattended revise rounds
+  per cycle. A control-only MCP tool records pass/revise/needs-user while the
+  reviewer response remains normal Markdown. Human publish or cancel decisions
+  reset the round counter without disarming auto mode.
 - `off`: Stop interception and question advice are bypassed, and any held Stop
   is released.
+
+On `pass`, the Stop hook allows Claude to finish and uses its user-facing
+`systemMessage` field to display the already-generated Codex cycle report. The
+report is never used as Stop feedback, queued Claude context, or an injected
+second Codex history item. Only `once` disarms itself after a user decision; `manual`
+and `auto` remain armed until explicitly switched off.
 
 All hook-injected Codex turns use `approvalPolicy: never`, a read-only sandbox,
 and network access for research. Interactive write access is a separate explicit

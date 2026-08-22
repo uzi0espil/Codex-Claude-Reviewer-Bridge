@@ -21,7 +21,7 @@ Keep the reviewer as a sibling, never inside the application repository.
 - One isolated reviewer home per application
 - Codex-guided generation of a private application review policy
 - Persistent `manual` review mode with human approval by default
-- One-shot and bounded automatic review modes
+- One-shot review and persistent automatic review with bounded cycles
 - Latest-checkpoint-wins handling when Claude finishes during a review
 - Checkpoint-bound publication, cancellation, and recovery publication
 - Streamed Stop-hook responses without polling
@@ -130,7 +130,7 @@ user, who personally submits the final answer.
 - `$bridge-init-policy` - create or refresh the private application policy
 - `$bridge-manual` - review every Claude Stop and wait for approval; default
 - `$bridge-once` - review only the next Claude Stop
-- `$bridge-auto` - allow up to three structured revise rounds
+- `$bridge-auto` - keep automatic review armed with up to three revise rounds per cycle
 - `$bridge-off` - disable interception and question advice
 - `$bridge-status` - inspect routing, mode, and checkpoint state
 - `$bridge-publish` - publish the latest completed checkpoint review
@@ -139,6 +139,11 @@ user, who personally submits the final answer.
 
 Published feedback is advisory. Claude is instructed to challenge or adapt it,
 accepting, changing, or rejecting findings based on project evidence.
+
+Automatic reviews use a control-only MCP decision and display ordinary Markdown
+instead of JSON. A passing cycle releases Claude and shows its compact report as
+a user-only Stop-hook message. The report is not feedback to Claude and is not
+added as a second Codex history item.
 
 ## Policy and project context
 

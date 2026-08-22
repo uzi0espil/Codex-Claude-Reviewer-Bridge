@@ -337,7 +337,7 @@ export function codexConfig(projectRoot, skipPlaywright) {
     `args = [${tomlLiteral(path.join(reviewerRoot, "dist", "mcp-server.js"))}]`, "enabled = true",
     "startup_timeout_sec = 10", "tool_timeout_sec = 2592000"
   ];
-  for (const tool of ["set_mode", "publish", "force_publish", "status", "cancel"]) {
+  for (const tool of ["set_mode", "record_auto_decision", "publish", "force_publish", "status", "cancel"]) {
     lines.push("", `[mcp_servers.review_bridge.tools.review_bridge_${tool}]`, 'approval_mode = "approve"');
   }
   lines.push("", "[mcp_servers.review_bridge.tools.review_bridge_write_policy]", 'approval_mode = "prompt"');

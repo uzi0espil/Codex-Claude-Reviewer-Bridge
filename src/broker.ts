@@ -7,16 +7,18 @@ import { spawn, ChildProcess } from "node:child_process";
 import { AppServerClient, CompletedTurn } from "./app-server.js";
 import { endpointPath, featureKey, logPath, reviewerRoot, runtimeDirectory } from "./paths.js";
 import { StateStore } from "./store.js";
-import { AutoReviewResult, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
+import { AutoReviewDecision, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
 import { buildReviewPrompt } from "./review-prompt.js";
 import { modeAfterUserDecision } from "./mode-policy.js";
 import { buildPublishedFeedback } from "./published-feedback.js";
 import { checkpointDecisionError, createCheckpoint, forcePublishError } from "./checkpoint-policy.js";
+import { autoDecisionError, buildAutoCycleMessage, resolveAutoReview } from "./auto-review.js";
 import { startStreamedJsonResponse } from "./streamed-json-response.js";
 import { buildQuestionAdvisoryPrompt, createQuestionAdvisory } from "./question-advisory.js";
 import { migrateClaudeSessionLifecycle, recordClaudeSession } from "./claude-session.js";
+import { StopHookResult } from "./claude-hook-output.js";
 
-type Release = { kind: "allow" } | { kind: "feedback"; text: string };
+type Release = StopHookResult;
 type Waiter = { resolve: (release: Release) => void; response: ServerResponse; onClose: () => void };
 
 const store = new StateStore();
@@ -135,8 +137,7 @@ async function startReview(pair: FeaturePair, pendingId: string): Promise<void> 
   const turnId = await app.startReview(
     pair.codexThreadId!,
     pair.projectRoot,
-    buildReviewPrompt(pair, checkpoint.claudeMessage, checkpoint),
-    pair.mode === "auto"
+    buildReviewPrompt(pair, checkpoint.claudeMessage, checkpoint)
   );
   const latest = store.get(pair.feature);
   if (!latest?.pending || latest.pending.id !== pendingId) {
@@ -244,18 +245,6 @@ function release(pendingId: string, result: Release): void {
   }
 }
 
-function parseAuto(text: string): AutoReviewResult {
-  const value = JSON.parse(text) as Partial<AutoReviewResult>;
-  if (!value || !["pass", "revise", "needs_user"].includes(String(value.decision))) {
-    throw new Error("Codex returned an invalid auto-review decision.");
-  }
-  return {
-    decision: value.decision as AutoReviewResult["decision"],
-    feedback: String(value.feedback ?? ""),
-    summary: String(value.summary ?? "")
-  };
-}
-
 async function finishReview(turn: CompletedTurn): Promise<void> {
   const pair = store.all().find((candidate) => candidate.pending?.codexTurnId === turn.turnId);
   if (!pair?.pending) return;
@@ -279,41 +268,35 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
     return;
   }
 
-  try {
-    const result = parseAuto(turn.text);
-    if (result.decision === "pass") {
-      store.update(pair.feature, (value) => {
-        value.status = "passed";
-        value.mode = "off";
-        value.autoRound = 0;
-        value.lastCodexResponse = result.summary;
-        value.pending = undefined;
-      });
-      release(pendingId, { kind: "allow" });
-    } else if (result.decision === "revise" && pair.autoRound < 3) {
-      const feedback = buildPublishedFeedback(result.feedback);
-      store.update(pair.feature, (value) => {
-        value.status = "waiting-claude";
-        value.autoRound += 1;
-        value.lastCodexResponse = result.feedback;
-        value.pending = undefined;
-      });
-      release(pendingId, { kind: "feedback", text: feedback });
-    } else {
-      store.update(pair.feature, (value) => {
-        value.status = "waiting-user";
-        value.lastCodexResponse = result.feedback || result.summary;
-        if (value.pending) value.pending.codexResponse = result.feedback || result.summary;
-      });
-    }
-  } catch (error) {
-    log(`Auto response requires user review: ${String(error)}`);
+  const resolution = resolveAutoReview(pair, turn.text);
+  if (resolution.kind === "pass") {
+    const systemMessage = buildAutoCycleMessage(resolution.summary, resolution.reviewRounds);
     store.update(pair.feature, (value) => {
-      value.status = "waiting-user";
+      value.status = "passed";
+      value.autoRound = 0;
       value.lastCodexResponse = turn.text;
-      if (value.pending) value.pending.codexResponse = turn.text;
+      value.pending = undefined;
     });
+    release(pendingId, { kind: "allow", systemMessage });
+    return;
   }
+  if (resolution.kind === "revise") {
+    const feedback = buildPublishedFeedback(resolution.feedback);
+    store.update(pair.feature, (value) => {
+      value.status = "waiting-claude";
+      value.autoRound += 1;
+      value.lastCodexResponse = resolution.feedback;
+      value.pending = undefined;
+    });
+    release(pendingId, { kind: "feedback", text: feedback });
+    return;
+  }
+  log(`Auto response requires user review: ${resolution.reason}.`);
+  store.update(pair.feature, (value) => {
+    value.status = "waiting-user";
+    value.lastCodexResponse = resolution.response;
+    if (value.pending) value.pending.codexResponse = resolution.response;
+  });
 }
 
 function finishQuestionAdvisory(turn: CompletedTurn): void {
@@ -412,6 +395,23 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   if (req.url === "/status" && req.method === "POST") {
     const pair = feature ? store.get(feature) : undefined;
     return pair ? send(res, 200, publicPair(pair)) : send(res, 404, { error: "unknown feature" });
+  }
+  if (req.url === "/auto-decision" && req.method === "POST") {
+    if (!feature) return send(res, 400, { error: "feature required" });
+    const existing = store.get(feature);
+    if (!existing) return send(res, 404, { error: "unknown feature" });
+    const decisionError = autoDecisionError(existing, body.checkpointId, body.decision);
+    if (decisionError) return send(res, 409, { error: decisionError });
+    store.update(feature, (value) => {
+      if (value.pending) value.pending.autoDecision = body.decision as AutoReviewDecision;
+    });
+    return send(res, 200, {
+      recorded: true,
+      feature,
+      checkpointId: body.checkpointId,
+      decision: body.decision,
+      message: "Decision recorded. Finish with the normal Markdown review; the bridge will act when the turn completes."
+    });
   }
   if (req.url === "/mode" && req.method === "POST") {
     if (!feature || !["off", "manual", "once", "auto"].includes(String(body.mode))) return send(res, 400, { error: "invalid feature or mode" });
