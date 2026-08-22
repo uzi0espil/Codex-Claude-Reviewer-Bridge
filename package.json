@@ -26,7 +26,7 @@
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
     "@playwright/mcp": "0.0.79",
-    "ws": "8.18.3",
+    "ws": "8.21.3",
     "zod": "4.4.3"
   },
   "devDependencies": {
