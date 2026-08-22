@@ -15,7 +15,8 @@ import {
   shellQuote,
   terminalLaunchSpec,
   tomlLiteral,
-  validateCommandArguments
+  validateCommandArguments,
+  windowsTerminalLaunchSpec
 } from "../reviewer.mjs";
 
 test("parses CLI options and preserves tool arguments", () => {
@@ -49,6 +50,26 @@ test("builds terminal launches without flattening the terminal argument vector",
       args: ["--", "bash", "-lc", "'/tmp/reviewer app/reviewer.sh' 'start-coder' '--feature' 'a'\"'\"'b'; exec bash"]
     }
   );
+});
+
+test("builds visible Windows Terminal launches with encoded child arguments", () => {
+  const childArgs = ["start-coder", "--feature", "a feature", "--", "--agent", "project-manager"];
+  const spec = windowsTerminalLaunchSpec(
+    "C:\\Users\\user\\AppData\\Local\\Microsoft\\WindowsApps\\wt.exe",
+    "E:\\reviewer home\\scripts\\powershell\\internal\\Launch-Reviewer.ps1",
+    childArgs,
+    "E:\\project root",
+    "Claude · a feature"
+  );
+  assert.equal(spec.command, "C:\\Users\\user\\AppData\\Local\\Microsoft\\WindowsApps\\wt.exe");
+  assert.deepEqual(spec.args.slice(0, 7), [
+    "-w", "new", "new-tab", "--title", "Claude · a feature", "--startingDirectory", "E:\\project root"
+  ]);
+  assert.deepEqual(spec.args.slice(7, 13), [
+    "powershell.exe", "-NoProfile", "-NoExit", "-File",
+    "E:\\reviewer home\\scripts\\powershell\\internal\\Launch-Reviewer.ps1", "-EncodedArguments"
+  ]);
+  assert.deepEqual(JSON.parse(Buffer.from(spec.args[13], "base64").toString("utf8")), childArgs);
 });
 
 test("generates portable Claude hooks and Codex configuration", () => {
