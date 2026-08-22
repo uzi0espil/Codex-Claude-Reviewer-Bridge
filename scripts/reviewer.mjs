@@ -462,10 +462,27 @@ export function terminalLaunchSpec(platform, terminal, reviewerScript, childArgs
   return { command: terminal, args: ["-e", "bash", "-lc", shellCommand] };
 }
 
+export function windowsTerminalLaunchSpec(terminal, launcher, childArgs, cwd, title) {
+  const encoded = Buffer.from(JSON.stringify(childArgs), "utf8").toString("base64");
+  return {
+    command: terminal,
+    args: [
+      "-w", "new", "new-tab", "--title", title, "--startingDirectory", cwd,
+      "powershell.exe", "-NoProfile", "-NoExit", "-File", launcher, "-EncodedArguments", encoded
+    ]
+  };
+}
+
 function launchDetached(spec, cwd) {
-  const executable = resolveCommand(spec.command) ?? spec.command;
-  const child = spawn(executable, spec.args, { cwd, detached: true, stdio: "ignore", windowsHide: false });
-  child.unref();
+  return new Promise((resolve, reject) => {
+    const executable = resolveCommand(spec.command) ?? spec.command;
+    const child = spawn(executable, spec.args, { cwd, detached: true, stdio: "ignore", windowsHide: false });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
 }
 
 async function startPair(options, passthrough) {
@@ -480,21 +497,27 @@ async function startPair(options, passthrough) {
   if (options.terminal === "print") return printPairCommands(coderArgs, reviewerArgs);
   if (process.platform === "win32") {
     const launcher = path.join(reviewerRoot, "scripts", "powershell", "internal", "Launch-Reviewer.ps1");
-    for (const args of [coderArgs, reviewerArgs]) {
-      const encoded = Buffer.from(JSON.stringify(args), "utf8").toString("base64");
-      launchDetached({ command: "powershell.exe", args: ["-NoProfile", "-NoExit", "-File", launcher, "-EncodedArguments", encoded] }, projectRoot);
+    const terminalLauncher = path.join(reviewerRoot, "scripts", "powershell", "internal", "Open-ReviewerTerminal.ps1");
+    for (const spec of [
+      windowsTerminalLaunchSpec("wt.exe", launcher, coderArgs, projectRoot, `Claude · ${feature}`),
+      windowsTerminalLaunchSpec("wt.exe", launcher, reviewerArgs, projectRoot, `Codex · ${feature}`)
+    ]) {
+      const encoded = Buffer.from(JSON.stringify(spec.args), "utf8").toString("base64");
+      run("powershell.exe", ["-NoProfile", "-File", terminalLauncher, "-EncodedArguments", encoded], {
+        cwd: projectRoot, capture: true, windowsHide: true
+      });
     }
   } else {
     const wrapper = path.join(reviewerRoot, "scripts", "shell", "reviewer.sh");
     if (process.platform === "darwin") {
-      launchDetached(terminalLaunchSpec("darwin", "Terminal", wrapper, coderArgs), projectRoot);
-      launchDetached(terminalLaunchSpec("darwin", "Terminal", wrapper, reviewerArgs), projectRoot);
+      await launchDetached(terminalLaunchSpec("darwin", "Terminal", wrapper, coderArgs), projectRoot);
+      await launchDetached(terminalLaunchSpec("darwin", "Terminal", wrapper, reviewerArgs), projectRoot);
     } else {
       const graphicalSession = process.env.DISPLAY || process.env.WAYLAND_DISPLAY;
       const terminal = graphicalSession && ["gnome-terminal", "konsole", "xfce4-terminal", "x-terminal-emulator", "xterm"].find(resolveCommand);
       if (!terminal) return printPairCommands(coderArgs, reviewerArgs);
-      launchDetached(terminalLaunchSpec("linux", terminal, wrapper, coderArgs), projectRoot);
-      launchDetached(terminalLaunchSpec("linux", terminal, wrapper, reviewerArgs), projectRoot);
+      await launchDetached(terminalLaunchSpec("linux", terminal, wrapper, coderArgs), projectRoot);
+      await launchDetached(terminalLaunchSpec("linux", terminal, wrapper, reviewerArgs), projectRoot);
     }
   }
   console.log(`Opened paired Claude and Codex terminals for '${feature}'.`);
