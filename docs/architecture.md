@@ -31,9 +31,12 @@ rebinding.
 
 A normalized feature name selects one stored pair. Routing uses immutable Claude
 session and Codex thread UUIDs, not terminal titles. The first Claude user prompt
-is injected into the Codex thread once. Later checkpoints contain only Claude's
-latest assistant message; Codex reads the current worktree for authoritative
-state.
+is injected into the Codex thread once. The composed generic and local review
+policy is also injected once and identified by its SHA-256. It is injected again
+only when the policy changes, the thread is replaced, or app-server emits a
+`contextCompaction` item. Later checkpoints contain only a compact immutable
+review contract and Claude's latest assistant message; Codex reads the current
+worktree for authoritative state.
 
 The broker reserves a Claude UUID before launch, but `SessionStart` only proves
 that Claude observed it. The session becomes resumable after `UserPromptSubmit`

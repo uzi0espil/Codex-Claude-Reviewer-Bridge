@@ -9,7 +9,12 @@ import { modeAfterUserDecision } from "../mode-policy.js";
 import { featureKey, reviewerRoot } from "../paths.js";
 import { maxReviewPolicyBytes, readPolicyFile, writePolicyFile } from "../policy-store.js";
 import { buildPublishedFeedback } from "../published-feedback.js";
-import { buildReviewPrompt, composeReviewPolicy } from "../review-prompt.js";
+import {
+  buildReviewPolicySeed,
+  buildReviewPrompt,
+  composeReviewPolicy,
+  reviewPolicySnapshot
+} from "../review-prompt.js";
 import { StateStore } from "../store.js";
 import { FeaturePair } from "../types.js";
 import { buildQuestionAdvisoryPrompt, createQuestionAdvisory, questionsFromHook } from "../question-advisory.js";
@@ -82,6 +87,7 @@ test("state persists immutable routing and mutable mode", () => {
     store.update(created.feature, (current) => {
       current.claudeSessionId = "claude-id";
       current.codexThreadId = "codex-id";
+      current.reviewPolicySha256 = "policy-id";
       current.mode = "once";
       current.pending = {
         id: "checkpoint-persisted",
@@ -107,6 +113,7 @@ test("state persists immutable routing and mutable mode", () => {
     const reloaded = new StateStore(filename).get("feature-one");
     assert.equal(reloaded?.claudeSessionId, "claude-id");
     assert.equal(reloaded?.codexThreadId, "codex-id");
+    assert.equal(reloaded?.reviewPolicySha256, "policy-id");
     assert.equal(reloaded?.mode, "once");
     assert.equal(reloaded?.pending?.autoDecision, "needs_user");
     assert.equal(reloaded?.lastAutoCycle?.reportPath, "reviews/feature-one/checkpoint-1.md");
@@ -123,6 +130,19 @@ test("review prompts are independent, evidence-driven, and read-only", () => {
   assert.match(prompt, /worktree/i);
   assert.match(prompt, /strictly read-only/i);
   assert.match(prompt, /Latest Claude message:\nImplementation complete\./);
+});
+
+test("the full review policy is versioned once as thread context instead of copied into checkpoints", () => {
+  const current = pair({ status: "reviewing" });
+  const policy = reviewPolicySnapshot("Baseline policy.\n\nApplication-only requirement.");
+  const seed = buildReviewPolicySeed(current, policy);
+  const prompt = buildReviewPrompt(current, "Implementation complete.");
+
+  assert.match(seed, new RegExp(policy.sha256));
+  assert.match(seed, /Application-only requirement/);
+  assert.match(seed, /every subsequent bridge-injected review checkpoint/i);
+  assert.doesNotMatch(prompt, /Application-only requirement/);
+  assert.match(prompt, /policy already established in this Codex thread/i);
 });
 
 test("automatic review prompts request a control tool and human-readable response", () => {

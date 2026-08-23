@@ -101,9 +101,12 @@ From the generated reviewer instance:
 ./scripts/shell/reviewer.sh start-pair --feature your-feature-name
 ```
 
-This opens paired Claude and Codex terminals. The first Claude user prompt seeds
-the persistent Codex thread once. Later checkpoints contain only Claude's latest
-assistant message; Codex inspects the worktree for authoritative state.
+This opens paired Claude and Codex terminals. The first Claude user prompt and
+the composed review policy seed the persistent Codex thread once. The bridge
+re-seeds the policy only when its SHA-256 changes, the Codex thread is replaced,
+or Codex reports context compaction. Later checkpoints contain only a compact
+review contract and Claude's latest assistant message; Codex inspects the
+worktree for authoritative state.
 
 `start-pair` automatically opens two PowerShell windows on Windows, Terminal on
 macOS, or a recognized graphical terminal on Linux. Use `--terminal print` (or

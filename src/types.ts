@@ -67,6 +67,7 @@ export interface FeaturePair {
   claudeSessionStarted?: boolean;
   claudeSessionLifecycleVersion?: number;
   codexThreadId?: string;
+  reviewPolicySha256?: string;
   mode: BridgeMode;
   status: PairStatus;
   checkpointSequence?: number;

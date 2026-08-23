@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { localReviewPolicyPath, reviewPolicyPath } from "./paths.js";
 import { FeaturePair, PendingReview } from "./types.js";
@@ -17,6 +18,28 @@ export function readReviewPolicy(): string {
     ? fs.readFileSync(localReviewPolicyPath, "utf8").trim()
     : "";
   return composeReviewPolicy(baseline, local);
+}
+
+export interface ReviewPolicySnapshot {
+  content: string;
+  sha256: string;
+}
+
+export function reviewPolicySnapshot(content = readReviewPolicy()): ReviewPolicySnapshot {
+  return {
+    content,
+    sha256: crypto.createHash("sha256").update(content, "utf8").digest("hex")
+  };
+}
+
+export function buildReviewPolicySeed(pair: FeaturePair, policy: ReviewPolicySnapshot): string {
+  return [
+    `[Review policy for bridge workstream: ${pair.displayName}]`,
+    `Policy SHA-256: ${policy.sha256}`,
+    "This policy governs every subsequent bridge-injected review checkpoint and Claude question advisory in this Codex thread until a later policy update is injected. Apply it without requiring the full policy to be repeated in each checkpoint.",
+    "",
+    policy.content
+  ].join("\n");
 }
 
 export function composeReviewPolicy(baseline: string, local: string): string {
@@ -43,7 +66,7 @@ export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint
       : undefined,
     `Claude session: ${pair.claudeSessionId ?? "unknown"}`,
     `Bridge mode: ${pair.mode}; unattended feedback round: ${pair.autoRound}/3.`,
-    readReviewPolicy(),
+    "This bridge-injected turn is governed by the review policy already established in this Codex thread. Independently verify Claude's handoff against the current worktree, repository guidance, architecture and specification artifacts, code, tests, and diffs. Use live web research when current external facts materially affect the assessment. This turn is strictly read-only: do not edit files, apply patches, commit, publish, or approve external actions.",
     autoContract,
     "",
     "Latest Claude message:",

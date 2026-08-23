@@ -60,17 +60,20 @@ test("the reviewer proxy multiplexes broker and TUI traffic over one upstream co
   assert.notEqual(upstreamResume.id, "resume-from-tui");
 
   const completedPromise = once(app, "turnCompleted") as Promise<[CompletedTurn]>;
+  const compactedPromise = once(app, "contextCompacted") as Promise<[string]>;
   const started = nextJson(reviewer, (message) => message.method === "turn/started");
-  const itemCompleted = nextJson(reviewer, (message) => message.method === "item/completed");
+  const itemCompleted = nextJson(reviewer, (message) => message.method === "item/completed" && message.params?.item?.type === "agentMessage");
   const turnCompleted = nextJson(reviewer, (message) => message.method === "turn/completed");
   assert.equal(await app.startReview("thread-1", "C:/project", "Review this"), "turn-1");
   upstreamSocket!.send(JSON.stringify({ jsonrpc: "2.0", method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-1" } } }));
+  upstreamSocket!.send(JSON.stringify({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "contextCompaction", id: "compact-1" } } }));
   upstreamSocket!.send(JSON.stringify({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "agentMessage", text: "No findings." } } }));
   upstreamSocket!.send(JSON.stringify({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } } }));
 
   assert.equal((await started).params.turn.id, "turn-1");
   assert.equal((await itemCompleted).params.item.text, "No findings.");
   assert.equal((await turnCompleted).params.turn.status, "completed");
+  assert.equal((await compactedPromise)[0], "thread-1");
   assert.deepEqual((await completedPromise)[0], {
     threadId: "thread-1",
     turnId: "turn-1",

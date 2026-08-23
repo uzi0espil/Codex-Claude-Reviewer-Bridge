@@ -219,7 +219,8 @@ export class AppServerClient extends EventEmitter {
 
     this.sendDownstream(message);
     if (message.method === "item/completed") {
-      const { item, turnId } = message.params ?? {};
+      const { item, threadId, turnId } = message.params ?? {};
+      if (item?.type === "contextCompaction") this.emit("contextCompacted", String(threadId ?? ""));
       if (item?.type === "agentMessage") this.turnText.set(String(turnId), String(item.text ?? ""));
       return;
     }

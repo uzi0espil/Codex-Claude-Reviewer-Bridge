@@ -9,7 +9,7 @@ import { AppServerProxy } from "./app-server-proxy.js";
 import { endpointPath, featureKey, logPath, reportsDirectory, reviewerRoot, runtimeDirectory } from "./paths.js";
 import { StateStore } from "./store.js";
 import { AutoCycleReceipt, AutoReviewDecision, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
-import { buildReviewPrompt } from "./review-prompt.js";
+import { buildReviewPolicySeed, buildReviewPrompt, reviewPolicySnapshot } from "./review-prompt.js";
 import { modeAfterUserDecision } from "./mode-policy.js";
 import { buildPublishedFeedback } from "./published-feedback.js";
 import { checkpointDecisionError, createCheckpoint, forcePublishError } from "./checkpoint-policy.js";
@@ -97,6 +97,12 @@ async function startAppServer(): Promise<string> {
     try {
       await app.connect();
       app.on("turnCompleted", (turn: CompletedTurn) => void handleTurnCompleted(turn));
+      app.on("contextCompacted", (threadId: string) => {
+        const pair = store.all().find((candidate) => candidate.codexThreadId === threadId);
+        if (!pair?.reviewPolicySha256) return;
+        store.update(pair.feature, (current) => { current.reviewPolicySha256 = undefined; });
+        log(`Codex compacted thread ${threadId}; the review policy will be reseeded before the next bridge turn.`);
+      });
       appProxy = await AppServerProxy.start(app);
       log(`Codex app-server ready at ${url}; reviewer proxy ready at ${appProxy.url}`);
       return appProxy.url;
@@ -110,22 +116,38 @@ async function startAppServer(): Promise<string> {
 }
 
 async function ensureCodexThread(pair: FeaturePair): Promise<FeaturePair> {
+  let threadId: string | undefined;
   if (pair.codexThreadId) {
     try {
       await app.resumeThread(pair.codexThreadId, pair.projectRoot);
-      return pair;
+      threadId = pair.codexThreadId;
     } catch (error) {
       log(`Could not resume ${pair.codexThreadId}; creating replacement: ${String(error)}`);
     }
   }
-  const threadId = await app.createThread(pair.projectRoot, pair.displayName);
-  pair = store.update(pair.feature, (current) => { current.codexThreadId = threadId; });
-  if (!pair.pmSeeded && pair.initialPrompt) {
-        await app.seedContext(threadId, `[Workstream context: ${pair.displayName}]\n${pair.initialPrompt}`);
+  if (!threadId) {
+    threadId = await app.createThread(pair.projectRoot, pair.displayName);
     pair = store.update(pair.feature, (current) => {
-      current.pmSeeded = true;
-      current.initialPrompt = undefined;
+      current.codexThreadId = threadId;
+      current.reviewPolicySha256 = undefined;
     });
+    if (!pair.pmSeeded && pair.initialPrompt) {
+      await app.seedContext(threadId, `[Workstream context: ${pair.displayName}]\n${pair.initialPrompt}`);
+      pair = store.update(pair.feature, (current) => {
+        current.pmSeeded = true;
+        current.initialPrompt = undefined;
+      });
+    }
+  }
+
+  pair = store.get(pair.feature) ?? pair;
+  const policy = reviewPolicySnapshot();
+  if (pair.reviewPolicySha256 !== policy.sha256) {
+    await app.seedContext(threadId, buildReviewPolicySeed(pair, policy));
+    pair = store.update(pair.feature, (current) => {
+      if (current.codexThreadId === threadId) current.reviewPolicySha256 = policy.sha256;
+    });
+    log(`Seeded review policy ${policy.sha256} into Codex thread ${threadId} for ${pair.feature}.`);
   }
   return pair;
 }
