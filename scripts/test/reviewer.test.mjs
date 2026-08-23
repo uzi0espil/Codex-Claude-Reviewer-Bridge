@@ -11,7 +11,9 @@ import {
   claudeSettings,
   codexConfig,
   parseArguments,
+  pairedCodexArguments,
   powershellQuote,
+  readLatestAutoReport,
   shellQuote,
   terminalLaunchSpec,
   tomlLiteral,
@@ -34,6 +36,89 @@ test("rejects unknown CLI options", () => {
   assert.throws(() => parseArguments(["--unknown"]), /Unknown option/);
   assert.throws(() => validateCommandArguments("stop", { feature: "x" }, []), /not valid for stop/);
   assert.throws(() => validateCommandArguments("setup", {}, ["--model", "x"]), /does not accept/);
+});
+
+test("reads the latest automatic report outside model history and rejects escaped paths", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "reviewer-report-"));
+  try {
+    const reportDirectory = path.join(temporary, "reviews", "feature-one");
+    fs.mkdirSync(path.join(temporary, "runtime"), { recursive: true });
+    fs.mkdirSync(reportDirectory, { recursive: true });
+    fs.writeFileSync(path.join(reportDirectory, "checkpoint-2.md"), "# Stored report\n", "utf8");
+    const state = {
+      version: 1,
+      pairs: {
+        "feature-one": { lastAutoCycle: { reportPath: "reviews/feature-one/checkpoint-2.md" } }
+      }
+    };
+    fs.writeFileSync(path.join(temporary, "runtime", "state.json"), `${JSON.stringify(state)}\n`, "utf8");
+    assert.equal(readLatestAutoReport("Feature One", temporary), "# Stored report\n");
+    state.pairs["feature-one"].lastAutoCycle.reportPath = "../outside.md";
+    fs.writeFileSync(path.join(temporary, "runtime", "state.json"), `${JSON.stringify(state)}\n`, "utf8");
+    assert.throws(() => readLatestAutoReport("feature-one", temporary), /path is invalid/i);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test("assembles every available round from the latest automatic review cycle", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "reviewer-cycle-report-"));
+  try {
+    const reportDirectory = path.join(temporary, "reviews", "feature-one");
+    fs.mkdirSync(path.join(temporary, "runtime"), { recursive: true });
+    fs.mkdirSync(reportDirectory, { recursive: true });
+    const round = (checkpoint, reviewRound, decision, outcome, body) => [
+      "# Automatic review report - Feature One",
+      "",
+      `- Checkpoint: #${checkpoint} (checkpoint-${checkpoint})`,
+      `- Decision: ${decision}`,
+      `- Outcome: ${outcome}`,
+      `- Review round: ${reviewRound}`,
+      `- Started: 2026-01-01T00:00:0${reviewRound}.000Z`,
+      `- Completed: 2026-01-01T00:00:0${reviewRound + 1}.000Z`,
+      `- Duration: ${reviewRound}.0 seconds`,
+      "",
+      "## Codex report",
+      "",
+      body,
+      ""
+    ].join("\n");
+    fs.writeFileSync(path.join(reportDirectory, "checkpoint-18.md"), round(18, 2, "pass", "passed", "Previous cycle complete."));
+    fs.writeFileSync(path.join(reportDirectory, "checkpoint-19.md"), round(19, 1, "revise", "revision-sent", "First finding."));
+    fs.writeFileSync(path.join(reportDirectory, "checkpoint-20.md"), round(
+      20,
+      2,
+      "pass_continue",
+      "continuation-sent",
+      "Gate passed; continue.\n\n## Codex report\n\nNested heading remains part of this response."
+    ));
+    fs.writeFileSync(path.join(reportDirectory, "checkpoint-21.md"), round(21, 3, "needs_user", "waiting-user", "User choice required."));
+    fs.writeFileSync(path.join(reportDirectory, "checkpoint-22.md"), round(22, 1, "needs_user", "waiting-user", "Follow-up choice required."));
+    fs.writeFileSync(path.join(temporary, "runtime", "state.json"), `${JSON.stringify({
+      version: 1,
+      pairs: {
+        "feature-one": {
+          displayName: "Feature One",
+          lastAutoCycle: { reportPath: "reviews/feature-one/checkpoint-22.md" }
+        }
+      }
+    })}\n`, "utf8");
+
+    const report = readLatestAutoReport("Feature One", temporary);
+    assert.match(report, /Automatic review cycle report - Feature One/);
+    assert.match(report, /Rounds: 4/);
+    assert.match(report, /Checkpoints: #19 -> #22/);
+    assert.match(report, /Final decision: needs_user/);
+    assert.match(report, /Total review time: 7\.0 seconds/);
+    assert.doesNotMatch(report, /Previous cycle complete/);
+    assert.ok(report.indexOf("First finding.") < report.indexOf("Gate passed; continue."));
+    assert.ok(report.indexOf("Gate passed; continue.") < report.indexOf("User choice required."));
+    assert.match(report, /Nested heading remains part of this response/);
+    assert.ok(report.indexOf("User choice required.") < report.indexOf("Follow-up choice required."));
+    assert.match(report, /Cycle round 4 - needs_user[\s\S]*Unattended round: 1/);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
 });
 
 test("quotes Bash, PowerShell, and TOML literals without interpolation", () => {
@@ -72,6 +157,29 @@ test("builds visible Windows Terminal launches with encoded child arguments", ()
   assert.deepEqual(JSON.parse(Buffer.from(spec.args[13], "base64").toString("utf8")), childArgs);
 });
 
+test("paired Codex sessions preserve injected review turns in terminal scrollback", () => {
+  const args = pairedCodexArguments(
+    { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-1" },
+    "C:\\project",
+    "auto",
+    ["--model", "gpt-test"]
+  );
+  assert.deepEqual(args, [
+    "--remote", "ws://127.0.0.1:1234",
+    "--no-alt-screen",
+    "resume", "thread-1",
+    "-C", "C:\\project",
+    "--profile", "bridge-auto",
+    "--model", "gpt-test"
+  ]);
+  assert.equal(pairedCodexArguments(
+    { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-1" },
+    "C:\\project",
+    "manual",
+    ["--no-alt-screen"]
+  ).filter((value) => value === "--no-alt-screen").length, 1);
+});
+
 test("generates portable Claude hooks and Codex configuration", () => {
   const settings = claudeSettings("/tmp/project");
   assert.equal(settings.hooks.PreToolUse[0].matcher, "AskUserQuestion");
@@ -79,6 +187,7 @@ test("generates portable Claude hooks and Codex configuration", () => {
   const config = codexConfig("/tmp/project with spaces", true);
   assert.match(config, /web_search = "live"/);
   assert.match(config, /\[permissions\.bridge-review\]/);
+  assert.match(config, /review_bridge_record_auto_decision/);
   assert.doesNotMatch(config, /mcp_servers\.playwright/);
 });
 
@@ -134,7 +243,9 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     assert.equal(local.templateVersion, "test-version");
     assert.equal(local.playwrightEnabled, false);
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "claude-bridge.settings.json"), "utf8")).hooks.Stop[0].hooks[0].command, "node");
-    assert.match(fs.readFileSync(path.join(instance, "config.toml"), "utf8"), /\[permissions\.bridge-write\]/);
+    const generatedConfig = fs.readFileSync(path.join(instance, "config.toml"), "utf8");
+    assert.match(generatedConfig, /\[permissions\.bridge-write\]/);
+    assert.match(generatedConfig, /review_bridge_record_auto_decision/);
 
     const rebound = spawnSync(process.execPath, [cli, "setup", "--project-root", secondProject, "--skip-playwright"], {
       cwd: instance, env: environment, encoding: "utf8"

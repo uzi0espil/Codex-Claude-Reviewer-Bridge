@@ -21,7 +21,7 @@ Keep the reviewer as a sibling, never inside the application repository.
 - One isolated reviewer home per application
 - Codex-guided generation of a private application review policy
 - Persistent `manual` review mode with human approval by default
-- One-shot and bounded automatic review modes
+- One-shot review and persistent automatic review with bounded cycles
 - Latest-checkpoint-wins handling when Claude finishes during a review
 - Checkpoint-bound publication, cancellation, and recovery publication
 - Streamed Stop-hook responses without polling
@@ -101,9 +101,15 @@ From the generated reviewer instance:
 ./scripts/shell/reviewer.sh start-pair --feature your-feature-name
 ```
 
-This opens paired Claude and Codex terminals. The first Claude user prompt seeds
-the persistent Codex thread once. Later checkpoints contain only Claude's latest
-assistant message; Codex inspects the worktree for authoritative state.
+This opens paired Claude and Codex terminals. The first Claude user prompt plus
+the stable bridge protocol and composed review policy seed the persistent Codex
+thread once. The bridge re-seeds that context only when its SHA-256 changes or
+the Codex thread is replaced. Codex compaction does not duplicate the full
+policy; the next bridge turn gets one short reminder to re-read the policy files,
+and compact safety boundaries remain in checkpoint prompts. Checkpoints
+contain only checkpoint-specific control data, a short read-only reminder, and
+Claude's latest assistant message; Codex inspects the worktree for authoritative
+state.
 
 `start-pair` automatically opens two PowerShell windows on Windows, Terminal on
 macOS, or a recognized graphical terminal on Linux. Use `--terminal print` (or
@@ -130,7 +136,7 @@ user, who personally submits the final answer.
 - `$bridge-init-policy` - create or refresh the private application policy
 - `$bridge-manual` - review every Claude Stop and wait for approval; default
 - `$bridge-once` - review only the next Claude Stop
-- `$bridge-auto` - allow up to three structured revise rounds
+- `$bridge-auto` - keep automatic review armed with up to three unattended feedback or continuation rounds per cycle
 - `$bridge-off` - disable interception and question advice
 - `$bridge-status` - inspect routing, mode, and checkpoint state
 - `$bridge-publish` - publish the latest completed checkpoint review
@@ -139,6 +145,44 @@ user, who personally submits the final answer.
 
 Published feedback is advisory. Claude is instructed to challenge or adapt it,
 accepting, changing, or rejecting findings based on project evidence.
+
+Automatic reviews use a control-only MCP decision and display ordinary Markdown
+instead of JSON. A passing cycle releases Claude with a fixed one-line status;
+detailed findings remain in the reviewer terminal and the out-of-band report.
+The reviewer terminal connects through a
+local single-upstream proxy so broker-initiated turn notifications use the same
+app-server stream as the interactive session. Because that Codex remote protocol
+is experimental, each round is also saved under ignored `reviews/`; print the
+complete latest cycle, in round order, without invoking either model:
+
+```text
+just report your-feature-name
+```
+
+Without Just, use
+`.\scripts\powershell\reviewer.ps1 report --feature your-feature-name` on
+Windows or `./scripts/shell/reviewer.sh report --feature your-feature-name` on
+macOS/Linux.
+
+The cycle report includes every available revise, continuation, pass, or
+needs-user response since the previous final pass. A human decision can reset
+the three-round unattended safety counter without splitting the user-visible
+cycle. The report is assembled deterministically from immutable per-checkpoint
+files, so superseded checkpoints do not break the sequence. It is not feedback
+to Claude and is not added as a second Codex history item. A successful Stop
+sends Claude only a fixed one-line status; detailed review content remains in
+the Codex terminal and the out-of-band report.
+
+An automatic review can also return `pass_continue` when the current gate passes
+but Claude has a concrete next action that the user already authorized. The
+bridge blocks that Stop with only the scoped continuation instruction; it does
+not send Claude the Codex cycle report or create new authorization. If the next
+action or its authorization is unclear, Codex must return `needs_user` instead.
+Continuation and revision feedback share the three-round unattended limit.
+
+Paired Codex terminals run in inline mode so broker-started review turns remain
+in terminal scrollback across later redraws. This changes display behavior only;
+it does not add another turn to Codex history.
 
 ## Policy and project context
 
@@ -180,6 +224,7 @@ Run `just` to list the available recipes. The common workflow becomes:
 just create /path/to/MyApp
 just policy
 just pair my-feature
+just report my-feature
 just server
 just stop
 just update

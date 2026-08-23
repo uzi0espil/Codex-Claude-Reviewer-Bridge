@@ -9,12 +9,29 @@ import { modeAfterUserDecision } from "../mode-policy.js";
 import { featureKey, reviewerRoot } from "../paths.js";
 import { maxReviewPolicyBytes, readPolicyFile, writePolicyFile } from "../policy-store.js";
 import { buildPublishedFeedback } from "../published-feedback.js";
-import { buildReviewPrompt, composeReviewPolicy } from "../review-prompt.js";
+import {
+  buildReviewContextSeed,
+  buildReviewPrompt,
+  compactedPolicyReminder,
+  composeReviewPolicy,
+  reviewContextSnapshot
+} from "../review-prompt.js";
 import { StateStore } from "../store.js";
 import { FeaturePair } from "../types.js";
 import { buildQuestionAdvisoryPrompt, createQuestionAdvisory, questionsFromHook } from "../question-advisory.js";
 import { migrateClaudeSessionLifecycle, recordClaudeSession } from "../claude-session.js";
 import { bridgeVersion } from "../version.js";
+import { planAutoDelivery } from "../auto-delivery.js";
+import { CodexThreadBusyError, isCodexThreadBusyError } from "../codex-turn-policy.js";
+import { runSingleFlight } from "../single-flight.js";
+import {
+  autoDecisionError,
+  buildAutoContinuation,
+  buildAutoCycleStatus,
+  createAutoCycleReceipt,
+  formatAutoCycleReport,
+  resolveAutoReview
+} from "../auto-review.js";
 
 function pair(overrides: Partial<FeaturePair> = {}): FeaturePair {
   return {
@@ -74,25 +91,171 @@ test("state persists immutable routing and mutable mode", () => {
     store.update(created.feature, (current) => {
       current.claudeSessionId = "claude-id";
       current.codexThreadId = "codex-id";
+      current.reviewContextSha256 = "context-id";
       current.mode = "once";
+      current.pending = {
+        id: "checkpoint-persisted",
+        claudeMessage: "Done",
+        autoDecision: "needs_user",
+        createdAt: new Date(1).toISOString()
+      };
+      current.lastAutoCycle = {
+        feature: "feature-one",
+        checkpointId: "checkpoint-persisted",
+        checkpointSequence: 1,
+        codexTurnId: "turn-persisted",
+        decision: "needs_user",
+        outcome: "waiting-user",
+        reviewRound: 1,
+        startedAt: new Date(1).toISOString(),
+        completedAt: new Date(2).toISOString(),
+        durationMs: 1,
+        headline: "Choose a tradeoff.",
+        reportPath: "reviews/feature-one/checkpoint-1.md"
+      };
     });
     const reloaded = new StateStore(filename).get("feature-one");
     assert.equal(reloaded?.claudeSessionId, "claude-id");
     assert.equal(reloaded?.codexThreadId, "codex-id");
+    assert.equal(reloaded?.reviewContextSha256, "context-id");
     assert.equal(reloaded?.mode, "once");
+    assert.equal(reloaded?.pending?.autoDecision, "needs_user");
+    assert.equal(reloaded?.lastAutoCycle?.reportPath, "reviews/feature-one/checkpoint-1.md");
     assert.throws(() => store.ensure("Feature One", path.dirname(directory)));
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
-test("review prompts are independent, evidence-driven, and read-only", () => {
+test("legacy policy-only state forces the combined bridge context to be reseeded", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-bridge-legacy-context-"));
+  try {
+    const filename = path.join(directory, "state.json");
+    fs.writeFileSync(filename, `${JSON.stringify({
+      version: 1,
+      pairs: {
+        "checkout-retry": {
+          ...pair({ codexThreadId: "codex-id" }),
+          reviewPolicySha256: "legacy-policy-only-hash"
+        }
+      }
+    })}\n`, "utf8");
+    const loaded = new StateStore(filename).get("checkout-retry");
+    assert.equal(loaded?.reviewContextSha256, undefined);
+    assert.equal("reviewPolicySha256" in (loaded ?? {}), false);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy pending workstream context remains available for replacement Codex threads", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-bridge-workstream-context-"));
+  try {
+    const filename = path.join(directory, "state.json");
+    fs.writeFileSync(filename, `${JSON.stringify({
+      version: 1,
+      pairs: {
+        "checkout-retry": pair({
+          codexThreadId: "codex-id",
+          pmSeeded: false,
+          initialPrompt: "Build the approved retry feature."
+        })
+      }
+    })}\n`, "utf8");
+    const loaded = new StateStore(filename).get("checkout-retry");
+    assert.equal(loaded?.workstreamContext, "Build the approved retry feature.");
+    assert.equal(loaded?.workstreamContextThreadId, undefined);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("review prompts retain a compact read-only checkpoint contract", () => {
   const current = pair({ status: "reviewing" });
   const prompt = buildReviewPrompt(current, "Implementation complete.");
-  assert.match(prompt, /independent/i);
-  assert.match(prompt, /worktree/i);
   assert.match(prompt, /strictly read-only/i);
   assert.match(prompt, /Latest Claude message:\nImplementation complete\./);
+  assert.ok(prompt.length < 750);
+});
+
+test("the stable bridge protocol and review policy are versioned once as thread context", () => {
+  const current = pair({ status: "reviewing" });
+  const context = reviewContextSnapshot("Baseline policy.\n\nApplication-only requirement.");
+  const seed = buildReviewContextSeed(current, context);
+  const prompt = buildReviewPrompt(current, "Implementation complete.");
+
+  assert.match(seed, new RegExp(context.sha256));
+  assert.match(seed, /Application-only requirement/);
+  assert.match(seed, /review_bridge_record_auto_decision/);
+  assert.match(seed, /never JSON/i);
+  assert.match(seed, /Do not generate a cycle recap/i);
+  assert.match(seed, /every subsequent bridge-injected checkpoint/i);
+  assert.doesNotMatch(prompt, /Application-only requirement/);
+  assert.match(prompt, /protocol and review policy established in this thread/i);
+  assert.ok(seed.length > prompt.length);
+});
+
+test("automatic review prompts request a control tool and human-readable response", () => {
+  const current = pair({
+    mode: "auto",
+    status: "reviewing",
+    pending: { id: "checkpoint-auto", sequence: 1, claudeMessage: "Done", createdAt: new Date(1).toISOString() }
+  });
+  const prompt = buildReviewPrompt(current, "Implementation complete.", current.pending);
+  assert.match(prompt, /review_bridge_record_auto_decision/);
+  assert.match(prompt, /feature `checkout-retry`/i);
+  assert.match(prompt, /checkpoint `checkpoint-auto`/i);
+  assert.match(prompt, /concise Markdown/i);
+  assert.match(prompt, /Never broaden authorization/i);
+  assert.match(prompt, /needs_user = choice/i);
+  assert.doesNotMatch(prompt, /cycle report/i);
+  assert.ok(prompt.length < 1_000);
+});
+
+test("compaction adds one policy-file reminder instead of duplicating policy content", () => {
+  const current = pair({ reviewContextCompacted: true });
+  const reminder = compactedPolicyReminder(current);
+  const prompt = buildReviewPrompt(current, "Review after compaction.");
+  assert.match(reminder ?? "", /re-read the baseline policy/i);
+  assert.match(prompt, /Context maintenance: Codex compacted this thread/);
+  assert.doesNotMatch(prompt, /Application-only requirement/);
+});
+
+test("single-flight initialization shares one operation without adding duplicate work", async () => {
+  const inFlight = new Map<string, Promise<string>>();
+  let calls = 0;
+  let unblock!: () => void;
+  const blocked = new Promise<void>((resolve) => { unblock = resolve; });
+  const operation = async (): Promise<string> => {
+    calls++;
+    await blocked;
+    return "thread-1";
+  };
+  const first = runSingleFlight(inFlight, "feature", operation);
+  const second = runSingleFlight(inFlight, "feature", operation);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1);
+  unblock();
+  assert.deepEqual(await Promise.all([first, second]), ["thread-1", "thread-1"]);
+  assert.equal(inFlight.size, 0);
+});
+
+test("automatic delivery distinguishes transport completion from model completion", () => {
+  assert.deepEqual(planAutoDelivery("revise", true), {
+    outcome: "revision-sent", status: "waiting-claude", clearPending: true, queueForNextPrompt: false
+  });
+  assert.deepEqual(planAutoDelivery("revise", false), {
+    outcome: "revision-queued", status: "waiting-claude", clearPending: true, queueForNextPrompt: true
+  });
+  assert.deepEqual(planAutoDelivery("continue", false), {
+    outcome: "continuation-awaiting-user", status: "waiting-user", clearPending: false, queueForNextPrompt: false
+  });
+});
+
+test("Codex active-turn conflicts are retryable but unrelated failures are not", () => {
+  assert.equal(isCodexThreadBusyError(new CodexThreadBusyError("thread-1")), true);
+  assert.equal(isCodexThreadBusyError(new Error("thread already has an active turn")), true);
+  assert.equal(isCodexThreadBusyError(new Error("authentication failed")), false);
 });
 
 test("application review policy overlays the generic baseline", () => {
@@ -162,12 +325,133 @@ test("published feedback blocks Claude and remains advisory", () => {
     reason: feedback,
     systemMessage: "Reviewer Agent's review received; Claude is now challenging or adapting it."
   });
+  assert.deepEqual(stopHookOutput({
+    kind: "allow",
+    systemMessage: "Automatic review cycle complete."
+  }), { systemMessage: "Automatic review cycle complete." });
+  const continuation = buildAutoContinuation("Merge the approved PR, update main, then run /opsx:explore.");
+  assert.match(continuation, /already authorized/i);
+  assert.match(continuation, /not new authorization/i);
+  assert.deepEqual(stopHookOutput({ kind: "continue", text: continuation }), {
+    decision: "block",
+    reason: continuation,
+    systemMessage: "Independent review gate passed; Claude is continuing the already-authorized workflow."
+  });
 });
 
-test("manual mode persists until explicitly disabled", () => {
+test("persistent modes remain armed until explicitly disabled", () => {
   assert.equal(modeAfterUserDecision("manual"), "manual");
   assert.equal(modeAfterUserDecision("once"), "off");
-  assert.equal(modeAfterUserDecision("auto"), "off");
+  assert.equal(modeAfterUserDecision("auto"), "auto");
+  assert.equal(modeAfterUserDecision("off"), "off");
+});
+
+test("automatic decisions bind to the active reviewing checkpoint", () => {
+  const current = pair({
+    mode: "auto",
+    status: "reviewing",
+    pending: { id: "checkpoint-auto", sequence: 2, claudeMessage: "Done", createdAt: new Date(2).toISOString() }
+  });
+  assert.equal(autoDecisionError(current, "checkpoint-auto", "revise"), undefined);
+  assert.match(autoDecisionError(current, "checkpoint-auto", "pass_continue") ?? "", /requires the concrete/i);
+  assert.equal(autoDecisionError(current, "checkpoint-auto", "pass_continue", "Run the approved spike."), undefined);
+  assert.match(autoDecisionError(current, "checkpoint-auto", "pass", "Run the spike.") ?? "", /only valid/i);
+  assert.match(autoDecisionError(current, "stale", "revise") ?? "", /not the active automatic checkpoint/i);
+  assert.match(autoDecisionError(current, "checkpoint-auto", "invalid") ?? "", /invalid automatic decision/i);
+  current.pending!.autoDecision = "revise";
+  assert.match(autoDecisionError(current, "checkpoint-auto", "pass") ?? "", /already recorded/i);
+  current.pending!.autoDecision = undefined;
+  current.mode = "manual";
+  assert.match(autoDecisionError(current, "checkpoint-auto", "pass") ?? "", /mode auto/i);
+});
+
+test("automatic review resolutions preserve readable prose and enforce the revision limit", () => {
+  const current = pair({
+    mode: "auto",
+    status: "reviewing",
+    autoRound: 1,
+    pending: {
+      id: "checkpoint-auto",
+      sequence: 2,
+      claudeMessage: "Done",
+      autoDecision: "revise",
+      createdAt: new Date(2).toISOString()
+    }
+  });
+  assert.deepEqual(resolveAutoReview(current, "Fix the reconnect race."), {
+    kind: "revise",
+    feedback: "Fix the reconnect race."
+  });
+
+  current.autoRound = 3;
+  assert.deepEqual(resolveAutoReview(current, "The revision limit needs a decision."), {
+    kind: "waiting-user",
+    response: "The revision limit needs a decision.",
+    reason: "round-limit"
+  });
+
+  current.autoRound = 2;
+  current.pending!.autoDecision = "pass";
+  assert.deepEqual(resolveAutoReview(current, "All findings are resolved."), {
+    kind: "pass",
+    reviewRounds: 3,
+    summary: "All findings are resolved."
+  });
+
+  current.pending!.autoDecision = undefined;
+  assert.equal(resolveAutoReview(current, "Readable fallback.").kind, "waiting-user");
+
+  current.pending!.autoDecision = "needs_user";
+  assert.deepEqual(resolveAutoReview(current, "Choose the compatibility tradeoff."), {
+    kind: "waiting-user",
+    response: "Choose the compatibility tradeoff.",
+    reason: "needs-user"
+  });
+
+  current.autoRound = 1;
+  current.pending!.autoDecision = "pass_continue";
+  current.pending!.autoContinuation = "Merge the approved PR, update main, then run /opsx:explore.";
+  assert.deepEqual(resolveAutoReview(current, "Gate 1 passed; Gate 2 remains."), {
+    kind: "continue",
+    reviewRounds: 2,
+    summary: "Gate 1 passed; Gate 2 remains.",
+    continuation: "Merge the approved PR, update main, then run /opsx:explore."
+  });
+
+  current.pending!.autoContinuation = undefined;
+  assert.deepEqual(resolveAutoReview(current, "Continuation is missing."), {
+    kind: "waiting-user",
+    response: "Continuation is missing.",
+    reason: "missing-continuation"
+  });
+
+  current.pending!.autoContinuation = "Run another authorized gate.";
+  current.autoRound = 3;
+  assert.deepEqual(resolveAutoReview(current, "The unattended limit needs a decision."), {
+    kind: "waiting-user",
+    response: "The unattended limit needs a decision.",
+    reason: "round-limit"
+  });
+
+  current.pending!.autoDecision = "pass";
+  current.autoRound = 2;
+  const receipt = createAutoCycleReceipt(
+    current,
+    "turn-auto",
+    "passed",
+    "All findings are resolved.\n\nValidated locally.",
+    new Date(5_002).toISOString()
+  );
+  receipt.reportPath = "reviews/checkout-retry/checkpoint-2.md";
+  const status = buildAutoCycleStatus(receipt);
+  assert.match(status, /Automatic review passed/i);
+  assert.match(status, /just report checkout-retry/);
+  assert.doesNotMatch(status, /All findings are resolved/);
+  assert.equal(status.split("\n").length, 1);
+  const report = formatAutoCycleReport(current.displayName, receipt, "All findings are resolved.");
+  assert.match(report, /Codex turn: turn-auto/);
+  assert.match(report, /Duration: 5\.0 seconds/);
+  assert.equal(buildAutoCycleStatus({ ...receipt, reportPath: undefined }), "Automatic review passed. The out-of-band report could not be saved; details remain in Codex.");
 });
 
 test("AskUserQuestion hook input becomes a generic read-only advisory", () => {
@@ -196,9 +480,9 @@ test("AskUserQuestion hook input becomes a generic read-only advisory", () => {
   const prompt = buildQuestionAdvisoryPrompt(pair(), advisory!);
   assert.match(prompt, /Claude question advisory/);
   assert.match(prompt, /Backoff: Reduce load/);
-  assert.match(prompt, /target worktree/i);
   assert.match(prompt, /strictly read-only/i);
-  assert.match(prompt, /personally submit the final answer in Claude/i);
+  assert.match(prompt, /never publish or answer Claude automatically/i);
+  assert.ok(prompt.length < 750);
 });
 
 test("question advisory parsing rejects non-question and malformed hook events", () => {

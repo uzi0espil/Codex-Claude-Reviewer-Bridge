@@ -10,4 +10,6 @@ is only a label. Report checkpoint sequence, ID, status, supersession, and queue
 next-prompt delivery when present. Identify `lastForcedPublishAt` as an audited
 forced recovery publication without reproducing held response content. Report
 the active question advisory ID and queued advisory count without reproducing
-the question content.
+the question content. When `lastAutoCycle` exists, report its checkpoint, Codex
+turn, decision, outcome, elapsed time, and report path. Tell the user that
+`just report <feature>` prints the complete saved report without a model turn.

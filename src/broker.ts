@@ -4,33 +4,66 @@ import net from "node:net";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawn, ChildProcess } from "node:child_process";
-import { AppServerClient, CompletedTurn } from "./app-server.js";
-import { endpointPath, featureKey, logPath, reviewerRoot, runtimeDirectory } from "./paths.js";
+import { AppServerClient, CompletedTurn, StartedTurn } from "./app-server.js";
+import { AppServerProxy } from "./app-server-proxy.js";
+import { endpointPath, featureKey, logPath, reportsDirectory, reviewerRoot, runtimeDirectory } from "./paths.js";
 import { StateStore } from "./store.js";
-import { AutoReviewResult, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
-import { buildReviewPrompt } from "./review-prompt.js";
+import { AutoCycleReceipt, AutoReviewDecision, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
+import { buildReviewContextSeed, buildReviewPrompt, reviewContextSnapshot } from "./review-prompt.js";
 import { modeAfterUserDecision } from "./mode-policy.js";
 import { buildPublishedFeedback } from "./published-feedback.js";
 import { checkpointDecisionError, createCheckpoint, forcePublishError } from "./checkpoint-policy.js";
+import {
+  autoDecisionError,
+  buildAutoContinuation,
+  buildAutoCycleStatus,
+  createAutoCycleReceipt,
+  formatAutoCycleReport,
+  resolveAutoReview
+} from "./auto-review.js";
 import { startStreamedJsonResponse } from "./streamed-json-response.js";
 import { buildQuestionAdvisoryPrompt, createQuestionAdvisory } from "./question-advisory.js";
 import { migrateClaudeSessionLifecycle, recordClaudeSession } from "./claude-session.js";
+import { StopHookResult } from "./claude-hook-output.js";
+import { runSingleFlight } from "./single-flight.js";
+import { planAutoDelivery } from "./auto-delivery.js";
+import { CodexThreadBusyError, isCodexThreadBusyError } from "./codex-turn-policy.js";
 
-type Release = { kind: "allow" } | { kind: "feedback"; text: string };
+type Release = StopHookResult;
 type Waiter = { resolve: (release: Release) => void; response: ServerResponse; onClose: () => void };
 
 const store = new StateStore();
 const waiters = new Map<string, Waiter>();
 const reviewTransitions = new Map<string, Promise<void>>();
 const questionTransitions = new Map<string, Promise<void>>();
+const threadInitializations = new Map<string, Promise<FeaturePair>>();
+const activeCodexThreads = new Set<string>();
 const token = randomBytes(32).toString("hex");
 let appProcess: ChildProcess | undefined;
 let app: AppServerClient;
+let appProxy: AppServerProxy | undefined;
 let shutdownBroker: () => void = () => undefined;
 
 function log(message: string): void {
   fs.mkdirSync(runtimeDirectory, { recursive: true });
   fs.appendFileSync(logPath, `${new Date().toISOString()} ${message}\n`);
+}
+
+function persistAutoCycleReport(pair: FeaturePair, receipt: AutoCycleReceipt, response: string): AutoCycleReceipt {
+  const sequence = receipt.checkpointSequence ? `checkpoint-${receipt.checkpointSequence}` : `checkpoint-${receipt.checkpointId}`;
+  const relativePath = path.join("reviews", pair.feature, `${sequence}.md`);
+  const absolutePath = path.join(reportsDirectory, pair.feature, `${sequence}.md`);
+  const temporaryPath = `${absolutePath}.${process.pid}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    fs.writeFileSync(temporaryPath, formatAutoCycleReport(pair.displayName, receipt, response), { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temporaryPath, absolutePath);
+    return { ...receipt, reportPath: relativePath.split(path.sep).join("/") };
+  } catch (error) {
+    try { fs.rmSync(temporaryPath, { force: true }); } catch { /* best effort */ }
+    log(`Could not persist automatic review report for checkpoint ${receipt.checkpointId}: ${String(error)}`);
+    return receipt;
+  }
 }
 
 async function freePort(): Promise<number> {
@@ -68,9 +101,19 @@ async function startAppServer(): Promise<string> {
   for (let attempt = 0; attempt < 80; attempt++) {
     try {
       await app.connect();
+      app.on("turnStarted", (turn: StartedTurn) => {
+        if (turn.threadId) activeCodexThreads.add(turn.threadId);
+      });
       app.on("turnCompleted", (turn: CompletedTurn) => void handleTurnCompleted(turn));
-      log(`Codex app-server ready at ${url}`);
-      return url;
+      app.on("contextCompacted", (threadId: string) => {
+        const pair = store.all().find((candidate) => candidate.codexThreadId === threadId);
+        if (!pair) return;
+        store.update(pair.feature, (current) => { current.reviewContextCompacted = true; });
+        log(`Codex compacted thread ${threadId}; the next bridge turn will receive one policy-file reminder without reseeding the full policy.`);
+      });
+      appProxy = await AppServerProxy.start(app);
+      log(`Codex app-server ready at ${url}; reviewer proxy ready at ${appProxy.url}`);
+      return appProxy.url;
     } catch (error) {
       lastError = error;
       await new Promise((resolve) => setTimeout(resolve, 125));
@@ -80,25 +123,55 @@ async function startAppServer(): Promise<string> {
   throw new Error(`Codex app-server did not start: ${String(lastError)}`);
 }
 
-async function ensureCodexThread(pair: FeaturePair): Promise<FeaturePair> {
+async function initializeCodexThread(feature: string): Promise<FeaturePair> {
+  let pair = store.get(feature);
+  if (!pair) throw new Error(`Unknown feature '${feature}'. Launch a paired session first.`);
+  let threadId: string | undefined;
   if (pair.codexThreadId) {
     try {
       await app.resumeThread(pair.codexThreadId, pair.projectRoot);
-      return pair;
+      threadId = pair.codexThreadId;
     } catch (error) {
       log(`Could not resume ${pair.codexThreadId}; creating replacement: ${String(error)}`);
     }
   }
-  const threadId = await app.createThread(pair.projectRoot, pair.displayName);
-  pair = store.update(pair.feature, (current) => { current.codexThreadId = threadId; });
-  if (!pair.pmSeeded && pair.initialPrompt) {
-        await app.seedContext(threadId, `[Workstream context: ${pair.displayName}]\n${pair.initialPrompt}`);
+  if (!threadId) {
+    threadId = await app.createThread(pair.projectRoot, pair.displayName);
     pair = store.update(pair.feature, (current) => {
-      current.pmSeeded = true;
-      current.initialPrompt = undefined;
+      current.codexThreadId = threadId;
+      current.reviewContextSha256 = undefined;
+      current.reviewContextCompacted = false;
+      current.workstreamContextThreadId = undefined;
     });
   }
+
+  pair = store.get(pair.feature) ?? pair;
+  if (pair.workstreamContext && pair.workstreamContextThreadId !== threadId) {
+    await app.seedContext(threadId, `[Workstream context: ${pair.displayName}]\n${pair.workstreamContext}`);
+    pair = store.update(pair.feature, (current) => {
+      if (current.codexThreadId !== threadId) return;
+      current.pmSeeded = true;
+      current.initialPrompt = undefined;
+      current.workstreamContextThreadId = threadId;
+    });
+    log(`Seeded workstream context into Codex thread ${threadId} for ${pair.feature}.`);
+  }
+  const context = reviewContextSnapshot();
+  if (pair.reviewContextSha256 !== context.sha256) {
+    await app.seedContext(threadId, buildReviewContextSeed(pair, context));
+    pair = store.update(pair.feature, (current) => {
+      if (current.codexThreadId === threadId) {
+        current.reviewContextSha256 = context.sha256;
+        current.reviewContextCompacted = false;
+      }
+    });
+    log(`Seeded bridge context ${context.sha256} into Codex thread ${threadId} for ${pair.feature}.`);
+  }
   return pair;
+}
+
+async function ensureCodexThread(pair: FeaturePair): Promise<FeaturePair> {
+  return await runSingleFlight(threadInitializations, pair.feature, () => initializeCodexThread(pair.feature));
 }
 
 async function interruptReview(threadId: string, turnId: string): Promise<void> {
@@ -128,15 +201,19 @@ async function interruptReview(threadId: string, turnId: string): Promise<void> 
 }
 
 async function startReview(pair: FeaturePair, pendingId: string): Promise<void> {
+  if (pair.codexThreadId && activeCodexThreads.has(pair.codexThreadId)) {
+    throw new CodexThreadBusyError(pair.codexThreadId);
+  }
   pair = await ensureCodexThread(pair);
   const current = store.get(pair.feature);
   if (!current?.pending || current.pending.id !== pendingId) return;
   const checkpoint = current.pending;
+  if (activeCodexThreads.has(pair.codexThreadId!)) throw new CodexThreadBusyError(pair.codexThreadId!);
+  const consumedCompactionReminder = Boolean(pair.reviewContextCompacted);
   const turnId = await app.startReview(
     pair.codexThreadId!,
     pair.projectRoot,
-    buildReviewPrompt(pair, checkpoint.claudeMessage, checkpoint),
-    pair.mode === "auto"
+    buildReviewPrompt(pair, checkpoint.claudeMessage, checkpoint)
   );
   const latest = store.get(pair.feature);
   if (!latest?.pending || latest.pending.id !== pendingId) {
@@ -144,8 +221,12 @@ async function startReview(pair: FeaturePair, pendingId: string): Promise<void> 
     return;
   }
   store.update(pair.feature, (value) => {
-    if (value.pending?.id === pendingId) value.pending.codexTurnId = turnId;
+    if (value.pending?.id === pendingId) {
+      value.pending.codexTurnId = turnId;
+      if (consumedCompactionReminder) value.reviewContextCompacted = false;
+    }
   });
+  log(`Started Codex review turn ${turnId} for ${pair.feature} checkpoint ${pendingId}.`);
 }
 
 function scheduleQuestionAdvisory(feature: string): void {
@@ -156,12 +237,15 @@ function scheduleQuestionAdvisory(feature: string): void {
       let pair = store.get(feature);
       if (!pair || pair.activeQuestionAdvisory || !pair.questionAdvisoryQueue?.length) return;
       if (pair.status === "reviewing" && pair.pending?.codexTurnId && !pair.pending.codexResponse) return;
+      if (pair.codexThreadId && activeCodexThreads.has(pair.codexThreadId)) return;
       pair = await ensureCodexThread(pair);
       const current = store.get(feature);
       const advisory = current?.questionAdvisoryQueue?.[0];
       if (!current || current.activeQuestionAdvisory || !advisory) return;
       if (current.status === "reviewing" && current.pending?.codexTurnId && !current.pending.codexResponse) return;
+      if (activeCodexThreads.has(current.codexThreadId!)) return;
       try {
+        const consumedCompactionReminder = Boolean(current.reviewContextCompacted);
         const turnId = await app.startQuestionAdvisory(
           current.codexThreadId!,
           current.projectRoot,
@@ -173,6 +257,7 @@ function scheduleQuestionAdvisory(feature: string): void {
           value.questionAdvisoryQueue.shift();
           if (!value.questionAdvisoryQueue.length) value.questionAdvisoryQueue = undefined;
           value.activeQuestionAdvisory = { ...advisory, codexTurnId: turnId };
+          if (consumedCompactionReminder) value.reviewContextCompacted = false;
           installed = true;
         });
         if (!installed) {
@@ -217,9 +302,13 @@ function scheduleReview(pair: FeaturePair, pendingId: string, supersededTurnId?:
         if (!latest?.pending || latest.pending.id !== pendingId) return;
         await startReview(latest, pendingId);
       } catch (error) {
-        log(`Review failed for ${pair.feature}: ${String(error)}`);
         const current = store.get(pair.feature);
         if (!current?.pending || current.pending.id !== pendingId) return;
+        if (isCodexThreadBusyError(error) || (current.codexThreadId && activeCodexThreads.has(current.codexThreadId))) {
+          log(`Review ${pendingId} remains queued for ${pair.feature} until the active Codex turn completes.`);
+          return;
+        }
+        log(`Review failed for ${pair.feature}: ${String(error)}`);
         store.update(pair.feature, (value) => {
           value.status = "failed";
           value.mode = "off";
@@ -235,25 +324,13 @@ function scheduleReview(pair: FeaturePair, pendingId: string, supersededTurnId?:
   });
 }
 
-function release(pendingId: string, result: Release): void {
+function release(pendingId: string, result: Release): boolean {
   const waiter = waiters.get(pendingId);
-  if (waiter) {
-    waiters.delete(pendingId);
-    waiter.response.removeListener("close", waiter.onClose);
-    waiter.resolve(result);
-  }
-}
-
-function parseAuto(text: string): AutoReviewResult {
-  const value = JSON.parse(text) as Partial<AutoReviewResult>;
-  if (!value || !["pass", "revise", "needs_user"].includes(String(value.decision))) {
-    throw new Error("Codex returned an invalid auto-review decision.");
-  }
-  return {
-    decision: value.decision as AutoReviewResult["decision"],
-    feedback: String(value.feedback ?? ""),
-    summary: String(value.summary ?? "")
-  };
+  if (!waiter) return false;
+  waiters.delete(pendingId);
+  waiter.response.removeListener("close", waiter.onClose);
+  waiter.resolve(result);
+  return true;
 }
 
 async function finishReview(turn: CompletedTurn): Promise<void> {
@@ -279,41 +356,81 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
     return;
   }
 
-  try {
-    const result = parseAuto(turn.text);
-    if (result.decision === "pass") {
-      store.update(pair.feature, (value) => {
-        value.status = "passed";
-        value.mode = "off";
-        value.autoRound = 0;
-        value.lastCodexResponse = result.summary;
-        value.pending = undefined;
-      });
-      release(pendingId, { kind: "allow" });
-    } else if (result.decision === "revise" && pair.autoRound < 3) {
-      const feedback = buildPublishedFeedback(result.feedback);
-      store.update(pair.feature, (value) => {
-        value.status = "waiting-claude";
-        value.autoRound += 1;
-        value.lastCodexResponse = result.feedback;
-        value.pending = undefined;
-      });
-      release(pendingId, { kind: "feedback", text: feedback });
-    } else {
-      store.update(pair.feature, (value) => {
-        value.status = "waiting-user";
-        value.lastCodexResponse = result.feedback || result.summary;
-        if (value.pending) value.pending.codexResponse = result.feedback || result.summary;
-      });
-    }
-  } catch (error) {
-    log(`Auto response requires user review: ${String(error)}`);
+  const resolution = resolveAutoReview(pair, turn.text);
+  if (resolution.kind === "pass") {
+    const receipt = persistAutoCycleReport(
+      pair,
+      createAutoCycleReceipt(pair, turn.turnId, "passed", resolution.summary),
+      resolution.summary
+    );
+    const systemMessage = buildAutoCycleStatus(receipt);
     store.update(pair.feature, (value) => {
-      value.status = "waiting-user";
+      value.status = "passed";
+      value.autoRound = 0;
       value.lastCodexResponse = turn.text;
-      if (value.pending) value.pending.codexResponse = turn.text;
+      value.lastAutoCycle = receipt;
+      value.pending = undefined;
     });
+    log(`Completed ${pair.feature} checkpoint ${pendingId} as pass in ${receipt.durationMs}ms; report ${receipt.reportPath ?? "not saved"}.`);
+    release(pendingId, { kind: "allow", systemMessage });
+    return;
   }
+  if (resolution.kind === "continue") {
+    const delivery = planAutoDelivery("continue", waiters.has(pendingId));
+    const receipt = persistAutoCycleReport(
+      pair,
+      createAutoCycleReceipt(pair, turn.turnId, delivery.outcome, resolution.summary),
+      resolution.summary
+    );
+    const continuation = buildAutoContinuation(resolution.continuation);
+    store.update(pair.feature, (value) => {
+      value.status = delivery.status;
+      value.autoRound += 1;
+      value.lastCodexResponse = turn.text;
+      value.lastAutoCycle = receipt;
+      if (delivery.clearPending) value.pending = undefined;
+      else if (value.pending) {
+        value.pending.codexResponse = continuation;
+        value.pending.deliveryKind = "continuation";
+      }
+    });
+    log(`Completed ${pair.feature} checkpoint ${pendingId} as pass_continue (${delivery.outcome}) in ${receipt.durationMs}ms; report ${receipt.reportPath ?? "not saved"}.`);
+    if (delivery.clearPending) release(pendingId, { kind: "continue", text: continuation });
+    return;
+  }
+  if (resolution.kind === "revise") {
+    const delivery = planAutoDelivery("revise", waiters.has(pendingId));
+    const receipt = persistAutoCycleReport(
+      pair,
+      createAutoCycleReceipt(pair, turn.turnId, delivery.outcome, resolution.feedback),
+      resolution.feedback
+    );
+    const feedback = buildPublishedFeedback(resolution.feedback);
+    store.update(pair.feature, (value) => {
+      value.status = delivery.status;
+      value.autoRound += 1;
+      value.lastCodexResponse = resolution.feedback;
+      value.lastAutoCycle = receipt;
+      if (delivery.queueForNextPrompt) value.queuedClaudeContext = feedback;
+      if (delivery.clearPending) value.pending = undefined;
+    });
+    log(`Completed ${pair.feature} checkpoint ${pendingId} as revise (${delivery.outcome}) in ${receipt.durationMs}ms; report ${receipt.reportPath ?? "not saved"}.`);
+    if (!delivery.queueForNextPrompt) release(pendingId, { kind: "feedback", text: feedback });
+    return;
+  }
+  log(`Auto response requires user review: ${resolution.reason}.`);
+  const receipt = persistAutoCycleReport(
+    pair,
+    createAutoCycleReceipt(pair, turn.turnId, "waiting-user", resolution.response),
+    resolution.response
+  );
+  store.update(pair.feature, (value) => {
+    value.status = "waiting-user";
+    value.lastCodexResponse = resolution.response;
+    value.lastAutoCycle = receipt;
+    if (value.pending) value.pending.codexResponse = resolution.response;
+  });
+  log(`Completed ${pair.feature} checkpoint ${pendingId} awaiting user in ${receipt.durationMs}ms; report ${receipt.reportPath ?? "not saved"}.`);
 }
 
 function finishQuestionAdvisory(turn: CompletedTurn): void {
@@ -325,12 +442,14 @@ function finishQuestionAdvisory(turn: CompletedTurn): void {
 }
 
 async function handleTurnCompleted(turn: CompletedTurn): Promise<void> {
+  activeCodexThreads.delete(turn.threadId);
   await finishReview(turn);
   finishQuestionAdvisory(turn);
   for (const pair of store.all()) {
-    if (pair.codexThreadId === turn.threadId && pair.questionAdvisoryQueue?.length) {
-      scheduleQuestionAdvisory(pair.feature);
-    }
+    if (pair.codexThreadId !== turn.threadId) continue;
+    if (pair.status === "reviewing" && pair.pending && !pair.pending.codexTurnId) {
+      scheduleReview(pair, pair.pending.id);
+    } else if (pair.questionAdvisoryQueue?.length) scheduleQuestionAdvisory(pair.feature);
   }
 }
 
@@ -364,8 +483,10 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
     ...pair,
     claudeSessionStarted: pair.claudeSessionStarted ?? false,
     initialPrompt: pair.initialPrompt ? "[held until Codex thread is ready]" : undefined,
+    workstreamContext: pair.workstreamContext ? "[stored for replacement thread recovery]" : undefined,
     queuedClaudeContext: pair.queuedClaudeContext ? "[queued for Claude's next prompt]" : undefined,
     lastCodexResponse: pair.lastCodexResponse ? "[held by bridge]" : undefined,
+    lastAutoCycle: pair.lastAutoCycle ? { ...pair.lastAutoCycle, headline: "[stored out of band]" } : undefined,
     questionAdvisoryQueue: pair.questionAdvisoryQueue?.map((item) => ({ id: item.id, createdAt: item.createdAt })),
     activeQuestionAdvisory: pair.activeQuestionAdvisory ? {
       id: pair.activeQuestionAdvisory.id,
@@ -376,7 +497,8 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
     pending: pair.pending ? {
       ...pair.pending,
       claudeMessage: "[held by bridge]",
-      codexResponse: pair.pending.codexResponse ? "[held by bridge]" : undefined
+      codexResponse: pair.pending.codexResponse ? "[held by bridge]" : undefined,
+      autoContinuation: pair.pending.autoContinuation ? "[held by bridge]" : undefined
     } : undefined
   };
 }
@@ -413,6 +535,29 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const pair = feature ? store.get(feature) : undefined;
     return pair ? send(res, 200, publicPair(pair)) : send(res, 404, { error: "unknown feature" });
   }
+  if (req.url === "/auto-decision" && req.method === "POST") {
+    if (!feature) return send(res, 400, { error: "feature required" });
+    const existing = store.get(feature);
+    if (!existing) return send(res, 404, { error: "unknown feature" });
+    const decisionError = autoDecisionError(existing, body.checkpointId, body.decision, body.continuation);
+    if (decisionError) return send(res, 409, { error: decisionError });
+    store.update(feature, (value) => {
+      if (value.pending) {
+        value.pending.autoDecision = body.decision as AutoReviewDecision;
+        value.pending.autoContinuation = body.decision === "pass_continue"
+          ? String(body.continuation).trim()
+          : undefined;
+      }
+    });
+    return send(res, 200, {
+      recorded: true,
+      feature,
+      checkpointId: body.checkpointId,
+      decision: body.decision,
+      continuationRecorded: body.decision === "pass_continue",
+      message: "Decision recorded. Finish with the normal Markdown review; the bridge will act when the turn completes."
+    });
+  }
   if (req.url === "/mode" && req.method === "POST") {
     if (!feature || !["off", "manual", "once", "auto"].includes(String(body.mode))) return send(res, 400, { error: "invalid feature or mode" });
     const existing = store.get(feature);
@@ -441,19 +586,24 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     if (!existing) return send(res, 404, { error: "unknown feature" });
     const decisionError = checkpointDecisionError(existing, body.checkpointId, true);
     if (decisionError) return send(res, 409, { error: decisionError });
-    const review = String(body.feedback || existing.pending?.codexResponse || "").trim();
+    const continuationDelivery = existing.pending?.deliveryKind === "continuation";
+    const review = String(
+      body.feedback
+      || (continuationDelivery ? existing.pending?.autoContinuation : existing.pending?.codexResponse)
+      || ""
+    ).trim();
     if (!review) return send(res, 409, { error: "no Codex response or custom feedback to publish" });
-    const text = buildPublishedFeedback(review);
+    const text = continuationDelivery ? buildAutoContinuation(review) : buildPublishedFeedback(review);
     const pendingId = existing.pending?.id;
     const delivery = pendingId && waiters.has(pendingId) ? "stop-hook" : "next-prompt";
     const pair = store.update(feature, (value) => {
       value.mode = modeAfterUserDecision(existing.mode);
-      value.autoRound = 0;
+      if (!continuationDelivery) value.autoRound = 0;
       value.status = "waiting-claude";
       value.pending = undefined;
       if (delivery === "next-prompt") value.queuedClaudeContext = text;
     });
-    if (pendingId) release(pendingId, { kind: "feedback", text });
+    if (pendingId) release(pendingId, continuationDelivery ? { kind: "continue", text } : { kind: "feedback", text });
     return send(res, 200, { ...publicPair(pair), delivery });
   }
   if (req.url === "/force-publish" && req.method === "POST") {
@@ -496,20 +646,20 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const pair = store.update(String(body.feature), (value) => {
       recordClaudeSession(value, input.session_id, true);
     });
-    let context = pair.queuedClaudeContext
-      ? buildPublishedFeedback(pair.queuedClaudeContext)
-      : undefined;
+    let context = pair.queuedClaudeContext;
     if (context) store.update(pair.feature, (value) => {
       value.queuedClaudeContext = undefined;
       value.status = value.mode === "manual" ? "waiting-claude" : "idle";
     });
-    if (!pair.pmSeeded && input.prompt) {
-      if (pair.codexThreadId) {
-        await app.seedContext(pair.codexThreadId, `[Workstream context: ${pair.displayName}]\n${input.prompt}`);
-        store.update(pair.feature, (value) => { value.pmSeeded = true; value.initialPrompt = undefined; });
-      } else {
-        store.update(pair.feature, (value) => { value.initialPrompt = input.prompt; });
-      }
+    let current = store.get(pair.feature) ?? pair;
+    if (!current.workstreamContext && input.prompt) {
+      current = store.update(pair.feature, (value) => {
+        value.workstreamContext = input.prompt;
+        value.initialPrompt = undefined;
+      });
+    }
+    if (current.codexThreadId && current.workstreamContext && current.workstreamContextThreadId !== current.codexThreadId) {
+      await ensureCodexThread(current);
     }
     return send(res, 200, { additionalContext: context, sessionTitle: pair.displayName });
   }
@@ -626,6 +776,8 @@ async function main(): Promise<void> {
       if (endpoint.pid === process.pid) fs.unlinkSync(endpointPath);
     } catch { /* already gone or owned by another broker */ }
     appProcess?.kill();
+    appProxy?.close();
+    app.close();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 4_000).unref();
   };

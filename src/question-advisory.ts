@@ -1,5 +1,5 @@
-import { readReviewPolicy } from "./review-prompt.js";
 import { ClaudeHookInput, ClaudeQuestion, FeaturePair, QuestionAdvisory } from "./types.js";
+import { compactedPolicyReminder } from "./review-prompt.js";
 
 function nonEmptyString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -51,11 +51,9 @@ export function buildQuestionAdvisoryPrompt(pair: FeaturePair, advisory: Questio
     `[Claude question advisory: ${pair.displayName}]`,
     `Question event: ${advisory.id}`,
     `Claude session: ${advisory.claudeSessionId}`,
-    "Claude is currently presenting the following question to the user. Act as an independent adviser: inspect the current target worktree, repository guidance, architecture and specification artifacts, code, tests, and diffs needed to understand the choice. Use live web research when current external facts materially affect the answer.",
-    "Apply the private reviewer policy where relevant:",
-    readReviewPolicy(),
-    "Explain the material tradeoffs and recommend an answer when the evidence supports one. Identify assumptions and uncertainty. This turn is strictly read-only: do not edit files, apply patches, commit, publish bridge feedback, approve external actions, or answer Claude automatically. The user will discuss the recommendation here if needed and will personally submit the final answer in Claude.",
+    "Follow the bridge protocol and review policy established in this thread. This advisory remains strictly read-only; advise the user here and never publish or answer Claude automatically.",
+    compactedPolicyReminder(pair),
     "",
     ...rendered
-  ].join("\n");
+  ].filter((line): line is string => line !== undefined).join("\n");
 }

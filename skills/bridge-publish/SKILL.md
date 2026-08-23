@@ -27,8 +27,8 @@ again and do not reuse stale feedback.
 
 Inspect `delivery`. For `stop-hook`, confirm immediate delivery to the held
 Claude Stop. For `next-prompt`, explain that the Stop connection was lost and
-feedback is queued for Claude's next user prompt. Report that `manual` remains
-armed when returned.
+feedback is queued for Claude's next user prompt. Report the returned mode
+accurately: `manual` and `auto` remain armed, while `once` returns to `off`.
 
 Example: `$bridge-publish ignore finding 1; publish only finding 2` must send
 finding 2 itself, not the sentence `ignore finding 1`.

@@ -17,7 +17,33 @@ export interface PendingReview {
   claudeMessage: string;
   codexTurnId?: string;
   codexResponse?: string;
+  autoDecision?: AutoReviewDecision;
+  autoContinuation?: string;
+  deliveryKind?: "feedback" | "continuation";
   createdAt: string;
+}
+
+export type AutoReviewDecision = "pass" | "pass_continue" | "revise" | "needs_user";
+
+export interface AutoCycleReceipt {
+  feature: string;
+  checkpointId: string;
+  checkpointSequence?: number;
+  codexTurnId: string;
+  decision: AutoReviewDecision | "missing";
+  outcome:
+    | "passed"
+    | "continuation-sent"
+    | "continuation-awaiting-user"
+    | "revision-sent"
+    | "revision-queued"
+    | "waiting-user";
+  reviewRound: number;
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  headline: string;
+  reportPath?: string;
 }
 
 export interface ClaudeQuestionOption {
@@ -48,18 +74,23 @@ export interface FeaturePair {
   claudeSessionStarted?: boolean;
   claudeSessionLifecycleVersion?: number;
   codexThreadId?: string;
+  reviewContextSha256?: string;
+  reviewContextCompacted?: boolean;
   mode: BridgeMode;
   status: PairStatus;
   checkpointSequence?: number;
   autoRound: number;
   pmSeeded: boolean;
   initialPrompt?: string;
+  workstreamContext?: string;
+  workstreamContextThreadId?: string;
   pending?: PendingReview;
   queuedClaudeContext?: string;
   questionAdvisoryQueue?: QuestionAdvisory[];
   activeQuestionAdvisory?: QuestionAdvisory;
   seenQuestionAdvisoryIds?: string[];
   lastCodexResponse?: string;
+  lastAutoCycle?: AutoCycleReceipt;
   lastForcedPublishAt?: string;
   lastForcedPublishThreadId?: string;
   updatedAt: string;
@@ -93,10 +124,4 @@ export interface ClaudeHookInput {
     [key: string]: unknown;
   };
   tool_use_id?: string;
-}
-
-export interface AutoReviewResult {
-  decision: "pass" | "revise" | "needs_user";
-  feedback: string;
-  summary: string;
 }
