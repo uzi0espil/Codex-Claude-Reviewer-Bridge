@@ -19,6 +19,7 @@ export interface PendingReview {
   codexResponse?: string;
   autoDecision?: AutoReviewDecision;
   autoContinuation?: string;
+  deliveryKind?: "feedback" | "continuation";
   createdAt: string;
 }
 
@@ -30,7 +31,13 @@ export interface AutoCycleReceipt {
   checkpointSequence?: number;
   codexTurnId: string;
   decision: AutoReviewDecision | "missing";
-  outcome: "passed" | "continuation-sent" | "revision-sent" | "waiting-user";
+  outcome:
+    | "passed"
+    | "continuation-sent"
+    | "continuation-awaiting-user"
+    | "revision-sent"
+    | "revision-queued"
+    | "waiting-user";
   reviewRound: number;
   startedAt: string;
   completedAt: string;
@@ -68,12 +75,15 @@ export interface FeaturePair {
   claudeSessionLifecycleVersion?: number;
   codexThreadId?: string;
   reviewContextSha256?: string;
+  reviewContextCompacted?: boolean;
   mode: BridgeMode;
   status: PairStatus;
   checkpointSequence?: number;
   autoRound: number;
   pmSeeded: boolean;
   initialPrompt?: string;
+  workstreamContext?: string;
+  workstreamContextThreadId?: string;
   pending?: PendingReview;
   queuedClaudeContext?: string;
   questionAdvisoryQueue?: QuestionAdvisory[];

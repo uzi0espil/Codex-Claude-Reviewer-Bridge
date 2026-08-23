@@ -103,8 +103,10 @@ From the generated reviewer instance:
 
 This opens paired Claude and Codex terminals. The first Claude user prompt plus
 the stable bridge protocol and composed review policy seed the persistent Codex
-thread once. The bridge re-seeds that context only when its SHA-256 changes, the
-Codex thread is replaced, or Codex reports context compaction. Later checkpoints
+thread once. The bridge re-seeds that context only when its SHA-256 changes or
+the Codex thread is replaced. Codex compaction does not duplicate the full
+policy; the next bridge turn gets one short reminder to re-read the policy files,
+and compact safety boundaries remain in checkpoint prompts. Checkpoints
 contain only checkpoint-specific control data, a short read-only reminder, and
 Claude's latest assistant message; Codex inspects the worktree for authoritative
 state.
@@ -145,9 +147,9 @@ Published feedback is advisory. Claude is instructed to challenge or adapt it,
 accepting, changing, or rejecting findings based on project evidence.
 
 Automatic reviews use a control-only MCP decision and display ordinary Markdown
-instead of JSON. A passing cycle releases Claude and shows its compact report as
-a user-only Stop-hook message. Its first line includes the checkpoint, elapsed
-time, decision, and review headline. The reviewer terminal connects through a
+instead of JSON. A passing cycle releases Claude with a fixed one-line status;
+detailed findings remain in the reviewer terminal and the out-of-band report.
+The reviewer terminal connects through a
 local single-upstream proxy so broker-initiated turn notifications use the same
 app-server stream as the interactive session. Because that Codex remote protocol
 is experimental, each round is also saved under ignored `reviews/`; print the

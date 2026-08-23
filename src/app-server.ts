@@ -27,6 +27,11 @@ export interface CompletedTurn {
   error?: unknown;
 }
 
+export interface StartedTurn {
+  threadId: string;
+  turnId: string;
+}
+
 export class AppServerClient extends EventEmitter {
   private socket?: WebSocket;
   private nextId = 1;
@@ -218,6 +223,11 @@ export class AppServerClient extends EventEmitter {
     }
 
     this.sendDownstream(message);
+    if (message.method === "turn/started") {
+      const { threadId, turn } = message.params ?? {};
+      this.emit("turnStarted", { threadId: String(threadId ?? ""), turnId: String(turn?.id ?? "") } satisfies StartedTurn);
+      return;
+    }
     if (message.method === "item/completed") {
       const { item, threadId, turnId } = message.params ?? {};
       if (item?.type === "contextCompaction") this.emit("contextCompacted", String(threadId ?? ""));

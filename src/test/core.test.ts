@@ -12,6 +12,7 @@ import { buildPublishedFeedback } from "../published-feedback.js";
 import {
   buildReviewContextSeed,
   buildReviewPrompt,
+  compactedPolicyReminder,
   composeReviewPolicy,
   reviewContextSnapshot
 } from "../review-prompt.js";
@@ -20,6 +21,9 @@ import { FeaturePair } from "../types.js";
 import { buildQuestionAdvisoryPrompt, createQuestionAdvisory, questionsFromHook } from "../question-advisory.js";
 import { migrateClaudeSessionLifecycle, recordClaudeSession } from "../claude-session.js";
 import { bridgeVersion } from "../version.js";
+import { planAutoDelivery } from "../auto-delivery.js";
+import { CodexThreadBusyError, isCodexThreadBusyError } from "../codex-turn-policy.js";
+import { runSingleFlight } from "../single-flight.js";
 import {
   autoDecisionError,
   buildAutoContinuation,
@@ -144,6 +148,28 @@ test("legacy policy-only state forces the combined bridge context to be reseeded
   }
 });
 
+test("legacy pending workstream context remains available for replacement Codex threads", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-bridge-workstream-context-"));
+  try {
+    const filename = path.join(directory, "state.json");
+    fs.writeFileSync(filename, `${JSON.stringify({
+      version: 1,
+      pairs: {
+        "checkout-retry": pair({
+          codexThreadId: "codex-id",
+          pmSeeded: false,
+          initialPrompt: "Build the approved retry feature."
+        })
+      }
+    })}\n`, "utf8");
+    const loaded = new StateStore(filename).get("checkout-retry");
+    assert.equal(loaded?.workstreamContext, "Build the approved retry feature.");
+    assert.equal(loaded?.workstreamContextThreadId, undefined);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("review prompts retain a compact read-only checkpoint contract", () => {
   const current = pair({ status: "reviewing" });
   const prompt = buildReviewPrompt(current, "Implementation complete.");
@@ -166,6 +192,7 @@ test("the stable bridge protocol and review policy are versioned once as thread 
   assert.match(seed, /every subsequent bridge-injected checkpoint/i);
   assert.doesNotMatch(prompt, /Application-only requirement/);
   assert.match(prompt, /protocol and review policy established in this thread/i);
+  assert.ok(seed.length > prompt.length);
 });
 
 test("automatic review prompts request a control tool and human-readable response", () => {
@@ -179,8 +206,56 @@ test("automatic review prompts request a control tool and human-readable respons
   assert.match(prompt, /feature `checkout-retry`/i);
   assert.match(prompt, /checkpoint `checkpoint-auto`/i);
   assert.match(prompt, /concise Markdown/i);
+  assert.match(prompt, /Never broaden authorization/i);
+  assert.match(prompt, /needs_user = choice/i);
   assert.doesNotMatch(prompt, /cycle report/i);
-  assert.ok(prompt.length < 750);
+  assert.ok(prompt.length < 1_000);
+});
+
+test("compaction adds one policy-file reminder instead of duplicating policy content", () => {
+  const current = pair({ reviewContextCompacted: true });
+  const reminder = compactedPolicyReminder(current);
+  const prompt = buildReviewPrompt(current, "Review after compaction.");
+  assert.match(reminder ?? "", /re-read the baseline policy/i);
+  assert.match(prompt, /Context maintenance: Codex compacted this thread/);
+  assert.doesNotMatch(prompt, /Application-only requirement/);
+});
+
+test("single-flight initialization shares one operation without adding duplicate work", async () => {
+  const inFlight = new Map<string, Promise<string>>();
+  let calls = 0;
+  let unblock!: () => void;
+  const blocked = new Promise<void>((resolve) => { unblock = resolve; });
+  const operation = async (): Promise<string> => {
+    calls++;
+    await blocked;
+    return "thread-1";
+  };
+  const first = runSingleFlight(inFlight, "feature", operation);
+  const second = runSingleFlight(inFlight, "feature", operation);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1);
+  unblock();
+  assert.deepEqual(await Promise.all([first, second]), ["thread-1", "thread-1"]);
+  assert.equal(inFlight.size, 0);
+});
+
+test("automatic delivery distinguishes transport completion from model completion", () => {
+  assert.deepEqual(planAutoDelivery("revise", true), {
+    outcome: "revision-sent", status: "waiting-claude", clearPending: true, queueForNextPrompt: false
+  });
+  assert.deepEqual(planAutoDelivery("revise", false), {
+    outcome: "revision-queued", status: "waiting-claude", clearPending: true, queueForNextPrompt: true
+  });
+  assert.deepEqual(planAutoDelivery("continue", false), {
+    outcome: "continuation-awaiting-user", status: "waiting-user", clearPending: false, queueForNextPrompt: false
+  });
+});
+
+test("Codex active-turn conflicts are retryable but unrelated failures are not", () => {
+  assert.equal(isCodexThreadBusyError(new CodexThreadBusyError("thread-1")), true);
+  assert.equal(isCodexThreadBusyError(new Error("thread already has an active turn")), true);
+  assert.equal(isCodexThreadBusyError(new Error("authentication failed")), false);
 });
 
 test("application review policy overlays the generic baseline", () => {

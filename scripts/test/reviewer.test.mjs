@@ -85,7 +85,13 @@ test("assembles every available round from the latest automatic review cycle", (
     ].join("\n");
     fs.writeFileSync(path.join(reportDirectory, "checkpoint-18.md"), round(18, 2, "pass", "passed", "Previous cycle complete."));
     fs.writeFileSync(path.join(reportDirectory, "checkpoint-19.md"), round(19, 1, "revise", "revision-sent", "First finding."));
-    fs.writeFileSync(path.join(reportDirectory, "checkpoint-20.md"), round(20, 2, "pass_continue", "continuation-sent", "Gate passed; continue."));
+    fs.writeFileSync(path.join(reportDirectory, "checkpoint-20.md"), round(
+      20,
+      2,
+      "pass_continue",
+      "continuation-sent",
+      "Gate passed; continue.\n\n## Codex report\n\nNested heading remains part of this response."
+    ));
     fs.writeFileSync(path.join(reportDirectory, "checkpoint-21.md"), round(21, 3, "needs_user", "waiting-user", "User choice required."));
     fs.writeFileSync(path.join(reportDirectory, "checkpoint-22.md"), round(22, 1, "needs_user", "waiting-user", "Follow-up choice required."));
     fs.writeFileSync(path.join(temporary, "runtime", "state.json"), `${JSON.stringify({
@@ -107,6 +113,7 @@ test("assembles every available round from the latest automatic review cycle", (
     assert.doesNotMatch(report, /Previous cycle complete/);
     assert.ok(report.indexOf("First finding.") < report.indexOf("Gate passed; continue."));
     assert.ok(report.indexOf("Gate passed; continue.") < report.indexOf("User choice required."));
+    assert.match(report, /Nested heading remains part of this response/);
     assert.ok(report.indexOf("User choice required.") < report.indexOf("Follow-up choice required."));
     assert.match(report, /Cycle round 4 - needs_user[\s\S]*Unattended round: 1/);
   } finally {

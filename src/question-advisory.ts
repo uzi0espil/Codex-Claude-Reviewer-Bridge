@@ -1,4 +1,5 @@
 import { ClaudeHookInput, ClaudeQuestion, FeaturePair, QuestionAdvisory } from "./types.js";
+import { compactedPolicyReminder } from "./review-prompt.js";
 
 function nonEmptyString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -51,7 +52,8 @@ export function buildQuestionAdvisoryPrompt(pair: FeaturePair, advisory: Questio
     `Question event: ${advisory.id}`,
     `Claude session: ${advisory.claudeSessionId}`,
     "Follow the bridge protocol and review policy established in this thread. This advisory remains strictly read-only; advise the user here and never publish or answer Claude automatically.",
+    compactedPolicyReminder(pair),
     "",
     ...rendered
-  ].join("\n");
+  ].filter((line): line is string => line !== undefined).join("\n");
 }

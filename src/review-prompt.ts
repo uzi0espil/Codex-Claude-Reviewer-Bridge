@@ -56,6 +56,11 @@ export function buildReviewContextSeed(pair: FeaturePair, context: ReviewContext
   ].join("\n");
 }
 
+export function compactedPolicyReminder(pair: FeaturePair): string | undefined {
+  if (!pair.reviewContextCompacted) return undefined;
+  return `Context maintenance: Codex compacted this thread. Before reviewing, re-read the baseline policy at ${reviewPolicyPath} and the optional application policy at ${localReviewPolicyPath}; do not assume the compacted summary preserved application-specific rules.`;
+}
+
 export function composeReviewPolicy(baseline: string, local: string): string {
   const base = baseline.trim() || fallbackPolicy;
   const overlay = local.trim();
@@ -65,7 +70,10 @@ export function composeReviewPolicy(baseline: string, local: string): string {
 
 export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint?: PendingReview): string {
   const autoContract = pair.mode === "auto"
-    ? `Automatic control: after reviewing, call \`review_bridge_record_auto_decision\` exactly once for feature \`${pair.feature}\` and checkpoint \`${checkpoint?.id ?? "unknown"}\`; then return concise Markdown.`
+    ? [
+      `Automatic control: after reviewing, call \`review_bridge_record_auto_decision\` exactly once for feature \`${pair.feature}\` and checkpoint \`${checkpoint?.id ?? "unknown"}\`; then return concise Markdown.`,
+      "Decision boundary: pass = authorized workflow complete; pass_continue = clean gate plus exactly one already-authorized next action; revise = material defect; needs_user = choice, unavailable validation, ambiguity, or uncertain authorization. Never broaden authorization."
+    ].join("\n")
     : "Return concise findings-first Markdown; the user controls publication.";
   return [
     `[Review bridge checkpoint: ${pair.displayName}]`,
@@ -76,6 +84,7 @@ export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint
     `Claude session: ${pair.claudeSessionId ?? "unknown"}`,
     `Bridge mode: ${pair.mode}; unattended feedback round: ${pair.autoRound}/3.`,
     "Follow the bridge protocol and review policy established in this thread. This injected turn remains strictly read-only.",
+    compactedPolicyReminder(pair),
     autoContract,
     "",
     "Latest Claude message:",

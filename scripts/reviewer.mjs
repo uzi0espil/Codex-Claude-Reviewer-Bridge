@@ -272,7 +272,10 @@ function parseAutoRoundReport(content) {
   const startedAt = content.match(/^- Started: (.+)\s*$/m)?.[1]?.trim();
   const completedAt = content.match(/^- Completed: (.+)\s*$/m)?.[1]?.trim();
   const durationSeconds = Number(content.match(/^- Duration: ([\d.]+) seconds\s*$/m)?.[1]);
-  const body = content.split(/^## Codex report\s*$/m)[1]?.trim();
+  const reportHeading = /^## Codex report\s*$/m.exec(content);
+  const body = reportHeading
+    ? content.slice(reportHeading.index + reportHeading[0].length).replace(/^\r?\n/, "").trim()
+    : undefined;
   if (!Number.isInteger(round) || round < 1 || !Number.isInteger(checkpointSequence) || !decision || !outcome || !body) {
     return undefined;
   }

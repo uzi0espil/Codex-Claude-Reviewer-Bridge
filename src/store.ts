@@ -22,6 +22,10 @@ export class StateStore {
       // Legacy state hashed only the policy. Dropping that marker forces one
       // seed of the combined protocol and policy into the existing thread.
       delete (pair as FeaturePair & { reviewPolicySha256?: string }).reviewPolicySha256;
+      if (!pair.workstreamContext && pair.initialPrompt) pair.workstreamContext = pair.initialPrompt;
+      if (pair.pmSeeded && pair.codexThreadId && !pair.workstreamContextThreadId) {
+        pair.workstreamContextThreadId = pair.codexThreadId;
+      }
     }
     return parsed;
   }

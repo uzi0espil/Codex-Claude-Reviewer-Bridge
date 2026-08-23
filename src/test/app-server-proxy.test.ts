@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import test from "node:test";
 import { WebSocket, WebSocketServer } from "ws";
-import { AppServerClient, CompletedTurn } from "../app-server.js";
+import { AppServerClient, CompletedTurn, StartedTurn } from "../app-server.js";
 import { AppServerProxy } from "../app-server-proxy.js";
 
 test("the reviewer proxy multiplexes broker and TUI traffic over one upstream connection", async (t) => {
@@ -60,6 +60,7 @@ test("the reviewer proxy multiplexes broker and TUI traffic over one upstream co
   assert.notEqual(upstreamResume.id, "resume-from-tui");
 
   const completedPromise = once(app, "turnCompleted") as Promise<[CompletedTurn]>;
+  const startedPromise = once(app, "turnStarted") as Promise<[StartedTurn]>;
   const compactedPromise = once(app, "contextCompacted") as Promise<[string]>;
   const started = nextJson(reviewer, (message) => message.method === "turn/started");
   const itemCompleted = nextJson(reviewer, (message) => message.method === "item/completed" && message.params?.item?.type === "agentMessage");
@@ -71,6 +72,7 @@ test("the reviewer proxy multiplexes broker and TUI traffic over one upstream co
   upstreamSocket!.send(JSON.stringify({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } } }));
 
   assert.equal((await started).params.turn.id, "turn-1");
+  assert.deepEqual((await startedPromise)[0], { threadId: "thread-1", turnId: "turn-1" });
   assert.equal((await itemCompleted).params.item.text, "No findings.");
   assert.equal((await turnCompleted).params.turn.status, "completed");
   assert.equal((await compactedPromise)[0], "thread-1");
