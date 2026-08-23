@@ -18,6 +18,11 @@ export class StateStore {
     if (!fs.existsSync(this.filename)) return emptyState();
     const parsed = JSON.parse(fs.readFileSync(this.filename, "utf8")) as BridgeState;
     if (parsed.version !== 1 || !parsed.pairs) throw new Error("Unsupported bridge state format.");
+    for (const pair of Object.values(parsed.pairs)) {
+      // Legacy state hashed only the policy. Dropping that marker forces one
+      // seed of the combined protocol and policy into the existing thread.
+      delete (pair as FeaturePair & { reviewPolicySha256?: string }).reviewPolicySha256;
+    }
     return parsed;
   }
 

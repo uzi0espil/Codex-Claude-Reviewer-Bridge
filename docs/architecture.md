@@ -31,12 +31,13 @@ rebinding.
 
 A normalized feature name selects one stored pair. Routing uses immutable Claude
 session and Codex thread UUIDs, not terminal titles. The first Claude user prompt
-is injected into the Codex thread once. The composed generic and local review
-policy is also injected once and identified by its SHA-256. It is injected again
-only when the policy changes, the thread is replaced, or app-server emits a
-`contextCompaction` item. Later checkpoints contain only a compact immutable
-review contract and Claude's latest assistant message; Codex reads the current
-worktree for authoritative state.
+is injected into the Codex thread once. The stable bridge protocol and composed
+generic and local review policy are injected together and identified by their
+combined SHA-256. They are injected again only when that context changes, the
+thread is replaced, or app-server emits a `contextCompaction` item. Later
+checkpoints contain only checkpoint-specific control data, a short read-only
+reminder, and Claude's latest assistant message; Codex reads the current worktree
+for authoritative state.
 
 The broker reserves a Claude UUID before launch, but `SessionStart` only proves
 that Claude observed it. The session becomes resumable after `UserPromptSubmit`
@@ -104,17 +105,16 @@ endpoint file, and exits.
 - `off`: Stop interception and question advice are bypassed, and any held Stop
   is released.
 
-On `pass`, the Stop hook allows Claude to finish and uses its user-facing
-`systemMessage` field to display the already-generated Codex cycle report. The
-first line is a bridge-owned receipt containing checkpoint identity, elapsed
-time, outcome, review-round count, and the response headline. Every automatic
-turn also writes its complete round report atomically beneath ignored `reviews/`
-and stores only the latest receipt metadata in pair state. `reviewer report`
-walks backward from that receipt to the previous final pass and assembles every
-completed response in the latest workflow cycle. A human decision may reset the
-unattended safety counter without splitting this user-visible cycle. The scan
-tolerates gaps from superseded checkpoints and does not start a model turn. This
-remains a deterministic
+On `pass`, the Stop hook allows Claude to finish and supplies only a fixed
+one-line `systemMessage`; it never places the Codex report or response headline
+in Claude's hook output. Every automatic turn writes its complete round report
+atomically beneath ignored `reviews/` and stores only the latest receipt metadata
+in pair state. Codex is explicitly told not to generate an additional cycle
+recap. `reviewer report` walks backward from that receipt to the previous final
+pass and assembles every completed response in the latest workflow cycle. A
+human decision may reset the unattended safety counter without splitting this
+user-visible cycle. The scan tolerates gaps from superseded checkpoints and does
+not start a model turn. This remains a deterministic
 fallback because Codex's remote app-server protocol is experimental. The proxy
 intercepts the terminal's duplicate initialization, remaps bidirectional
 JSON-RPC request IDs, and forwards upstream notifications to the terminal while

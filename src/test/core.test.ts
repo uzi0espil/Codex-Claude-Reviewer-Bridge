@@ -10,10 +10,10 @@ import { featureKey, reviewerRoot } from "../paths.js";
 import { maxReviewPolicyBytes, readPolicyFile, writePolicyFile } from "../policy-store.js";
 import { buildPublishedFeedback } from "../published-feedback.js";
 import {
-  buildReviewPolicySeed,
+  buildReviewContextSeed,
   buildReviewPrompt,
   composeReviewPolicy,
-  reviewPolicySnapshot
+  reviewContextSnapshot
 } from "../review-prompt.js";
 import { StateStore } from "../store.js";
 import { FeaturePair } from "../types.js";
@@ -23,7 +23,7 @@ import { bridgeVersion } from "../version.js";
 import {
   autoDecisionError,
   buildAutoContinuation,
-  buildAutoCycleMessage,
+  buildAutoCycleStatus,
   createAutoCycleReceipt,
   formatAutoCycleReport,
   resolveAutoReview
@@ -87,7 +87,7 @@ test("state persists immutable routing and mutable mode", () => {
     store.update(created.feature, (current) => {
       current.claudeSessionId = "claude-id";
       current.codexThreadId = "codex-id";
-      current.reviewPolicySha256 = "policy-id";
+      current.reviewContextSha256 = "context-id";
       current.mode = "once";
       current.pending = {
         id: "checkpoint-persisted",
@@ -113,7 +113,7 @@ test("state persists immutable routing and mutable mode", () => {
     const reloaded = new StateStore(filename).get("feature-one");
     assert.equal(reloaded?.claudeSessionId, "claude-id");
     assert.equal(reloaded?.codexThreadId, "codex-id");
-    assert.equal(reloaded?.reviewPolicySha256, "policy-id");
+    assert.equal(reloaded?.reviewContextSha256, "context-id");
     assert.equal(reloaded?.mode, "once");
     assert.equal(reloaded?.pending?.autoDecision, "needs_user");
     assert.equal(reloaded?.lastAutoCycle?.reportPath, "reviews/feature-one/checkpoint-1.md");
@@ -123,26 +123,49 @@ test("state persists immutable routing and mutable mode", () => {
   }
 });
 
-test("review prompts are independent, evidence-driven, and read-only", () => {
-  const current = pair({ status: "reviewing" });
-  const prompt = buildReviewPrompt(current, "Implementation complete.");
-  assert.match(prompt, /independent/i);
-  assert.match(prompt, /worktree/i);
-  assert.match(prompt, /strictly read-only/i);
-  assert.match(prompt, /Latest Claude message:\nImplementation complete\./);
+test("legacy policy-only state forces the combined bridge context to be reseeded", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-bridge-legacy-context-"));
+  try {
+    const filename = path.join(directory, "state.json");
+    fs.writeFileSync(filename, `${JSON.stringify({
+      version: 1,
+      pairs: {
+        "checkout-retry": {
+          ...pair({ codexThreadId: "codex-id" }),
+          reviewPolicySha256: "legacy-policy-only-hash"
+        }
+      }
+    })}\n`, "utf8");
+    const loaded = new StateStore(filename).get("checkout-retry");
+    assert.equal(loaded?.reviewContextSha256, undefined);
+    assert.equal("reviewPolicySha256" in (loaded ?? {}), false);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
-test("the full review policy is versioned once as thread context instead of copied into checkpoints", () => {
+test("review prompts retain a compact read-only checkpoint contract", () => {
   const current = pair({ status: "reviewing" });
-  const policy = reviewPolicySnapshot("Baseline policy.\n\nApplication-only requirement.");
-  const seed = buildReviewPolicySeed(current, policy);
+  const prompt = buildReviewPrompt(current, "Implementation complete.");
+  assert.match(prompt, /strictly read-only/i);
+  assert.match(prompt, /Latest Claude message:\nImplementation complete\./);
+  assert.ok(prompt.length < 750);
+});
+
+test("the stable bridge protocol and review policy are versioned once as thread context", () => {
+  const current = pair({ status: "reviewing" });
+  const context = reviewContextSnapshot("Baseline policy.\n\nApplication-only requirement.");
+  const seed = buildReviewContextSeed(current, context);
   const prompt = buildReviewPrompt(current, "Implementation complete.");
 
-  assert.match(seed, new RegExp(policy.sha256));
+  assert.match(seed, new RegExp(context.sha256));
   assert.match(seed, /Application-only requirement/);
-  assert.match(seed, /every subsequent bridge-injected review checkpoint/i);
+  assert.match(seed, /review_bridge_record_auto_decision/);
+  assert.match(seed, /never JSON/i);
+  assert.match(seed, /Do not generate a cycle recap/i);
+  assert.match(seed, /every subsequent bridge-injected checkpoint/i);
   assert.doesNotMatch(prompt, /Application-only requirement/);
-  assert.match(prompt, /policy already established in this Codex thread/i);
+  assert.match(prompt, /protocol and review policy established in this thread/i);
 });
 
 test("automatic review prompts request a control tool and human-readable response", () => {
@@ -153,9 +176,11 @@ test("automatic review prompts request a control tool and human-readable respons
   });
   const prompt = buildReviewPrompt(current, "Implementation complete.", current.pending);
   assert.match(prompt, /review_bridge_record_auto_decision/);
-  assert.match(prompt, /normal Markdown response/i);
-  assert.match(prompt, /never emit JSON/i);
-  assert.match(prompt, /what Claude completed/i);
+  assert.match(prompt, /feature `checkout-retry`/i);
+  assert.match(prompt, /checkpoint `checkpoint-auto`/i);
+  assert.match(prompt, /concise Markdown/i);
+  assert.doesNotMatch(prompt, /cycle report/i);
+  assert.ok(prompt.length < 750);
 });
 
 test("application review policy overlays the generic baseline", () => {
@@ -343,17 +368,15 @@ test("automatic review resolutions preserve readable prose and enforce the revis
     new Date(5_002).toISOString()
   );
   receipt.reportPath = "reviews/checkout-retry/checkpoint-2.md";
-  const message = buildAutoCycleMessage("All findings are resolved.", receipt);
-  assert.match(message, /Codex completed checkpoint #2 in 5\.0s/i);
-  assert.match(message, /PASS after 3 review rounds/i);
-  assert.match(message, /All findings are resolved/);
-  assert.match(message.split("\n")[0], /All findings are resolved/);
-  assert.match(message.split("\n")[0], /just report checkout-retry/);
-  assert.match(message, /reviews\/checkout-retry\/checkpoint-2\.md/);
+  const status = buildAutoCycleStatus(receipt);
+  assert.match(status, /Automatic review passed/i);
+  assert.match(status, /just report checkout-retry/);
+  assert.doesNotMatch(status, /All findings are resolved/);
+  assert.equal(status.split("\n").length, 1);
   const report = formatAutoCycleReport(current.displayName, receipt, "All findings are resolved.");
   assert.match(report, /Codex turn: turn-auto/);
   assert.match(report, /Duration: 5\.0 seconds/);
-  assert.ok(buildAutoCycleMessage("x".repeat(12_000), receipt).length <= 9_500);
+  assert.equal(buildAutoCycleStatus({ ...receipt, reportPath: undefined }), "Automatic review passed. The out-of-band report could not be saved; details remain in Codex.");
 });
 
 test("AskUserQuestion hook input becomes a generic read-only advisory", () => {
@@ -382,9 +405,9 @@ test("AskUserQuestion hook input becomes a generic read-only advisory", () => {
   const prompt = buildQuestionAdvisoryPrompt(pair(), advisory!);
   assert.match(prompt, /Claude question advisory/);
   assert.match(prompt, /Backoff: Reduce load/);
-  assert.match(prompt, /target worktree/i);
   assert.match(prompt, /strictly read-only/i);
-  assert.match(prompt, /personally submit the final answer in Claude/i);
+  assert.match(prompt, /never publish or answer Claude automatically/i);
+  assert.ok(prompt.length < 750);
 });
 
 test("question advisory parsing rejects non-question and malformed hook events", () => {

@@ -20,25 +20,39 @@ export function readReviewPolicy(): string {
   return composeReviewPolicy(baseline, local);
 }
 
-export interface ReviewPolicySnapshot {
+const bridgeProtocol = [
+  "## Stable bridge protocol",
+  "",
+  "For every bridge-injected checkpoint:",
+  "- Act as an independent, evidence-driven reviewer. Treat the current worktree as authoritative and Claude's handoff as a claim to verify against repository guidance, architecture and specification artifacts, code, tests, and diffs. Use live web research when current external facts materially affect the assessment.",
+  "- The turn is strictly read-only: do not edit files, apply patches, commit, publish, or approve external actions.",
+  "- In manual or once mode, return concise findings-first Markdown. The user decides whether and what to publish to Claude.",
+  "- In auto mode, call `review_bridge_record_auto_decision` exactly once after the assessment, using the exact feature and checkpoint supplied by the current checkpoint prompt. Choose `pass` only when the reviewed work and the user's authorized workflow are complete. Choose `pass_continue` only when this gate is clean and Claude has a concrete next action already authorized by the user; put only that action in `continuation`. Never create authorization, broaden scope, or infer permission for an external mutation. Choose `revise` only for actionable material defects. Choose `needs_user` for a user choice, unavailable required validation, unclear authorization, unresolved ambiguity, or an exhausted unattended limit.",
+  "- After the auto decision call, return concise normal Markdown, never JSON. For `revise`, return the complete feedback Claude should receive. For `needs_user`, explain the decision required. For `pass` or `pass_continue`, report only the current gate's outcome, validation, residual risks, and—when continuing—the next gate. Do not generate a cycle recap: the bridge assembles cumulative reports out of band. The bridge sends Claude only revision feedback or the separate continuation, never the Codex report.",
+  "",
+  "For a Claude question advisory, inspect the evidence and explain material tradeoffs, assumptions, uncertainty, and a recommendation when supported. Do not publish or answer Claude automatically; the user personally submits the final answer in Claude."
+].join("\n");
+
+export interface ReviewContextSnapshot {
   content: string;
   sha256: string;
 }
 
-export function reviewPolicySnapshot(content = readReviewPolicy()): ReviewPolicySnapshot {
+export function reviewContextSnapshot(policy = readReviewPolicy()): ReviewContextSnapshot {
+  const content = `${bridgeProtocol}\n\n## Review policy\n\n${policy}`;
   return {
     content,
     sha256: crypto.createHash("sha256").update(content, "utf8").digest("hex")
   };
 }
 
-export function buildReviewPolicySeed(pair: FeaturePair, policy: ReviewPolicySnapshot): string {
+export function buildReviewContextSeed(pair: FeaturePair, context: ReviewContextSnapshot): string {
   return [
-    `[Review policy for bridge workstream: ${pair.displayName}]`,
-    `Policy SHA-256: ${policy.sha256}`,
-    "This policy governs every subsequent bridge-injected review checkpoint and Claude question advisory in this Codex thread until a later policy update is injected. Apply it without requiring the full policy to be repeated in each checkpoint.",
+    `[Review bridge context for workstream: ${pair.displayName}]`,
+    `Context SHA-256: ${context.sha256}`,
+    "This protocol and policy govern every subsequent bridge-injected checkpoint and Claude question advisory in this Codex thread until an updated context is injected. Apply them without requiring the stable instructions to be repeated in each turn.",
     "",
-    policy.content
+    context.content
   ].join("\n");
 }
 
@@ -51,13 +65,8 @@ export function composeReviewPolicy(baseline: string, local: string): string {
 
 export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint?: PendingReview): string {
   const autoContract = pair.mode === "auto"
-    ? [
-        "This is an automatic review turn. After completing the assessment, call `review_bridge_record_auto_decision` exactly once with this feature, the exact checkpoint ID above, and one decision: `pass`, `pass_continue`, `revise`, or `needs_user`.",
-        "Use `pass` only when the reviewed work and the user's authorized workflow are complete. Use `pass_continue` when this review gate is clean but Claude still has a concrete next action that the user already authorized; include only that next action in `continuation`. Never use it to create authorization, broaden scope, or infer permission for an external mutation.",
-        "Use `revise` only for actionable material defects. Use `needs_user` for a choice, unavailable required validation, unclear authorization, ambiguity that should not be decided autonomously, or when the unattended feedback limit is exhausted.",
-        "Then give the user a concise, normal Markdown response; never emit JSON. For `revise`, make that response the complete actionable feedback that Claude should receive. For `needs_user`, explain the decision required. For `pass` or `pass_continue`, make it a compact cycle report covering what Claude completed, what Codex advised during the cycle, validation performed, residual risks, and—when continuing—the next gate. The report is for the user; the bridge sends Claude only the separate continuation field."
-      ].join("\n")
-    : "Give the user a concise review with findings first. The user will decide whether and what to send back to Claude.";
+    ? `Automatic control: after reviewing, call \`review_bridge_record_auto_decision\` exactly once for feature \`${pair.feature}\` and checkpoint \`${checkpoint?.id ?? "unknown"}\`; then return concise Markdown.`
+    : "Return concise findings-first Markdown; the user controls publication.";
   return [
     `[Review bridge checkpoint: ${pair.displayName}]`,
     checkpoint ? `Checkpoint: #${checkpoint.sequence ?? "?"} (${checkpoint.id})` : undefined,
@@ -66,7 +75,7 @@ export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint
       : undefined,
     `Claude session: ${pair.claudeSessionId ?? "unknown"}`,
     `Bridge mode: ${pair.mode}; unattended feedback round: ${pair.autoRound}/3.`,
-    "This bridge-injected turn is governed by the review policy already established in this Codex thread. Independently verify Claude's handoff against the current worktree, repository guidance, architecture and specification artifacts, code, tests, and diffs. Use live web research when current external facts materially affect the assessment. This turn is strictly read-only: do not edit files, apply patches, commit, publish, or approve external actions.",
+    "Follow the bridge protocol and review policy established in this thread. This injected turn remains strictly read-only.",
     autoContract,
     "",
     "Latest Claude message:",

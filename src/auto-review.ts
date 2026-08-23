@@ -132,15 +132,9 @@ export function formatAutoCycleReport(feature: string, receipt: AutoCycleReceipt
   ].join("\n");
 }
 
-export function buildAutoCycleMessage(summary: string, receipt: AutoCycleReceipt): string {
-  const checkpoint = receipt.checkpointSequence ? `#${receipt.checkpointSequence}` : receipt.checkpointId.slice(0, 8);
-  const roundLabel = `${receipt.reviewRound} review ${receipt.reviewRound === 1 ? "round" : "rounds"}`;
-  const heading = `Codex completed checkpoint ${checkpoint} in ${(receipt.durationMs / 1000).toFixed(1)}s — PASS after ${roundLabel}: ${receipt.headline} [report: just report ${receipt.feature}]`;
-  const reportHint = receipt.reportPath
-    ? `Out-of-band report: ${receipt.reportPath}`
-    : "The out-of-band report could not be saved; this Stop message contains the complete report.";
-  const maximumLength = 9_500;
-  const message = `${heading}\n\n${summary.trim()}\n\n${reportHint}`;
-  if (message.length <= maximumLength) return message;
-  return `${message.slice(0, maximumLength - 72).trimEnd()}\n\n[Cycle report shortened for terminal display.]`;
+export function buildAutoCycleStatus(receipt: AutoCycleReceipt): string {
+  if (!receipt.reportPath) {
+    return "Automatic review passed. The out-of-band report could not be saved; details remain in Codex.";
+  }
+  return `Automatic review passed. Details remain in Codex and \`just report ${receipt.feature}\`.`;
 }

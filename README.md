@@ -101,12 +101,13 @@ From the generated reviewer instance:
 ./scripts/shell/reviewer.sh start-pair --feature your-feature-name
 ```
 
-This opens paired Claude and Codex terminals. The first Claude user prompt and
-the composed review policy seed the persistent Codex thread once. The bridge
-re-seeds the policy only when its SHA-256 changes, the Codex thread is replaced,
-or Codex reports context compaction. Later checkpoints contain only a compact
-review contract and Claude's latest assistant message; Codex inspects the
-worktree for authoritative state.
+This opens paired Claude and Codex terminals. The first Claude user prompt plus
+the stable bridge protocol and composed review policy seed the persistent Codex
+thread once. The bridge re-seeds that context only when its SHA-256 changes, the
+Codex thread is replaced, or Codex reports context compaction. Later checkpoints
+contain only checkpoint-specific control data, a short read-only reminder, and
+Claude's latest assistant message; Codex inspects the worktree for authoritative
+state.
 
 `start-pair` automatically opens two PowerShell windows on Windows, Terminal on
 macOS, or a recognized graphical terminal on Linux. Use `--terminal print` (or
@@ -166,7 +167,9 @@ needs-user response since the previous final pass. A human decision can reset
 the three-round unattended safety counter without splitting the user-visible
 cycle. The report is assembled deterministically from immutable per-checkpoint
 files, so superseded checkpoints do not break the sequence. It is not feedback
-to Claude and is not added as a second Codex history item.
+to Claude and is not added as a second Codex history item. A successful Stop
+sends Claude only a fixed one-line status; detailed review content remains in
+the Codex terminal and the out-of-band report.
 
 An automatic review can also return `pass_continue` when the current gate passes
 but Claude has a concrete next action that the user already authorized. The
