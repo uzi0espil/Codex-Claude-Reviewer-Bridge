@@ -1,9 +1,26 @@
-# Bootstrap an application
+# Getting started with an application reviewer
 
 The public repository is a factory; a generated reviewer instance belongs to one
 application for its entire lifetime. Create another instance for every unrelated
 repository so Codex memories, sessions, skills, policy, and runtime state cannot
 mix across applications.
+
+## Before you begin
+
+Install Git, Node.js 22 or newer, Claude Code as `claude`, and Codex CLI as
+`codex`. Use Windows PowerShell 5.1+ or Bash on macOS or Linux. WSL follows the
+Linux workflow on a best-effort basis.
+
+Clone one reusable factory checkout:
+
+```bash
+git clone https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge.git
+cd Codex-Claude-Reviewer-Bridge
+```
+
+The default setup commands below do not require Just. If
+[`just`](https://just.systems/) 1.52 or newer is installed, run `just` to see the
+equivalent cross-platform recipes.
 
 ## 1. Create the isolated instance
 
@@ -113,6 +130,9 @@ The normal loop is:
 4. Inspect the review and invoke `$bridge-publish` or `$bridge-cancel`.
 5. Continue until the workstream is complete; manual mode remains armed.
 
+See [Review workflows](review-workflows.md) for other modes, all bridge commands,
+automatic reports, checkpoint behavior, and recovery.
+
 Claude `AskUserQuestion` calls are mirrored as read-only Codex advisories. Discuss
 the recommendation in Codex, then answer personally in Claude. Advisories are
 not publishable checkpoints.
@@ -159,7 +179,39 @@ sessions, feature mappings, and logs remain untouched.
 If tracked files were customized, commit or resolve them before updating. The
 updater never runs `reset`, deletes the instance, or silently resolves conflicts.
 
-## 6. Distribution boundaries
+Pass `-Ref <remote-ref>` in PowerShell or `--ref <remote-ref>` in Bash only when
+the current branch has no configured upstream or you deliberately need another
+remote ref.
+
+## 6. Optional Just commands
+
+Run `just` to list every recipe. The common workflow is:
+
+```text
+just create /path/to/MyApp
+just policy
+just pair my-feature
+just report my-feature
+just server
+just stop
+just update
+```
+
+Windows paths can use their normal drive-letter form, such as
+`just create 'C:\dev\MyApp'`. Put `--` before options or arguments beginning with
+a dash:
+
+```text
+just pair api-retry -- --model opus
+just create /path/to/MyApp -- --destination /path/to/MyApp-reviewer
+just update -- --ref origin/main
+```
+
+Use `just reviewer -- <command> ...` as an escape hatch for any command exposed
+by `scripts/reviewer.mjs`. The PowerShell and Bash entrypoints remain fully
+supported and do not require Just.
+
+## 7. Distribution boundaries
 
 - Keep application names and policy out of the public template runtime.
 - Keep generated integration files, auth, state databases, runtime, and the local
