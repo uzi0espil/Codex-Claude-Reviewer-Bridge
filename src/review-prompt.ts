@@ -29,9 +29,10 @@ export function composeReviewPolicy(baseline: string, local: string): string {
 export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint?: PendingReview): string {
   const autoContract = pair.mode === "auto"
     ? [
-        "This is an automatic review turn. After completing the assessment, call `review_bridge_record_auto_decision` exactly once with this feature, the exact checkpoint ID above, and one decision: `pass`, `revise`, or `needs_user`.",
-        "Use `revise` only for actionable material defects. Use `needs_user` for a choice, unavailable required validation, ambiguity that should not be decided autonomously, or when the automatic revision limit is exhausted.",
-        "Then give the user a concise, normal Markdown response; never emit JSON. For `revise`, make that response the complete actionable feedback that Claude should receive. For `needs_user`, explain the decision required. For `pass`, make it a compact cycle report covering what Claude completed, what Codex advised during the cycle, validation performed, and residual risks."
+        "This is an automatic review turn. After completing the assessment, call `review_bridge_record_auto_decision` exactly once with this feature, the exact checkpoint ID above, and one decision: `pass`, `pass_continue`, `revise`, or `needs_user`.",
+        "Use `pass` only when the reviewed work and the user's authorized workflow are complete. Use `pass_continue` when this review gate is clean but Claude still has a concrete next action that the user already authorized; include only that next action in `continuation`. Never use it to create authorization, broaden scope, or infer permission for an external mutation.",
+        "Use `revise` only for actionable material defects. Use `needs_user` for a choice, unavailable required validation, unclear authorization, ambiguity that should not be decided autonomously, or when the unattended feedback limit is exhausted.",
+        "Then give the user a concise, normal Markdown response; never emit JSON. For `revise`, make that response the complete actionable feedback that Claude should receive. For `needs_user`, explain the decision required. For `pass` or `pass_continue`, make it a compact cycle report covering what Claude completed, what Codex advised during the cycle, validation performed, residual risks, and—when continuing—the next gate. The report is for the user; the bridge sends Claude only the separate continuation field."
       ].join("\n")
     : "Give the user a concise review with findings first. The user will decide whether and what to send back to Claude.";
   return [
@@ -41,7 +42,7 @@ export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint
       ? `Supersession notice: this checkpoint supersedes unpublished checkpoint #${checkpoint.supersedes.sequence ?? "?"} (${checkpoint.supersedes.id}). Treat the earlier review as obsolete and reassess the latest handoff and current worktree.`
       : undefined,
     `Claude session: ${pair.claudeSessionId ?? "unknown"}`,
-    `Bridge mode: ${pair.mode}; automatic revision round: ${pair.autoRound}/3.`,
+    `Bridge mode: ${pair.mode}; unattended feedback round: ${pair.autoRound}/3.`,
     readReviewPolicy(),
     autoContract,
     "",

@@ -17,6 +17,7 @@ import { migrateClaudeSessionLifecycle, recordClaudeSession } from "../claude-se
 import { bridgeVersion } from "../version.js";
 import {
   autoDecisionError,
+  buildAutoContinuation,
   buildAutoCycleMessage,
   createAutoCycleReceipt,
   formatAutoCycleReport,
@@ -208,6 +209,14 @@ test("published feedback blocks Claude and remains advisory", () => {
     kind: "allow",
     systemMessage: "Automatic review cycle complete."
   }), { systemMessage: "Automatic review cycle complete." });
+  const continuation = buildAutoContinuation("Merge the approved PR, update main, then run /opsx:explore.");
+  assert.match(continuation, /already authorized/i);
+  assert.match(continuation, /not new authorization/i);
+  assert.deepEqual(stopHookOutput({ kind: "continue", text: continuation }), {
+    decision: "block",
+    reason: continuation,
+    systemMessage: "Independent review gate passed; Claude is continuing the already-authorized workflow."
+  });
 });
 
 test("persistent modes remain armed until explicitly disabled", () => {
@@ -224,6 +233,9 @@ test("automatic decisions bind to the active reviewing checkpoint", () => {
     pending: { id: "checkpoint-auto", sequence: 2, claudeMessage: "Done", createdAt: new Date(2).toISOString() }
   });
   assert.equal(autoDecisionError(current, "checkpoint-auto", "revise"), undefined);
+  assert.match(autoDecisionError(current, "checkpoint-auto", "pass_continue") ?? "", /requires the concrete/i);
+  assert.equal(autoDecisionError(current, "checkpoint-auto", "pass_continue", "Run the approved spike."), undefined);
+  assert.match(autoDecisionError(current, "checkpoint-auto", "pass", "Run the spike.") ?? "", /only valid/i);
   assert.match(autoDecisionError(current, "stale", "revise") ?? "", /not the active automatic checkpoint/i);
   assert.match(autoDecisionError(current, "checkpoint-auto", "invalid") ?? "", /invalid automatic decision/i);
   current.pending!.autoDecision = "revise";
@@ -276,7 +288,33 @@ test("automatic review resolutions preserve readable prose and enforce the revis
     reason: "needs-user"
   });
 
+  current.autoRound = 1;
+  current.pending!.autoDecision = "pass_continue";
+  current.pending!.autoContinuation = "Merge the approved PR, update main, then run /opsx:explore.";
+  assert.deepEqual(resolveAutoReview(current, "Gate 1 passed; Gate 2 remains."), {
+    kind: "continue",
+    reviewRounds: 2,
+    summary: "Gate 1 passed; Gate 2 remains.",
+    continuation: "Merge the approved PR, update main, then run /opsx:explore."
+  });
+
+  current.pending!.autoContinuation = undefined;
+  assert.deepEqual(resolveAutoReview(current, "Continuation is missing."), {
+    kind: "waiting-user",
+    response: "Continuation is missing.",
+    reason: "missing-continuation"
+  });
+
+  current.pending!.autoContinuation = "Run another authorized gate.";
+  current.autoRound = 3;
+  assert.deepEqual(resolveAutoReview(current, "The unattended limit needs a decision."), {
+    kind: "waiting-user",
+    response: "The unattended limit needs a decision.",
+    reason: "round-limit"
+  });
+
   current.pending!.autoDecision = "pass";
+  current.autoRound = 2;
   const receipt = createAutoCycleReceipt(
     current,
     "turn-auto",

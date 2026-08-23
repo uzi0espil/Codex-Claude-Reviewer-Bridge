@@ -11,6 +11,7 @@ import {
   claudeSettings,
   codexConfig,
   parseArguments,
+  pairedCodexArguments,
   powershellQuote,
   readLatestAutoReport,
   shellQuote,
@@ -94,6 +95,29 @@ test("builds visible Windows Terminal launches with encoded child arguments", ()
     "E:\\reviewer home\\scripts\\powershell\\internal\\Launch-Reviewer.ps1", "-EncodedArguments"
   ]);
   assert.deepEqual(JSON.parse(Buffer.from(spec.args[13], "base64").toString("utf8")), childArgs);
+});
+
+test("paired Codex sessions preserve injected review turns in terminal scrollback", () => {
+  const args = pairedCodexArguments(
+    { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-1" },
+    "C:\\project",
+    "auto",
+    ["--model", "gpt-test"]
+  );
+  assert.deepEqual(args, [
+    "--remote", "ws://127.0.0.1:1234",
+    "--no-alt-screen",
+    "resume", "thread-1",
+    "-C", "C:\\project",
+    "--profile", "bridge-auto",
+    "--model", "gpt-test"
+  ]);
+  assert.equal(pairedCodexArguments(
+    { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-1" },
+    "C:\\project",
+    "manual",
+    ["--no-alt-screen"]
+  ).filter((value) => value === "--no-alt-screen").length, 1);
 });
 
 test("generates portable Claude hooks and Codex configuration", () => {

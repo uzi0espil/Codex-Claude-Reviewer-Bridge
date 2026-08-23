@@ -130,7 +130,7 @@ user, who personally submits the final answer.
 - `$bridge-init-policy` - create or refresh the private application policy
 - `$bridge-manual` - review every Claude Stop and wait for approval; default
 - `$bridge-once` - review only the next Claude Stop
-- `$bridge-auto` - keep automatic review armed with up to three revise rounds per cycle
+- `$bridge-auto` - keep automatic review armed with up to three unattended feedback or continuation rounds per cycle
 - `$bridge-off` - disable interception and question advice
 - `$bridge-status` - inspect routing, mode, and checkpoint state
 - `$bridge-publish` - publish the latest completed checkpoint review
@@ -160,6 +160,17 @@ macOS/Linux.
 
 The report is not feedback to Claude and is not added as a second Codex history
 item.
+
+An automatic review can also return `pass_continue` when the current gate passes
+but Claude has a concrete next action that the user already authorized. The
+bridge blocks that Stop with only the scoped continuation instruction; it does
+not send Claude the Codex cycle report or create new authorization. If the next
+action or its authorization is unclear, Codex must return `needs_user` instead.
+Continuation and revision feedback share the three-round unattended limit.
+
+Paired Codex terminals run in inline mode so broker-started review turns remain
+in terminal scrollback across later redraws. This changes display behavior only;
+it does not add another turn to Codex history.
 
 ## Policy and project context
 

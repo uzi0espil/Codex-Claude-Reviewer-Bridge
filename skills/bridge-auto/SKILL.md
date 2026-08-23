@@ -6,14 +6,20 @@ description: Arm the bounded automatic Claude-Codex review loop for the paired w
 Call `review_bridge_set_mode` with the paired feature and mode `auto`.
 
 Explain that injected Codex turns remain read-only and allow at most three
-automatic revise rounds per cycle. Auto remains armed across successful cycles
-and human publish/cancel decisions until `$bridge-off` is invoked.
+unattended feedback or continuation rounds per cycle. Auto remains armed across
+successful cycles and human publish/cancel decisions until `$bridge-off` is
+invoked.
 
 Automatic reviews return normal Markdown. Their control decision is recorded
-separately by the bridge. `needs_user`, a missing control decision, or the cycle
-limit pauses the exact checkpoint for human review without changing modes. A
-passing cycle displays its report to the user through Claude's Stop-hook UI; it
-is not sent to Claude as feedback or added as a second Codex history item. The
-first line identifies the checkpoint, elapsed time, decision, and headline. The
-complete report is saved outside both model histories; tell the user to run
-`just report <feature>` if an experimental remote terminal did not display it.
+separately by the bridge. A final `pass` lets Claude stop. `pass_continue` is
+valid only when the current gate passes and a concrete next action was already
+authorized by the user; supply only that action as the continuation. Never use
+it to infer permission, expand scope, or authorize an external mutation. Use
+`needs_user` when authorization is unclear.
+
+`pass_continue` sends Claude only the scoped continuation and consumes one of
+the three unattended rounds. The user-facing cycle report is not sent as Claude
+feedback or added as a second Codex history item. `needs_user`, a missing
+control field, or the cycle limit pauses the exact checkpoint for human review
+without changing modes. The complete report is also saved outside both model
+histories; tell the user to run `just report <feature>` if needed.

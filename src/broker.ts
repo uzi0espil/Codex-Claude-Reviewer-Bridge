@@ -15,6 +15,7 @@ import { buildPublishedFeedback } from "./published-feedback.js";
 import { checkpointDecisionError, createCheckpoint, forcePublishError } from "./checkpoint-policy.js";
 import {
   autoDecisionError,
+  buildAutoContinuation,
   buildAutoCycleMessage,
   createAutoCycleReceipt,
   formatAutoCycleReport,
@@ -314,6 +315,24 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
     release(pendingId, { kind: "allow", systemMessage });
     return;
   }
+  if (resolution.kind === "continue") {
+    const receipt = persistAutoCycleReport(
+      pair,
+      createAutoCycleReceipt(pair, turn.turnId, "continuation-sent", resolution.summary),
+      resolution.summary
+    );
+    const continuation = buildAutoContinuation(resolution.continuation);
+    store.update(pair.feature, (value) => {
+      value.status = "waiting-claude";
+      value.autoRound += 1;
+      value.lastCodexResponse = turn.text;
+      value.lastAutoCycle = receipt;
+      value.pending = undefined;
+    });
+    log(`Completed ${pair.feature} checkpoint ${pendingId} as pass_continue in ${receipt.durationMs}ms; report ${receipt.reportPath ?? "not saved"}.`);
+    release(pendingId, { kind: "continue", text: continuation });
+    return;
+  }
   if (resolution.kind === "revise") {
     const receipt = persistAutoCycleReport(
       pair,
@@ -408,7 +427,8 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
     pending: pair.pending ? {
       ...pair.pending,
       claudeMessage: "[held by bridge]",
-      codexResponse: pair.pending.codexResponse ? "[held by bridge]" : undefined
+      codexResponse: pair.pending.codexResponse ? "[held by bridge]" : undefined,
+      autoContinuation: pair.pending.autoContinuation ? "[held by bridge]" : undefined
     } : undefined
   };
 }
@@ -449,16 +469,22 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     if (!feature) return send(res, 400, { error: "feature required" });
     const existing = store.get(feature);
     if (!existing) return send(res, 404, { error: "unknown feature" });
-    const decisionError = autoDecisionError(existing, body.checkpointId, body.decision);
+    const decisionError = autoDecisionError(existing, body.checkpointId, body.decision, body.continuation);
     if (decisionError) return send(res, 409, { error: decisionError });
     store.update(feature, (value) => {
-      if (value.pending) value.pending.autoDecision = body.decision as AutoReviewDecision;
+      if (value.pending) {
+        value.pending.autoDecision = body.decision as AutoReviewDecision;
+        value.pending.autoContinuation = body.decision === "pass_continue"
+          ? String(body.continuation).trim()
+          : undefined;
+      }
     });
     return send(res, 200, {
       recorded: true,
       feature,
       checkpointId: body.checkpointId,
       decision: body.decision,
+      continuationRecorded: body.decision === "pass_continue",
       message: "Decision recorded. Finish with the normal Markdown review; the bridge will act when the turn completes."
     });
   }

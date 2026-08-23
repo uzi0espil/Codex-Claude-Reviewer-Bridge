@@ -459,14 +459,26 @@ async function startReviewer(options, passthrough) {
     let pair = await bridgeRequest("/pair/codex", { feature: options.feature, projectRoot });
     const profile = options.profile ?? pair.mode;
     if (options.profile) pair = await bridgeRequest("/mode", { feature: pair.feature, mode: options.profile });
-    args.push("--remote", pair.appServerUrl, "resume", pair.codexThreadId, "-C", projectRoot, "--profile", `bridge-${profile}`);
+    args.push(...pairedCodexArguments(pair, projectRoot, profile, passthrough));
   } else if (options.session) args.push("resume", String(options.session), "-C", projectRoot);
   else if (options.last) args.push("resume", "--last", "-C", projectRoot);
   else if (options.resume) args.push("resume", "-C", projectRoot);
   else args.push("-C", projectRoot);
-  args.push(...passthrough);
+  if (!options.feature) args.push(...passthrough);
   if (options.prompt) args.push(String(options.prompt));
   run("codex", args, { cwd: projectRoot, env: { ...process.env, CODEX_HOME: reviewerRoot } });
+}
+
+export function pairedCodexArguments(pair, projectRoot, profile, passthrough = []) {
+  const remainingArguments = passthrough.filter((value) => value !== "--no-alt-screen");
+  return [
+    "--remote", pair.appServerUrl,
+    "--no-alt-screen",
+    "resume", pair.codexThreadId,
+    "-C", projectRoot,
+    "--profile", `bridge-${profile}`,
+    ...remainingArguments
+  ];
 }
 
 function pairChildArguments(kind, options, passthrough) {

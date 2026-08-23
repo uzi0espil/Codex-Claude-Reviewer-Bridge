@@ -93,10 +93,11 @@ endpoint file, and exits.
 
 - `manual`: every Stop is reviewed and held for human approval; remains armed.
 - `once`: the next Stop is reviewed; a user decision turns the bridge off.
-- `auto`: persistent automatic review, bounded to three unattended revise rounds
-  per cycle. A control-only MCP tool records pass/revise/needs-user while the
-  reviewer response remains normal Markdown. Human publish or cancel decisions
-  reset the round counter without disarming auto mode.
+- `auto`: persistent automatic review, bounded to three unattended feedback or
+  continuation rounds per cycle. A control-only MCP tool records pass,
+  `pass_continue`, revise, or needs-user while the reviewer response remains
+  normal Markdown. Human publish or cancel decisions reset the round counter
+  without disarming auto mode.
 - `off`: Stop interception and question advice are bypassed, and any held Stop
   is released.
 
@@ -114,6 +115,18 @@ the broker consumes the same events. The report is never used as Stop feedback,
 queued Claude context, or an injected second Codex history item. Only `once`
 disarms itself after a user decision; `manual` and `auto` remain armed until
 explicitly switched off.
+
+`pass_continue` is distinct from final `pass`. It is valid only when the current
+review gate is clean and the next concrete action was already authorized by the
+user. The report remains out of band; the Stop hook receives only a bounded
+continuation instruction and blocks the Stop so Claude resumes. The instruction
+explicitly forbids treating Codex as new authorization or expanding scope. A
+continuation increments the same unattended round counter as revise feedback;
+the next clean, workflow-complete checkpoint resets it on final `pass`.
+
+The paired Codex TUI is launched with `--no-alt-screen`. Broker-started app-server
+turns therefore remain in terminal scrollback even if a later turn redraws the
+interface; this does not inject another model-visible item.
 
 All hook-injected Codex turns use `approvalPolicy: never`, a read-only sandbox,
 and network access for research. Interactive write access is a separate explicit

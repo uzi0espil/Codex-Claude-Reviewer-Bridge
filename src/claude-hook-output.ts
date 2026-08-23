@@ -1,8 +1,16 @@
 export type StopHookResult =
   | { kind: "allow"; systemMessage?: string }
+  | { kind: "continue"; text: string }
   | { kind: "feedback"; text: string };
 
 export function stopHookOutput(result: StopHookResult): Record<string, unknown> {
+  if (result.kind === "continue" && result.text.trim()) {
+    return {
+      decision: "block",
+      reason: result.text,
+      systemMessage: "Independent review gate passed; Claude is continuing the already-authorized workflow."
+    };
+  }
   if (result.kind === "feedback" && result.text.trim()) {
     return {
       decision: "block",

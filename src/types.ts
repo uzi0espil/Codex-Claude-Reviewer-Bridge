@@ -18,10 +18,11 @@ export interface PendingReview {
   codexTurnId?: string;
   codexResponse?: string;
   autoDecision?: AutoReviewDecision;
+  autoContinuation?: string;
   createdAt: string;
 }
 
-export type AutoReviewDecision = "pass" | "revise" | "needs_user";
+export type AutoReviewDecision = "pass" | "pass_continue" | "revise" | "needs_user";
 
 export interface AutoCycleReceipt {
   feature: string;
@@ -29,7 +30,7 @@ export interface AutoCycleReceipt {
   checkpointSequence?: number;
   codexTurnId: string;
   decision: AutoReviewDecision | "missing";
-  outcome: "passed" | "revision-sent" | "waiting-user";
+  outcome: "passed" | "continuation-sent" | "revision-sent" | "waiting-user";
   reviewRound: number;
   startedAt: string;
   completedAt: string;
