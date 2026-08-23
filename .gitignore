@@ -29,6 +29,7 @@
 /reviews/
 /dist/
 /node_modules/
+/.npm-package/
 
 # Machine-local generated integration files
 /bridge.local.json

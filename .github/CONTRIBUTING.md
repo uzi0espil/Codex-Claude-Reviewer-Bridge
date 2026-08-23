@@ -25,8 +25,31 @@ always-allow bypass access to the protected `main` branch and `v*` tags.
 
 Semantic-release derives the next version from Conventional Commit messages,
 updates `package.json` and `package-lock.json`, creates a release commit and
-`vX.Y.Z` tag, and publishes GitHub release notes. The package is private and is
-never published to npm. Do not edit the package version manually.
+`vX.Y.Z` tag, publishes a dependency-free bootstrap package to npm, and creates
+GitHub release notes. Do not edit the package version manually.
+
+npm publication normally uses trusted publishing with provenance instead of a
+long-lived write token. Trusted publishing can only be configured after the npm
+package exists, so the first release has a one-time bootstrap procedure:
+
+1. Create a short-lived granular npm access token with **Read and write** access
+   to **All Packages** and **Bypass two-factor authentication** enabled. The new
+   package cannot yet be selected individually. Save the token as the temporary
+   Actions secret `NPM_BOOTSTRAP_TOKEN`.
+2. Manually run the **CI** workflow on `main`. Semantic-release creates the
+   initial npm package with the same version as its Git tag.
+3. In that package's npm settings, configure the GitHub Actions trusted
+   publisher for organization or user `uzi0espil`, repository
+   `Codex-Claude-Reviewer-Bridge`, workflow filename `ci.yml`, and allowed action
+   `npm publish`.
+4. Delete the `NPM_BOOTSTRAP_TOKEN` Actions secret and revoke the granular token
+   on npm. Subsequent releases authenticate only through OIDC.
+
+The release job must retain `id-token: write`, use a GitHub-hosted runner, and
+set the npm registry through `actions/setup-node`. If npm publication ever fails
+after a release tag is created, reconcile the Git tag and npm version before
+running semantic-release again; do not publish a different artifact under that
+version.
 
 - `fix:` creates a patch release.
 - `feat:` creates a minor release.

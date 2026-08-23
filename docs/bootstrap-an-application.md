@@ -11,23 +11,22 @@ Install Git, Node.js 22 or newer, Claude Code as `claude`, and Codex CLI as
 `codex`. Use Windows PowerShell 5.1+ or Bash on macOS or Linux. WSL follows the
 Linux workflow on a best-effort basis.
 
-Clone one reusable factory checkout:
+The recommended bootstrap uses npx and does not install a global package:
 
-```bash
-git clone https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge.git
-cd Codex-Claude-Reviewer-Bridge
+```text
+npx --yes claude-codex-review-bridge@latest --help
 ```
 
-The default setup commands below do not require Just. If
-[`just`](https://just.systems/) 1.52 or newer is installed, run `just` to see the
-equivalent cross-platform recipes.
+The downloaded npm package is only a bootstrapper. The generated reviewer remains
+a normal Git clone and stores no credentials, policy, or runtime state in npm's
+cache.
 
-## 1. Create the isolated instance
+## 1. Create the isolated instance with npx
 
-Keep a reusable checkout of the public template, then run:
+On Windows:
 
 ```powershell
-.\scripts\powershell\reviewer.ps1 create `
+npx --yes claude-codex-review-bridge@latest create `
   --project-root 'C:\dev\YourApp' `
   --destination 'C:\dev\YourApp-reviewer' `
   --project-name 'Your App'
@@ -36,16 +35,50 @@ Keep a reusable checkout of the public template, then run:
 On Linux or macOS:
 
 ```bash
-./scripts/shell/reviewer.sh create \
+npx --yes claude-codex-review-bridge@latest create \
   --project-root /home/me/dev/YourApp \
   --destination /home/me/dev/YourApp-reviewer \
   --project-name 'Your App'
 ```
 
-Omit `-Destination` to create `<application>-reviewer` beside the application.
-Use `-SkipPlaywright` for an application that does not need browser review and
-`-DeviceAuth` when local browser login is unsuitable. `-TemplateRepository` can
-select a trusted private fork instead of the factory checkout's `origin`.
+Omit `--destination` to create `<application>-reviewer` beside the application.
+Use `--skip-playwright` for an application that does not need browser review and
+`--device-auth` when local browser login is unsuitable.
+
+By default, the bootstrapper clones the public repository at the `vX.Y.Z` tag
+matching its own npm package version. It creates a local reviewer branch at that
+tag and configures it to update from `origin/main`. This prevents npm package and
+template code from silently drifting apart.
+
+Use `--template-repository <url>` to select a trusted private fork. A custom
+repository uses its default branch unless `--template-ref <ref>` is also
+provided; future updates follow that repository's default branch.
+
+The bootstrapper rejects a reviewer destination inside the application, a
+non-empty destination, a target that is not a Git repository, and a template
+that lacks the isolated-instance workflow. If a later setup step fails, it
+leaves the clone in place for recovery instead of deleting partially initialized
+state.
+
+### Factory-checkout alternative
+
+To inspect or customize the factory before creating a reviewer, clone it
+directly:
+
+```bash
+git clone https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge.git
+cd Codex-Claude-Reviewer-Bridge
+```
+
+Then run:
+
+```powershell
+.\scripts\powershell\reviewer.ps1 create --project-root 'C:\dev\YourApp'
+```
+
+```bash
+./scripts/shell/reviewer.sh create --project-root /home/me/dev/YourApp
+```
 
 The factory rejects a reviewer destination inside the application, a non-empty
 destination, a target that is not a Git repository, and a default factory
@@ -54,6 +87,10 @@ the cloned workflow before setup or login, preventing a newer local factory
 script from silently generating an older instance. If a later step fails, it
 leaves the clone in place and reports the exact recovery script; it does not
 delete partially initialized state.
+
+The default commands do not require Just. If [`just`](https://just.systems/)
+1.52 or newer is installed in a factory or generated reviewer, run `just` to see
+the equivalent cross-platform recipes.
 
 For manual recovery inside an existing clone, run:
 
