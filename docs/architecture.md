@@ -105,9 +105,13 @@ On `pass`, the Stop hook allows Claude to finish and uses its user-facing
 `systemMessage` field to display the already-generated Codex cycle report. The
 first line is a bridge-owned receipt containing checkpoint identity, elapsed
 time, outcome, review-round count, and the response headline. Every automatic
-turn also writes its complete report atomically beneath ignored `reviews/` and
-stores only the latest receipt metadata in pair state. `reviewer report` reads
-that file directly; it does not start a model turn. This remains a deterministic
+turn also writes its complete round report atomically beneath ignored `reviews/`
+and stores only the latest receipt metadata in pair state. `reviewer report`
+walks backward from that receipt to the previous final pass and assembles every
+completed response in the latest workflow cycle. A human decision may reset the
+unattended safety counter without splitting this user-visible cycle. The scan
+tolerates gaps from superseded checkpoints and does not start a model turn. This
+remains a deterministic
 fallback because Codex's remote app-server protocol is experimental. The proxy
 intercepts the terminal's duplicate initialization, remaps bidirectional
 JSON-RPC request IDs, and forwards upstream notifications to the terminal while

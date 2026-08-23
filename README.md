@@ -146,8 +146,8 @@ a user-only Stop-hook message. Its first line includes the checkpoint, elapsed
 time, decision, and review headline. The reviewer terminal connects through a
 local single-upstream proxy so broker-initiated turn notifications use the same
 app-server stream as the interactive session. Because that Codex remote protocol
-is experimental, the complete report is also saved under ignored `reviews/`;
-print the latest one without invoking either model:
+is experimental, each round is also saved under ignored `reviews/`; print the
+complete latest cycle, in round order, without invoking either model:
 
 ```text
 just report your-feature-name
@@ -158,8 +158,12 @@ Without Just, use
 Windows or `./scripts/shell/reviewer.sh report --feature your-feature-name` on
 macOS/Linux.
 
-The report is not feedback to Claude and is not added as a second Codex history
-item.
+The cycle report includes every available revise, continuation, pass, or
+needs-user response since the previous final pass. A human decision can reset
+the three-round unattended safety counter without splitting the user-visible
+cycle. The report is assembled deterministically from immutable per-checkpoint
+files, so superseded checkpoints do not break the sequence. It is not feedback
+to Claude and is not added as a second Codex history item.
 
 An automatic review can also return `pass_continue` when the current gate passes
 but Claude has a concrete next action that the user already authorized. The

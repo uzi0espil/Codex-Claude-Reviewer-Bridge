@@ -21,5 +21,7 @@ it to infer permission, expand scope, or authorize an external mutation. Use
 the three unattended rounds. The user-facing cycle report is not sent as Claude
 feedback or added as a second Codex history item. `needs_user`, a missing
 control field, or the cycle limit pauses the exact checkpoint for human review
-without changing modes. The complete report is also saved outside both model
-histories; tell the user to run `just report <feature>` if needed.
+without changing modes. Every round is saved outside both model histories;
+`just report <feature>` deterministically assembles every response since the
+previous final pass, even when a human decision reset the unattended safety
+counter, without invoking either model.

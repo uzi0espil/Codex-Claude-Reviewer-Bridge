@@ -244,7 +244,83 @@ export function readLatestAutoReport(feature, root = reviewerRoot) {
     throw new Error("Stored automatic review report path is invalid.");
   }
   if (!fs.existsSync(reportPath)) throw new Error(`Stored automatic review report is missing: ${relativeReport}`);
-  return fs.readFileSync(reportPath, "utf8");
+  const latestContent = fs.readFileSync(reportPath, "utf8");
+  const latest = parseAutoRoundReport(latestContent);
+  if (!latest) return latestContent;
+
+  const candidates = fs.readdirSync(path.dirname(reportPath), { withFileTypes: true })
+    .filter((entry) => entry.isFile() && /^checkpoint-.+\.md$/i.test(entry.name))
+    .map((entry) => parseAutoRoundReport(fs.readFileSync(path.join(path.dirname(reportPath), entry.name), "utf8")))
+    .filter(Boolean)
+    .filter((candidate) => candidate.checkpointSequence <= latest.checkpointSequence)
+    .sort((left, right) => right.checkpointSequence - left.checkpointSequence);
+
+  const rounds = [];
+  for (const candidate of candidates) {
+    if (candidate.checkpointSequence !== latest.checkpointSequence && candidate.outcome === "passed") break;
+    rounds.unshift(candidate);
+  }
+  if (!rounds.length) return latestContent;
+  return formatAutoCycleReport(pair.displayName ?? feature, rounds);
+}
+
+function parseAutoRoundReport(content) {
+  const round = Number(content.match(/^- Review round: (\d+)\s*$/m)?.[1]);
+  const checkpointSequence = Number(content.match(/^- Checkpoint: #(\d+)\b/m)?.[1]);
+  const decision = content.match(/^- Decision: (.+)\s*$/m)?.[1]?.trim();
+  const outcome = content.match(/^- Outcome: (.+)\s*$/m)?.[1]?.trim();
+  const startedAt = content.match(/^- Started: (.+)\s*$/m)?.[1]?.trim();
+  const completedAt = content.match(/^- Completed: (.+)\s*$/m)?.[1]?.trim();
+  const durationSeconds = Number(content.match(/^- Duration: ([\d.]+) seconds\s*$/m)?.[1]);
+  const body = content.split(/^## Codex report\s*$/m)[1]?.trim();
+  if (!Number.isInteger(round) || round < 1 || !Number.isInteger(checkpointSequence) || !decision || !outcome || !body) {
+    return undefined;
+  }
+  return {
+    round,
+    checkpointSequence,
+    decision,
+    outcome,
+    startedAt,
+    completedAt,
+    durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : 0,
+    body
+  };
+}
+
+function formatAutoCycleReport(displayName, rounds) {
+  const first = rounds[0];
+  const last = rounds.at(-1);
+  const totalDuration = rounds.reduce((total, round) => total + round.durationSeconds, 0);
+  const checkpointRange = first.checkpointSequence === last.checkpointSequence
+    ? `#${first.checkpointSequence}`
+    : `#${first.checkpointSequence} -> #${last.checkpointSequence}`;
+  const sections = rounds.flatMap((round, index) => [
+    `## Cycle round ${index + 1} - ${round.decision}`,
+    "",
+    `- Checkpoint: #${round.checkpointSequence}`,
+    `- Unattended round: ${round.round}`,
+    `- Outcome: ${round.outcome}`,
+    `- Duration: ${round.durationSeconds.toFixed(1)} seconds`,
+    "",
+    "### Codex report",
+    "",
+    round.body,
+    ""
+  ]);
+  return [
+    `# Automatic review cycle report - ${displayName}`,
+    "",
+    `- Rounds: ${rounds.length}`,
+    `- Checkpoints: ${checkpointRange}`,
+    `- Final decision: ${last.decision}`,
+    `- Final outcome: ${last.outcome}`,
+    first.startedAt ? `- Started: ${first.startedAt}` : undefined,
+    last.completedAt ? `- Completed: ${last.completedAt}` : undefined,
+    `- Total review time: ${totalDuration.toFixed(1)} seconds`,
+    "",
+    ...sections
+  ].filter((line) => line !== undefined).join("\n");
 }
 
 function report(options) {
