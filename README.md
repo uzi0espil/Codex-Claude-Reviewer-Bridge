@@ -1,12 +1,125 @@
 # Claude-Codex Review Bridge
 
-A local, human-controlled bridge that sends completed Claude Code handoffs to a
-persistent Codex review thread. Codex reviews the current application read-only;
-the user decides whether to publish, edit, or discard its feedback.
+**Give Claude Code an independent Codex reviewer while you stay in control of
+what gets sent back.**
 
-The GitHub repository is a factory. Each application gets a separate reviewer
-instance with its own Codex home, memories, sessions, policy, credentials, and
-bridge state. An instance is permanently bound to one application repository.
+The bridge pauses completed Claude Code handoffs, asks a persistent Codex thread
+to inspect the real worktree read-only, and lets you publish, edit, or discard
+the findings. It also sends Claude's structured `AskUserQuestion` prompts to
+Codex for a second opinion while Claude waits for you to answer. Each application
+gets its own isolated reviewer home, so policies, memories, credentials, and
+sessions never mix between projects.
+
+[![CI](https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge/actions/workflows/ci.yml)
+[![GitHub release](https://img.shields.io/github/v/release/uzi0espil/Codex-Claude-Reviewer-Bridge)](https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge/releases)
+[![License](https://img.shields.io/github/license/uzi0espil/Codex-Claude-Reviewer-Bridge)](LICENSE)
+![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
+
+[Getting started](docs/bootstrap-an-application.md) ·
+[Review workflows](docs/review-workflows.md) ·
+[Architecture](docs/architecture.md) ·
+[Security](.github/SECURITY.md) ·
+[Contributing](.github/CONTRIBUTING.md)
+
+## Why use a separate reviewer?
+
+An agent reviewing its own work can repeat the assumptions that caused a defect.
+Copying handoffs into a second chat loses project context, while a fully
+automatic agent loop can act before you have evaluated its advice.
+
+The bridge gives you:
+
+- **Independent review.** Codex checks Claude's handoff against repository
+  instructions, specifications, code, tests, and the current diff.
+- **Persistent context.** One Codex thread follows each workstream instead of
+  starting from a pasted summary every time.
+- **Human-controlled feedback.** Manual mode holds Claude until you publish or
+  cancel the review; automatic mode is explicit and bounded.
+- **A second opinion on decisions.** When Claude asks a structured question,
+  Codex reviews the choices and advises you; only you answer Claude.
+- **Project isolation.** Every application has a sibling reviewer with its own
+  Codex home, policy, credentials, state, memories, and sessions.
+- **Evidence-driven checks.** Reviews can use live web research and optional
+  Playwright MCP browser inspection while the application remains read-only.
+
+## How it works
+
+Manual mode adds two independent checkpoints to the normal Claude workflow:
+advice when Claude needs your decision, and a review gate when Claude considers
+its work complete.
+
+```mermaid
+sequenceDiagram
+    actor U as You
+    participant C as Claude Code
+    participant B as Local bridge
+    participant R as Codex reviewer
+
+    U->>C: Describe the task
+    opt Claude needs a decision
+        C->>B: AskUserQuestion with choices
+        B-->>R: Request an independent opinion
+        R-->>U: Recommend an option with reasoning
+        Note over U,C: Claude still waits for your answer
+        U->>C: Answer in Claude's question UI
+    end
+
+    C->>B: Stop with a completed handoff
+    Note over C,B: Claude is held at the manual review gate
+    B->>R: Review the handoff and current worktree
+    R->>R: Inspect instructions, diff, code, and tests
+    R-->>U: Present findings in the Codex terminal
+
+    alt Publish all or edited findings
+        U->>R: $bridge-publish
+        R->>B: Publish the latest checkpoint
+        B-->>C: Deliver approved review feedback
+        C->>C: Challenge or adapt the findings
+    else Discard the review
+        U->>R: $bridge-cancel
+        R->>B: Cancel the latest checkpoint
+        B-->>C: Release without feedback
+    end
+```
+
+In the diagram, `opt` marks an optional interaction and `alt` groups mutually
+exclusive outcomes.
+
+Question advice never answers Claude automatically: Claude remains in its own
+question UI until you personally choose. Likewise, a completed review does not
+return to Claude until you explicitly publish it; you may edit the findings or
+cancel them entirely.
+
+## Quick start
+
+You need Git, Node.js 22 or newer, and the `claude` and `codex` CLIs. PowerShell
+5.1+ and Bash are supported. [`just`](https://just.systems/) 1.52+ is optional.
+
+### 1. Clone the reusable factory
+
+```bash
+git clone https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge.git
+cd Codex-Claude-Reviewer-Bridge
+```
+
+Keep this checkout clean and synchronized with its upstream before creating a
+reviewer.
+
+### 2. Create a reviewer for your application
+
+On Windows:
+
+```powershell
+.\scripts\powershell\reviewer.ps1 create --project-root 'C:\dev\MyApp'
+```
+
+On macOS or Linux:
+
+```bash
+./scripts/shell/reviewer.sh create --project-root /home/me/dev/MyApp
+```
+
+The default destination is a sibling directory:
 
 ```text
 dev/
@@ -14,278 +127,98 @@ dev/
 `-- MyApp-reviewer/
 ```
 
-Keep the reviewer as a sibling, never inside the application repository.
+The setup clones and binds the reviewer, installs and tests the bridge,
+authenticates its dedicated Codex home, and opens a guided workflow to create a
+private application review policy. Keep the reviewer beside the application,
+never inside it.
 
-## What it provides
+### 3. Start a workstream
 
-- One isolated reviewer home per application
-- Codex-guided generation of a private application review policy
-- Persistent `manual` review mode with human approval by default
-- One-shot review and persistent automatic review with bounded cycles
-- Latest-checkpoint-wins handling when Claude finishes during a review
-- Checkpoint-bound publication, cancellation, and recovery publication
-- Streamed Stop-hook responses without polling
-- Read-only injected Codex turns with live internet access
-- Read-only advice on Claude's structured user questions
-- Optional Playwright MCP integration for interface reviews
-- A safe updater that preserves ignored reviewer state
-
-## Requirements
-
-- Windows PowerShell 5.1+ or Bash
-- Git
-- Node.js 22 or newer
-- Claude Code available as `claude`
-- Codex CLI available as `codex`
-- A Git repository to review
-
-[`just`](https://just.systems/) 1.52 or newer is optional. When installed, the root
-`justfile` provides the same commands on Windows, Linux, and macOS without
-choosing a platform-specific wrapper.
-
-Windows, native Linux, and macOS are supported. WSL uses the Linux workflow on a
-best-effort basis; when a graphical terminal cannot be launched, the bridge
-prints the two commands to run manually.
-
-## Create an application reviewer
-
-First clone this repository as a reusable factory checkout. From that checkout:
+Run this from the generated reviewer:
 
 ```powershell
-.\scripts\powershell\reviewer.ps1 create --project-root 'C:\dev\MyApp'
+.\scripts\powershell\reviewer.ps1 start-pair --feature 'api-retry'
 ```
 
 ```bash
-./scripts/shell/reviewer.sh create --project-root /home/me/dev/MyApp
+./scripts/shell/reviewer.sh start-pair --feature api-retry
 ```
 
-The factory checkout must be clean and synchronized with its upstream. This
-prevents a locally newer factory script from cloning an older published template.
-Commit and push factory changes before creating instances. An explicitly supplied
-`-TemplateRepository` is still checked for the required instance workflow before
-setup or authentication begins.
+The launcher opens two terminals—or prints their commands when a graphical
+terminal is unavailable—one for Claude and one for Codex. Work normally in
+Claude. If Claude uses `AskUserQuestion`, its question and choices appear in
+Codex for advice while Claude waits for your answer. When Claude finishes,
+inspect the read-only review in Codex and choose:
 
-The default destination is `C:\dev\MyApp-reviewer`. Use `-Destination` to choose
-another location outside the application. The factory:
+- `$bridge-publish` to send the findings to Claude;
+- `$bridge-cancel` to release Claude without feedback.
 
-1. clones a clean reviewer instance;
-2. binds it permanently to the target repository;
-3. installs and tests the bridge;
-4. creates isolated Codex and Claude integration configuration;
-5. authenticates the dedicated Codex home; and
-6. starts `$bridge-init-policy` so Codex can inspect the application, ask only
-   unresolved questions, preview a policy, and save it after approval.
+See [Getting started](docs/bootstrap-an-application.md) for custom destinations,
+authentication recovery, terminal fallbacks, validation, and updates.
 
-If policy setup is cancelled, resume it from the generated instance:
+## Choose a review mode
 
-```powershell
-.\scripts\powershell\reviewer.ps1 policy
-```
+Manual review stays armed by default. Change modes from the paired Codex thread:
 
-```bash
-./scripts/shell/reviewer.sh policy
-```
+| Mode | Command | Behavior |
+| --- | --- | --- |
+| Manual | `$bridge-manual` | Review every Claude Stop and wait for your publish or cancel decision. |
+| Once | `$bridge-once` | Review the next Stop, then turn interception off after your decision. |
+| Automatic | `$bridge-auto` | Allow bounded review, revision, or already-authorized continuation rounds. |
+| Off | `$bridge-off` | Disable Stop interception and question advice. |
 
-Pairing remains available without the application-specific policy, but prints a
-warning and uses the tracked generic baseline.
-
-## Start a workstream
-
-From the generated reviewer instance:
-
-```powershell
-.\scripts\powershell\reviewer.ps1 start-pair --feature 'your-feature-name'
-```
-
-```bash
-./scripts/shell/reviewer.sh start-pair --feature your-feature-name
-```
-
-This opens paired Claude and Codex terminals. The first Claude user prompt plus
-the stable bridge protocol and composed review policy seed the persistent Codex
-thread once. The bridge re-seeds that context only when its SHA-256 changes or
-the Codex thread is replaced. Codex compaction does not duplicate the full
-policy; the next bridge turn gets one short reminder to re-read the policy files,
-and compact safety boundaries remain in checkpoint prompts. Checkpoints
-contain only checkpoint-specific control data, a short read-only reminder, and
-Claude's latest assistant message; Codex inspects the worktree for authoritative
-state.
-
-`start-pair` automatically opens two PowerShell windows on Windows, Terminal on
-macOS, or a recognized graphical terminal on Linux. Use `--terminal print` (or
-PowerShell `--terminal print`) to print the exact two commands instead. Arguments
-after `--` are forwarded unchanged to Claude:
-
-```bash
-./scripts/shell/reviewer.sh start-pair --feature api-retry -- --model opus
-```
-
-PowerShell consumes the literal `--` before a script can receive it, so its
-wrapper provides `--passthrough` as the equivalent delimiter:
-
-```powershell
-.\scripts\powershell\reviewer.ps1 start-pair --feature api-retry --passthrough --model opus
-```
-
-When Claude uses `AskUserQuestion`, the structured question and choices are sent
-to the same Codex thread for read-only advice. Claude continues waiting for the
-user, who personally submits the final answer.
-
-## Codex skills
-
-- `$bridge-init-policy` - create or refresh the private application policy
-- `$bridge-manual` - review every Claude Stop and wait for approval; default
-- `$bridge-once` - review only the next Claude Stop
-- `$bridge-auto` - keep automatic review armed with up to three unattended feedback or continuation rounds per cycle
-- `$bridge-off` - disable interception and question advice
-- `$bridge-status` - inspect routing, mode, and checkpoint state
-- `$bridge-publish` - publish the latest completed checkpoint review
-- `$bridge-cancel` - release Claude without feedback
-- `$bridge-force-publish` - recovery-only queueing when no Stop is held
-
-Published feedback is advisory. Claude is instructed to challenge or adapt it,
-accepting, changing, or rejecting findings based on project evidence.
-
-Automatic reviews use a control-only MCP decision and display ordinary Markdown
-instead of JSON. A passing cycle releases Claude with a fixed one-line status;
-detailed findings remain in the reviewer terminal and the out-of-band report.
-The reviewer terminal connects through a
-local single-upstream proxy so broker-initiated turn notifications use the same
-app-server stream as the interactive session. Because that Codex remote protocol
-is experimental, each round is also saved under ignored `reviews/`; print the
-complete latest cycle, in round order, without invoking either model:
+Use `$bridge-status` to inspect routing and checkpoint state. Automatic review
+reports can be printed without invoking either model:
 
 ```text
-just report your-feature-name
+just report api-retry
 ```
 
-Without Just, use
-`.\scripts\powershell\reviewer.ps1 report --feature your-feature-name` on
-Windows or `./scripts/shell/reviewer.sh report --feature your-feature-name` on
-macOS/Linux.
+See [Review workflows](docs/review-workflows.md) for all bridge skills,
+automatic-cycle limits, question advisories, reporting, and recovery.
 
-The cycle report includes every available revise, continuation, pass, or
-needs-user response since the previous final pass. A human decision can reset
-the three-round unattended safety counter without splitting the user-visible
-cycle. The report is assembled deterministically from immutable per-checkpoint
-files, so superseded checkpoints do not break the sequence. It is not feedback
-to Claude and is not added as a second Codex history item. A successful Stop
-sends Claude only a fixed one-line status; detailed review content remains in
-the Codex terminal and the out-of-band report.
+## What stays under your control
 
-An automatic review can also return `pass_continue` when the current gate passes
-but Claude has a concrete next action that the user already authorized. The
-bridge blocks that Stop with only the scoped continuation instruction; it does
-not send Claude the Codex cycle report or create new authorization. If the next
-action or its authorization is unclear, Codex must return `needs_user` instead.
-Continuation and revision feedback share the three-round unattended limit.
+- Hook-injected Codex reviews use a read-only sandbox and never request approval
+  to modify the application.
+- Manual publication is bound to the latest checkpoint, preventing stale
+  feedback from being sent to newer work.
+- The broker listens on an ephemeral loopback port protected by a random bearer
+  token stored in ignored runtime state.
+- The application-specific policy stays in the ignored reviewer file
+  `review-policy.local.md`; it is not added to the application or public factory.
+- Interactive implementation access is a separate, explicit permission profile
+  and does not weaken injected reviews.
 
-Paired Codex terminals run in inline mode so broker-started review turns remain
-in terminal scrollback across later redraws. This changes display behavior only;
-it does not add another turn to Codex history.
+This is workflow isolation, not an operating-system security boundary. Claude
+and Codex still run as the same operating-system user. Read the
+[architecture](docs/architecture.md) and [security policy](.github/SECURITY.md)
+before relying on the bridge for sensitive work.
 
-## Policy and project context
+> [!NOTE]
+> The bridge uses Codex's experimental remote app-server protocol. Automatic
+> review rounds are also persisted under ignored `reviews/` so their reports can
+> be recovered without invoking either model.
 
-Application knowledge remains in the target repository's `AGENTS.md`,
-`CLAUDE.md`, architecture records, specifications, code, tests, and project
-skills. The reviewer combines:
+## Documentation
 
-1. tracked [review-policy.md](review-policy.md), the generic baseline; and
-2. ignored `review-policy.local.md`, generated privately for this application.
+- [Getting started](docs/bootstrap-an-application.md) — create, validate, and
+  update an isolated reviewer.
+- [Review workflows](docs/review-workflows.md) — modes, skills, reports,
+  question advice, and recovery.
+- [Architecture](docs/architecture.md) — routing, concurrency, persistence, and
+  security boundaries.
+- [Contributing](.github/CONTRIBUTING.md) — development checks and release
+  process.
+- [Security](.github/SECURITY.md) — supported versions and private vulnerability
+  reporting.
 
-The application-specific overlay is never added to the application repository
-or the public bridge template. Do not put secrets or credentials in it.
+## Help and feedback
 
-## Update an instance
-
-From a generated reviewer instance with a clean tracked worktree:
-
-```powershell
-.\scripts\powershell\reviewer.ps1 update
-```
-
-```bash
-./scripts/shell/reviewer.sh update
-```
-
-The updater fetches the configured upstream, gracefully stops the running
-broker, accepts only a fast-forward update, runs setup and tests again, and
-preserves ignored policy, authentication, memories, sessions, runtime state,
-and feature mappings. It never resets or
-overwrites tracked local changes. Pass `-Ref <remote-ref>` only when the current
-branch has no configured upstream or a deliberate alternate ref is required.
-The Bash equivalent is `--ref <remote-ref>`.
-
-## Optional Just commands
-
-Run `just` to list the available recipes. The common workflow becomes:
-
-```text
-just create /path/to/MyApp
-just policy
-just pair my-feature
-just report my-feature
-just server
-just stop
-just update
-```
-
-On Windows, paths may use their normal drive-letter form, for example
-`just create 'C:\dev\MyApp'`. Put a `--` before options or arguments that begin
-with a dash. For example, Claude arguments after the feature name are forwarded
-unchanged:
-
-```text
-just pair api-retry -- --model opus
-```
-
-Factory or reviewer options use the same convention:
-
-```text
-just create /path/to/MyApp -- --destination /path/to/MyApp-reviewer
-just update -- --ref origin/main
-```
-
-Use `just reviewer -- <command> ...` as an escape hatch for any command exposed
-by `scripts/reviewer.mjs`. The PowerShell and Bash entrypoints remain fully
-supported and do not require Just.
-
-## Releases
-
-Releases are deliberate. Merging to `main` runs validation but does not publish
-a version. To release, manually run the **CI** workflow against `main`; its
-semantic-release job starts only after the quality and compatibility jobs pass.
-
-The release job authenticates as a dedicated GitHub App installed only on this
-repository. It reads `RELEASE_APP_CLIENT_ID` from the repository variables and
-`RELEASE_APP_PRIVATE_KEY` from the Actions secrets, then creates a short-lived
-installation token with repository contents write access. The App must have
-always-allow bypass access to the protected `main` branch and `v*` tags.
-
-Semantic-release derives the next version from Conventional Commit messages,
-updates `package.json` and `package-lock.json`, creates a release commit and
-`vX.Y.Z` tag, and publishes GitHub release notes. The package is private and is
-never published to npm. Do not edit the package version manually.
-
-- `fix:` creates a patch release.
-- `feat:` creates a minor release.
-- A breaking-change footer or `!` creates a major release.
-- Documentation, test, and maintenance-only commits do not create a release.
-
-## Security model
-
-The broker listens on an ephemeral loopback port and requires a random bearer
-token stored in ignored runtime state. Hook-injected Codex turns use a read-only
-sandbox and never request approvals. Only the exact policy-writer MCP tool can
-write `review-policy.local.md`, and Codex configuration prompts the user before
-that tool runs. Generated Claude settings deny its normal tools access to the
-reviewer home.
-
-This is workflow isolation, not an operating-system security boundary. Both CLIs
-run as the same operating-system user.
-
-See [Bootstrap an application](docs/bootstrap-an-application.md) for recovery
-and validation, and [Architecture](docs/architecture.md) for routing and state.
+Use [GitHub Issues](https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge/issues)
+for bugs and feature requests. Report security vulnerabilities through
+[private vulnerability reporting](https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge/security/advisories/new),
+not a public issue.
 
 ## License
 
