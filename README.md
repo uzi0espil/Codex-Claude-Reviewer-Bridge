@@ -11,6 +11,7 @@ gets its own isolated reviewer home, so policies, memories, credentials, and
 sessions never mix between projects.
 
 [![CI](https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/claude-codex-review-bridge)](https://www.npmjs.com/package/claude-codex-review-bridge)
 [![GitHub release](https://img.shields.io/github/v/release/uzi0espil/Codex-Claude-Reviewer-Bridge)](https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge/releases)
 [![License](https://img.shields.io/github/license/uzi0espil/Codex-Claude-Reviewer-Bridge)](LICENSE)
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
@@ -95,28 +96,20 @@ cancel them entirely.
 You need Git, Node.js 22 or newer, and the `claude` and `codex` CLIs. PowerShell
 5.1+ and Bash are supported. [`just`](https://just.systems/) 1.52+ is optional.
 
-### 1. Clone the reusable factory
-
-```bash
-git clone https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge.git
-cd Codex-Claude-Reviewer-Bridge
-```
-
-Keep this checkout clean and synchronized with its upstream before creating a
-reviewer.
-
-### 2. Create a reviewer for your application
+### 1. Create a reviewer for your application
 
 On Windows:
 
 ```powershell
-.\scripts\powershell\reviewer.ps1 create --project-root 'C:\dev\MyApp'
+npx --yes claude-codex-review-bridge@latest create `
+  --project-root 'C:\dev\MyApp'
 ```
 
 On macOS or Linux:
 
 ```bash
-./scripts/shell/reviewer.sh create --project-root /home/me/dev/MyApp
+npx --yes claude-codex-review-bridge@latest create \
+  --project-root /home/me/dev/MyApp
 ```
 
 The default destination is a sibling directory:
@@ -127,12 +120,13 @@ dev/
 `-- MyApp-reviewer/
 ```
 
-The setup clones and binds the reviewer, installs and tests the bridge,
-authenticates its dedicated Codex home, and opens a guided workflow to create a
-private application review policy. Keep the reviewer beside the application,
-never inside it.
+The npx command is only a bootstrapper. It clones the matching published release
+into the sibling reviewer, binds and tests it, authenticates its dedicated Codex
+home, and opens a guided workflow to create a private application review policy.
+No reviewer state remains in the npm cache. Keep the reviewer beside the
+application, never inside it.
 
-### 3. Start a workstream
+### 2. Start a workstream
 
 Run this from the generated reviewer:
 
@@ -154,7 +148,8 @@ inspect the read-only review in Codex and choose:
 - `$bridge-cancel` to release Claude without feedback.
 
 See [Getting started](docs/bootstrap-an-application.md) for custom destinations,
-authentication recovery, terminal fallbacks, validation, and updates.
+private template forks, the factory-checkout alternative, authentication
+recovery, terminal fallbacks, validation, and updates.
 
 ## Choose a review mode
 

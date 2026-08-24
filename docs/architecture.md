@@ -9,6 +9,11 @@ and bridge state are therefore isolated from unrelated repositories. Setup and
 launch scripts treat an explicit project path as a consistency check and reject
 rebinding.
 
+The public npm package is a stateless bootstrapper, not a reviewer home. By
+default it clones the Git tag matching the npm package version, creates a local
+reviewer branch that tracks `origin/main`, and runs setup inside that clone. npm's
+cache never stores application policy, credentials, sessions, or bridge state.
+
 ## Components
 
 - **Claude hooks** send `SessionStart`, `UserPromptSubmit`, `PreToolUse` for

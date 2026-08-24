@@ -1,3 +1,4 @@
 scripts/shell/*.sh text eol=lf
 scripts/reviewer.mjs text eol=lf
+scripts/npm-bootstrap.mjs text eol=lf
 justfile text eol=lf

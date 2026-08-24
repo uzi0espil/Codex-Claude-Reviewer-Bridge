@@ -4,6 +4,13 @@
   "description": "A local, human-controlled bridge between Claude Code and a persistent Codex review session.",
   "private": true,
   "license": "Apache-2.0",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "code-review",
+    "ai-agents",
+    "developer-tools"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge.git"
@@ -18,10 +25,12 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/test/*.test.js scripts/test/*.test.mjs",
+    "test": "npm run build && node --test dist/test/*.test.js scripts/test/*.test.mjs && npm run test:package",
     "test:just": "node scripts/ci/just-smoke.mjs",
+    "test:package": "node scripts/ci/package-smoke.mjs",
+    "stage:package": "node scripts/ci/stage-npm-package.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
-    "release": "semantic-release"
+    "release": "npm run stage:package && semantic-release"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
