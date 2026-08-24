@@ -130,5 +130,8 @@ jobs:
       - run: npm run release
         env:
           GITHUB_TOKEN: ${{ steps.release-token.outputs.token }}
-          # Remove this secret after the first npm publication; later releases use OIDC.
+          # setup-node's generated .npmrc reads NODE_AUTH_TOKEN, while
+          # semantic-release also supports NPM_TOKEN. Remove the shared secret
+          # after the first npm publication; later releases use OIDC.
           NPM_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
