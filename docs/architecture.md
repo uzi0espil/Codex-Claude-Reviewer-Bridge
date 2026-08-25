@@ -146,6 +146,12 @@ for research. Interactive write access is a separate explicit permission profile
 each later injected turn reselects `bridge-review`, so interactive implementation
 work does not weaken checkpoint reviews.
 
+On native Windows, generated reviewer configuration selects the `unelevated`
+sandbox implementation. This avoids making administrator-approved elevated
+sandbox setup a hidden prerequisite for automatic reviews while retaining
+restricted-token and ACL-based filesystem boundaries. Operators may configure
+the stronger elevated sandbox after completing its one-time system setup.
+
 ## Persistence and privacy
 
 Ignored `runtime/state.json` contains pair identifiers, pending checkpoints,

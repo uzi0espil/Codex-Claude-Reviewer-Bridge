@@ -461,6 +461,7 @@ export function codexConfig(projectRoot, skipPlaywright) {
     }
   }
   lines.push(
+    "", "[windows]", 'sandbox = "unelevated"',
     "", "[permissions.bridge-review]", 'description = "Independent review: read project files without editing them."', 'extends = ":read-only"',
     "", "[permissions.bridge-write]", 'description = "Explicit implementation work inside the active project workspace."', 'extends = ":workspace"'
   );

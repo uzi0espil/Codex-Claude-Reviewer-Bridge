@@ -176,6 +176,9 @@ automatic-cycle limits, question advisories, reporting, and recovery.
 
 - Hook-injected Codex reviews select the read-only `bridge-review` permission
   profile and never request approval to modify the application.
+- Generated native Windows configuration selects Codex's `unelevated` sandbox
+  fallback, so read-only commands work without administrator-approved sandbox
+  setup. WSL, macOS, and Linux continue to use their native sandbox backends.
 - Manual publication is bound to the latest checkpoint, preventing stale
   feedback from being sent to newer work.
 - The broker listens on an ephemeral loopback port protected by a random bearer
