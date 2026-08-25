@@ -140,9 +140,17 @@ The paired Codex TUI is launched with `--no-alt-screen`. Broker-started app-serv
 turns therefore remain in terminal scrollback even if a later turn redraws the
 interface; this does not inject another model-visible item.
 
-All hook-injected Codex turns use `approvalPolicy: never`, a read-only sandbox,
-and network access for research. Interactive write access is a separate explicit
-permission profile and does not weaken injected checkpoint reviews.
+All hook-injected Codex turns use `approvalPolicy: never` and explicitly select
+the read-only `bridge-review` permission profile. Live web search remains enabled
+for research. Interactive write access is a separate explicit permission profile;
+each later injected turn reselects `bridge-review`, so interactive implementation
+work does not weaken checkpoint reviews.
+
+On native Windows, generated reviewer configuration selects the `unelevated`
+sandbox implementation. This avoids making administrator-approved elevated
+sandbox setup a hidden prerequisite for automatic reviews while retaining
+restricted-token and ACL-based filesystem boundaries. Operators may configure
+the stronger elevated sandbox after completing its one-time system setup.
 
 ## Persistence and privacy
 

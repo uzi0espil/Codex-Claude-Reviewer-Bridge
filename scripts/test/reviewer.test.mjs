@@ -186,6 +186,7 @@ test("generates portable Claude hooks and Codex configuration", () => {
   assert.equal(settings.hooks.Stop[0].hooks[0].command, "node");
   const config = codexConfig("/tmp/project with spaces", true);
   assert.match(config, /web_search = "live"/);
+  assert.match(config, /\[windows\]\nsandbox = "unelevated"/);
   assert.match(config, /\[permissions\.bridge-review\]/);
   assert.match(config, /review_bridge_record_auto_decision/);
   assert.doesNotMatch(config, /mcp_servers\.playwright/);

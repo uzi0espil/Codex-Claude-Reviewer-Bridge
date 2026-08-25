@@ -25,6 +25,10 @@ test("the reviewer proxy multiplexes broker and TUI traffic over one upstream co
       if (message.id === "approval-upstream" && !message.method) resolveApprovalResponse!(message);
       if (message.method === "initialize") {
         socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { serverInfo: { name: "fake" } } }));
+      } else if (message.method === "thread/start") {
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { thread: { id: "thread-created" } } }));
+      } else if (message.method === "thread/name/set") {
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: {} }));
       } else if (message.method === "thread/resume") {
         socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { thread: { id: "thread-1" } } }));
       } else if (message.method === "turn/start") {
@@ -52,10 +56,20 @@ test("the reviewer proxy multiplexes broker and TUI traffic over one upstream co
   assert.equal(upstreamMessages.filter((message) => message.method === "initialize").length, 1);
   assert.equal(upstreamConnections, 1);
 
+  assert.equal(await app.createThread("C:/project", "Created thread"), "thread-created");
+  const bridgeStart = upstreamMessages.find((message) => message.method === "thread/start");
+  assert.equal(bridgeStart.params.permissions, "bridge-review");
+  assert.equal("sandbox" in bridgeStart.params, false);
+
+  await app.resumeThread("thread-1", "C:/project");
+  const bridgeResume = upstreamMessages.find((message) => message.method === "thread/resume");
+  assert.equal(bridgeResume.params.permissions, "bridge-review");
+  assert.equal("sandbox" in bridgeResume.params, false);
+
   reviewer.send(JSON.stringify({ jsonrpc: "2.0", id: "resume-from-tui", method: "thread/resume", params: { threadId: "thread-1" } }));
   const resumed = await nextJson(reviewer, (message) => message.id === "resume-from-tui");
   assert.equal(resumed.result.thread.id, "thread-1");
-  const upstreamResume = upstreamMessages.find((message) => message.method === "thread/resume");
+  const upstreamResume = upstreamMessages.find((message) => message.method === "thread/resume" && !("permissions" in message.params));
   assert.equal(typeof upstreamResume.id, "number");
   assert.notEqual(upstreamResume.id, "resume-from-tui");
 
@@ -66,6 +80,14 @@ test("the reviewer proxy multiplexes broker and TUI traffic over one upstream co
   const itemCompleted = nextJson(reviewer, (message) => message.method === "item/completed" && message.params?.item?.type === "agentMessage");
   const turnCompleted = nextJson(reviewer, (message) => message.method === "turn/completed");
   assert.equal(await app.startReview("thread-1", "C:/project", "Review this"), "turn-1");
+  assert.equal(await app.startQuestionAdvisory("thread-1", "C:/project", "Advise on this"), "turn-1");
+  const bridgeTurns = upstreamMessages.filter((message) => message.method === "turn/start");
+  assert.equal(bridgeTurns.length, 2);
+  for (const bridgeTurn of bridgeTurns) {
+    assert.equal(bridgeTurn.params.permissions, "bridge-review");
+    assert.equal(bridgeTurn.params.approvalPolicy, "never");
+    assert.equal("sandboxPolicy" in bridgeTurn.params, false);
+  }
   upstreamSocket!.send(JSON.stringify({ jsonrpc: "2.0", method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-1" } } }));
   upstreamSocket!.send(JSON.stringify({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "contextCompaction", id: "compact-1" } } }));
   upstreamSocket!.send(JSON.stringify({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "agentMessage", text: "No findings." } } }));

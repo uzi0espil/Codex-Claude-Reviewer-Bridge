@@ -4,6 +4,8 @@ import { bridgeVersion } from "./version.js";
 type JsonObject = Record<string, unknown>;
 type JsonRpcId = string | number;
 
+const reviewPermissions = "bridge-review";
+
 interface PendingRpc {
   resolve: (value: any) => void;
   reject: (error: Error) => void;
@@ -124,7 +126,7 @@ export class AppServerClient extends EventEmitter {
       cwd: projectRoot,
       runtimeWorkspaceRoots: [projectRoot],
       approvalPolicy: "never",
-      sandbox: "read-only",
+      permissions: reviewPermissions,
       ephemeral: false
     });
     const threadId = String(result.thread.id);
@@ -138,7 +140,7 @@ export class AppServerClient extends EventEmitter {
       cwd: projectRoot,
       runtimeWorkspaceRoots: [projectRoot],
       approvalPolicy: "never",
-      sandbox: "read-only",
+      permissions: reviewPermissions,
       excludeTurns: true
     });
   }
@@ -151,24 +153,20 @@ export class AppServerClient extends EventEmitter {
   }
 
   async startReview(threadId: string, projectRoot: string, prompt: string): Promise<string> {
-    const result = await this.request("turn/start", {
-      threadId,
-      cwd: projectRoot,
-      runtimeWorkspaceRoots: [projectRoot],
-      approvalPolicy: "never",
-      sandboxPolicy: { type: "readOnly", networkAccess: true },
-      input: [{ type: "text", text: prompt, text_elements: [] }]
-    });
-    return String(result.turn.id);
+    return await this.startReadOnlyTurn(threadId, projectRoot, prompt);
   }
 
   async startQuestionAdvisory(threadId: string, projectRoot: string, prompt: string): Promise<string> {
+    return await this.startReadOnlyTurn(threadId, projectRoot, prompt);
+  }
+
+  private async startReadOnlyTurn(threadId: string, projectRoot: string, prompt: string): Promise<string> {
     const result = await this.request("turn/start", {
       threadId,
       cwd: projectRoot,
       runtimeWorkspaceRoots: [projectRoot],
       approvalPolicy: "never",
-      sandboxPolicy: { type: "readOnly", networkAccess: true },
+      permissions: reviewPermissions,
       input: [{ type: "text", text: prompt, text_elements: [] }]
     });
     return String(result.turn.id);
