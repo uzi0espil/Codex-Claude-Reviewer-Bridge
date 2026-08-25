@@ -174,8 +174,8 @@ automatic-cycle limits, question advisories, reporting, and recovery.
 
 ## What stays under your control
 
-- Hook-injected Codex reviews use a read-only sandbox and never request approval
-  to modify the application.
+- Hook-injected Codex reviews select the read-only `bridge-review` permission
+  profile and never request approval to modify the application.
 - Manual publication is bound to the latest checkpoint, preventing stale
   feedback from being sent to newer work.
 - The broker listens on an ephemeral loopback port protected by a random bearer
