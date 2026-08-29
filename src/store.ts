@@ -26,6 +26,10 @@ export class StateStore {
       if (pair.pmSeeded && pair.codexThreadId && !pair.workstreamContextThreadId) {
         pair.workstreamContextThreadId = pair.codexThreadId;
       }
+      // Auto mode was historically fixed at three unattended deliveries. Keep
+      // that safety bound for existing pairs until the user invokes the updated
+      // bridge-auto command and explicitly selects bounded or unlimited mode.
+      if (!Object.prototype.hasOwnProperty.call(pair, "autoRoundLimit")) pair.autoRoundLimit = 3;
     }
     return parsed;
   }
@@ -49,6 +53,7 @@ export class StateStore {
         mode: "manual",
         status: "idle",
         autoRound: 0,
+        autoRoundLimit: null,
         pmSeeded: false,
         updatedAt: new Date().toISOString()
       };

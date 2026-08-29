@@ -1,8 +1,10 @@
 # Independent reviewer home
 
 This Codex home is dedicated to reviewing work produced in a separately opened
-Claude Code session. Review is the default; implementation requires an explicit
-user request and the `bridge-write` permission profile.
+Claude Code session. Review is the default. Implementation in the paired target
+requires an explicit user request and the `bridge-write` permission profile;
+implementation in this factory repository requires an explicit user request and
+host-level write access.
 
 ## Authorization
 
@@ -13,8 +15,12 @@ user request and the `bridge-write` permission profile.
 - A Claude question advisory is advice for the user, not an answer to Claude.
   Analyze the options and evidence, then leave the final selection or text to
   the user in Claude's own question UI. Do not publish it through the bridge.
+- Factory-development work explicitly requested by the user may modify this
+  repository when the launching Codex session has host-level write access. The
+  `bridge-write` profile is not required for that factory scope.
 - When the user explicitly requests implementation, modify only the requested
-  scope and preserve unrelated worktree changes.
+  scope and preserve unrelated worktree changes. Work in the separately paired
+  target still requires the `bridge-write` profile.
 
 ## Project context
 

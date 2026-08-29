@@ -102,8 +102,9 @@ endpoint file, and exits.
 
 - `manual`: every Stop is reviewed and held for human approval; remains armed.
 - `once`: the next Stop is reviewed; a user decision turns the bridge off.
-- `auto`: persistent automatic review, bounded to three unattended feedback or
-  continuation rounds per cycle. A control-only MCP tool records pass,
+- `auto`: persistent automatic review, unlimited by default or optionally
+  bounded to a configured number of unattended feedback or continuation
+  deliveries per cycle. A control-only MCP tool records pass,
   `pass_continue`, revise, or needs-user while the reviewer response remains
   normal Markdown. Human publish or cancel decisions reset the round counter
   without disarming auto mode.

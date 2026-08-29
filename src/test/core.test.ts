@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { checkpointDecisionError, createCheckpoint, forcePublishError } from "../checkpoint-policy.js";
 import { stopHookOutput } from "../claude-hook-output.js";
-import { modeAfterUserDecision } from "../mode-policy.js";
+import { autoRoundLimitError, autoRoundLimitForMode, modeAfterUserDecision } from "../mode-policy.js";
 import { featureKey, reviewerRoot } from "../paths.js";
 import { maxReviewPolicyBytes, readPolicyFile, writePolicyFile } from "../policy-store.js";
 import { buildPublishedFeedback } from "../published-feedback.js";
@@ -41,6 +41,7 @@ function pair(overrides: Partial<FeaturePair> = {}): FeaturePair {
     mode: "manual",
     status: "idle",
     autoRound: 0,
+    autoRoundLimit: null,
     pmSeeded: true,
     updatedAt: new Date(0).toISOString(),
     ...overrides
@@ -93,6 +94,7 @@ test("state persists immutable routing and mutable mode", () => {
       current.codexThreadId = "codex-id";
       current.reviewContextSha256 = "context-id";
       current.mode = "once";
+      current.autoRoundLimit = 2;
       current.pending = {
         id: "checkpoint-persisted",
         claudeMessage: "Done",
@@ -119,6 +121,7 @@ test("state persists immutable routing and mutable mode", () => {
     assert.equal(reloaded?.codexThreadId, "codex-id");
     assert.equal(reloaded?.reviewContextSha256, "context-id");
     assert.equal(reloaded?.mode, "once");
+    assert.equal(reloaded?.autoRoundLimit, 2);
     assert.equal(reloaded?.pending?.autoDecision, "needs_user");
     assert.equal(reloaded?.lastAutoCycle?.reportPath, "reviews/feature-one/checkpoint-1.md");
     assert.throws(() => store.ensure("Feature One", path.dirname(directory)));
@@ -136,6 +139,7 @@ test("legacy policy-only state forces the combined bridge context to be reseeded
       pairs: {
         "checkout-retry": {
           ...pair({ codexThreadId: "codex-id" }),
+          autoRoundLimit: undefined,
           reviewPolicySha256: "legacy-policy-only-hash"
         }
       }
@@ -143,6 +147,7 @@ test("legacy policy-only state forces the combined bridge context to be reseeded
     const loaded = new StateStore(filename).get("checkout-retry");
     assert.equal(loaded?.reviewContextSha256, undefined);
     assert.equal("reviewPolicySha256" in (loaded ?? {}), false);
+    assert.equal(loaded?.autoRoundLimit, 3);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -208,6 +213,7 @@ test("automatic review prompts request a control tool and human-readable respons
   assert.match(prompt, /concise Markdown/i);
   assert.match(prompt, /Never broaden authorization/i);
   assert.match(prompt, /needs_user = choice/i);
+  assert.match(prompt, /0\/unlimited/i);
   assert.doesNotMatch(prompt, /cycle report/i);
   assert.ok(prompt.length < 1_000);
 });
@@ -346,6 +352,19 @@ test("persistent modes remain armed until explicitly disabled", () => {
   assert.equal(modeAfterUserDecision("off"), "off");
 });
 
+test("automatic round limits accept unlimited or a positive per-cycle bound", () => {
+  assert.equal(autoRoundLimitError("auto", undefined), undefined);
+  assert.equal(autoRoundLimitForMode("auto", undefined), null);
+  assert.equal(autoRoundLimitError("auto", 2), undefined);
+  assert.equal(autoRoundLimitForMode("auto", 2), 2);
+  assert.match(autoRoundLimitError("auto", 0) ?? "", /positive safe integer/i);
+  assert.match(autoRoundLimitError("auto", 1.5) ?? "", /positive safe integer/i);
+  assert.match(autoRoundLimitError("auto", "2") ?? "", /positive safe integer/i);
+  assert.match(autoRoundLimitError("auto", Number.MAX_SAFE_INTEGER + 1) ?? "", /positive safe integer/i);
+  assert.match(autoRoundLimitError("manual", 2) ?? "", /only valid.*auto/i);
+  assert.equal(autoRoundLimitForMode("manual", undefined), null);
+});
+
 test("automatic decisions bind to the active reviewing checkpoint", () => {
   const current = pair({
     mode: "auto",
@@ -365,11 +384,45 @@ test("automatic decisions bind to the active reviewing checkpoint", () => {
   assert.match(autoDecisionError(current, "checkpoint-auto", "pass") ?? "", /mode auto/i);
 });
 
-test("automatic review resolutions preserve readable prose and enforce the revision limit", () => {
+test("bounded automatic delivery allows exactly the configured unattended count", () => {
+  const current = pair({
+    mode: "auto",
+    status: "reviewing",
+    autoRoundLimit: 2,
+    pending: {
+      id: "checkpoint-auto",
+      claudeMessage: "Done",
+      autoDecision: "revise",
+      createdAt: new Date(2).toISOString()
+    }
+  });
+
+  current.autoRound = 0;
+  assert.equal(resolveAutoReview(current, "First revision.").kind, "revise");
+  current.autoRound = 1;
+  assert.equal(resolveAutoReview(current, "Second revision.").kind, "revise");
+  current.autoRound = 2;
+  assert.deepEqual(resolveAutoReview(current, "A third revision needs approval."), {
+    kind: "waiting-user",
+    response: "A third revision needs approval.",
+    reason: "round-limit"
+  });
+
+  current.autoRoundLimit = 1;
+  current.autoRound = 0;
+  current.pending!.autoDecision = "pass_continue";
+  current.pending!.autoContinuation = "Run the already-approved validation.";
+  assert.equal(resolveAutoReview(current, "Continue once.").kind, "continue");
+  current.autoRound = 1;
+  assert.equal(resolveAutoReview(current, "A second continuation needs approval.").kind, "waiting-user");
+});
+
+test("automatic review resolutions preserve readable prose and enforce configurable limits", () => {
   const current = pair({
     mode: "auto",
     status: "reviewing",
     autoRound: 1,
+    autoRoundLimit: 3,
     pending: {
       id: "checkpoint-auto",
       sequence: 2,
@@ -390,7 +443,14 @@ test("automatic review resolutions preserve readable prose and enforce the revis
     reason: "round-limit"
   });
 
+  current.autoRoundLimit = null;
+  assert.deepEqual(resolveAutoReview(current, "Continue fixing the reconnect race."), {
+    kind: "revise",
+    feedback: "Continue fixing the reconnect race."
+  });
+
   current.autoRound = 2;
+  current.autoRoundLimit = 2;
   current.pending!.autoDecision = "pass";
   assert.deepEqual(resolveAutoReview(current, "All findings are resolved."), {
     kind: "pass",
@@ -409,6 +469,7 @@ test("automatic review resolutions preserve readable prose and enforce the revis
   });
 
   current.autoRound = 1;
+  current.autoRoundLimit = 2;
   current.pending!.autoDecision = "pass_continue";
   current.pending!.autoContinuation = "Merge the approved PR, update main, then run /opsx:explore.";
   assert.deepEqual(resolveAutoReview(current, "Gate 1 passed; Gate 2 remains."), {
