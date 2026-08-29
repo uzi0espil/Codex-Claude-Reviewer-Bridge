@@ -1,14 +1,21 @@
 ---
 name: bridge-auto
-description: Arm the bounded automatic Claude-Codex review loop for the paired workstream. Use when the user explicitly requests automatic review and revision without approval after every round.
+description: Arm the automatic Claude-Codex review loop, optionally with a per-cycle round limit. Use when the user explicitly requests automatic review and revision without approval after every round.
 ---
 
-Call `review_bridge_set_mode` with the paired feature and mode `auto`.
+Accept zero or one argument:
 
-Explain that injected Codex turns remain read-only and allow at most three
-unattended feedback or continuation rounds per cycle. Auto remains armed across
-successful cycles and human publish/cancel decisions until `$bridge-off` is
-invoked.
+- With no argument, call `review_bridge_set_mode` with the paired feature and
+  mode `auto`, omitting `roundLimit`. This allows unlimited unattended rounds.
+- With one positive integer argument, include it as `roundLimit`. This bounds
+  unattended feedback or continuation deliveries per cycle.
+- For any other argument, explain that the command accepts only one positive
+  integer and do not change the mode.
+
+Explain whether the configured mode is unlimited or bounded. Injected Codex
+turns remain read-only. Auto remains armed across successful cycles and human
+publish/cancel decisions until `$bridge-off` is invoked. A final pass or a human
+publish/cancel decision resets the per-cycle unattended counter.
 
 Automatic reviews return normal Markdown. Their control decision is recorded
 separately by the bridge. A final `pass` lets Claude stop. `pass_continue` is
@@ -17,11 +24,11 @@ authorized by the user; supply only that action as the continuation. Never use
 it to infer permission, expand scope, or authorize an external mutation. Use
 `needs_user` when authorization is unclear.
 
-`pass_continue` sends Claude only the scoped continuation and consumes one of
-the three unattended rounds. The user-facing cycle report is not sent as Claude
-feedback or added as a second Codex history item. `needs_user`, a missing
-control field, or the cycle limit pauses the exact checkpoint for human review
+`pass_continue` sends Claude only the scoped continuation and consumes one
+unattended round. The user-facing cycle report is not sent as Claude feedback or
+added as a second Codex history item. `needs_user`, a missing control field, or
+an exhausted configured limit pauses the exact checkpoint for human review
 without changing modes. Every round is saved outside both model histories;
 `just report <feature>` deterministically assembles every response since the
-previous final pass, even when a human decision reset the unattended safety
-counter, without invoking either model.
+previous final pass, even when a human decision reset the unattended counter,
+without invoking either model.

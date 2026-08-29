@@ -6,8 +6,11 @@ export type AutoReviewResolution =
   | { kind: "revise"; feedback: string }
   | { kind: "waiting-user"; response: string; reason: "needs-user" | "round-limit" | "missing-decision" | "missing-continuation" };
 
-export const maxAutoFeedbackRounds = 3;
 export const maxAutoContinuationLength = 2_000;
+
+function canDeliverUnattended(pair: FeaturePair): boolean {
+  return pair.autoRoundLimit === null || pair.autoRound < pair.autoRoundLimit;
+}
 
 export function autoDecisionError(
   pair: FeaturePair,
@@ -49,7 +52,7 @@ export function resolveAutoReview(pair: FeaturePair, response: string): AutoRevi
     if (!continuation) {
       return { kind: "waiting-user", response: text, reason: "missing-continuation" };
     }
-    if (pair.autoRound < maxAutoFeedbackRounds) {
+    if (canDeliverUnattended(pair)) {
       return {
         kind: "continue",
         reviewRounds: pair.autoRound + 1,
@@ -58,7 +61,7 @@ export function resolveAutoReview(pair: FeaturePair, response: string): AutoRevi
       };
     }
   }
-  if (decision === "revise" && pair.autoRound < maxAutoFeedbackRounds) return { kind: "revise", feedback: text };
+  if (decision === "revise" && canDeliverUnattended(pair)) return { kind: "revise", feedback: text };
   return {
     kind: "waiting-user",
     response: text,

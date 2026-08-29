@@ -4,6 +4,7 @@ import { z } from "zod";
 import { bridgeRequest } from "./bridge-client.js";
 import { writePolicyFile } from "./policy-store.js";
 import { bridgeVersion } from "./version.js";
+import { autoRoundLimitError } from "./mode-policy.js";
 
 const server = new McpServer({ name: "claude-codex-review-bridge", version: bridgeVersion });
 
@@ -11,10 +12,19 @@ function result(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
 }
 
+const setModeInputSchema = z.object({
+  feature: z.string(),
+  mode: z.enum(["off", "manual", "once", "auto"]),
+  roundLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional()
+}).superRefine(({ mode, roundLimit }, context) => {
+  const error = autoRoundLimitError(mode, roundLimit);
+  if (error) context.addIssue({ code: "custom", message: error, path: ["roundLimit"] });
+});
+
 server.registerTool("review_bridge_set_mode", {
-  description: "Set the paired Claude/Codex bridge mode for a workstream.",
-  inputSchema: z.object({ feature: z.string(), mode: z.enum(["off", "manual", "once", "auto"]) })
-}, async ({ feature, mode }) => result(await bridgeRequest("/mode", { feature, mode })));
+  description: "Set the paired Claude/Codex bridge mode for a workstream. In auto mode, omit roundLimit for unlimited unattended deliveries or provide a positive integer for a per-cycle bound.",
+  inputSchema: setModeInputSchema
+}, async ({ feature, mode, roundLimit }) => result(await bridgeRequest("/mode", { feature, mode, roundLimit })));
 
 server.registerTool("review_bridge_status", {
   description: "Show bridge status and immutable session IDs for a workstream.",

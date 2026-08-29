@@ -37,7 +37,9 @@ checkpoint, the bridge returns to off mode.
 
 ### Automatic
 
-`$bridge-auto` keeps automatic review armed. Each checkpoint ends in one of four
+`$bridge-auto` keeps automatic review armed with unlimited unattended rounds.
+Pass a positive integer, such as `$bridge-auto 2`, to bound unattended revision
+or continuation deliveries per cycle. Each checkpoint ends in one of four
 outcomes:
 
 - `pass` releases a complete and clean workflow;
@@ -56,7 +58,7 @@ sequenceDiagram
     U->>R: $bridge-auto
     R->>B: Arm automatic mode
 
-    loop Until pass or user decision (max 3 unattended revise/continue rounds)
+    loop Until pass or user decision (optional per-cycle unattended limit)
         C->>B: Stop with a completed handoff
         B->>R: Start a read-only review
         R->>R: Inspect the handoff and current worktree
@@ -84,9 +86,11 @@ sequenceDiagram
 Here, `loop` marks the part that can repeat and `alt` shows the mutually
 exclusive decision outcomes.
 
-Revision and continuation share a limit of three unattended rounds per cycle.
-The bridge cannot use continuation to create authorization or broaden the task.
-A human publish or cancel decision resets the unattended counter without
+Revision and continuation share the configured unattended-round counter. With
+no argument the counter is unlimited; a positive integer limits how many such
+deliveries may occur before the bridge pauses for the user. The bridge cannot
+use continuation to create authorization or broaden the task. A final pass or a
+human publish or cancel decision resets the unattended counter without
 disarming automatic mode.
 
 Automatic responses remain ordinary Markdown in the Codex terminal. Each round
@@ -119,7 +123,7 @@ Stop is currently held, turning the bridge off releases it without feedback.
 | `$bridge-init-policy` | Create or refresh the private application review policy. |
 | `$bridge-manual` | Review every completed Claude handoff with human approval. |
 | `$bridge-once` | Review only the next completed handoff. |
-| `$bridge-auto` | Arm bounded automatic review and revision. |
+| `$bridge-auto [rounds]` | Arm unlimited automatic review, or bound unattended deliveries per cycle with a positive integer. |
 | `$bridge-off` | Disable interception and question advice. |
 | `$bridge-status` | Show mode, pairing, pending checkpoint, and recovery state. |
 | `$bridge-publish` | Publish the latest completed checkpoint review. |

@@ -69,6 +69,7 @@ export function composeReviewPolicy(baseline: string, local: string): string {
 }
 
 export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint?: PendingReview): string {
+  const autoRoundLimit = pair.autoRoundLimit === null ? "unlimited" : String(pair.autoRoundLimit);
   const autoContract = pair.mode === "auto"
     ? [
       `Automatic control: after reviewing, call \`review_bridge_record_auto_decision\` exactly once for feature \`${pair.feature}\` and checkpoint \`${checkpoint?.id ?? "unknown"}\`; then return concise Markdown.`,
@@ -82,7 +83,7 @@ export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint
       ? `Supersession notice: this checkpoint supersedes unpublished checkpoint #${checkpoint.supersedes.sequence ?? "?"} (${checkpoint.supersedes.id}). Treat the earlier review as obsolete and reassess the latest handoff and current worktree.`
       : undefined,
     `Claude session: ${pair.claudeSessionId ?? "unknown"}`,
-    `Bridge mode: ${pair.mode}; unattended feedback round: ${pair.autoRound}/3.`,
+    `Bridge mode: ${pair.mode}; unattended feedback/continuation deliveries: ${pair.autoRound}/${autoRoundLimit}.`,
     "Follow the bridge protocol and review policy established in this thread. This injected turn remains strictly read-only.",
     compactedPolicyReminder(pair),
     autoContract,

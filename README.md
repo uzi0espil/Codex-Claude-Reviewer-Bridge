@@ -35,7 +35,7 @@ The bridge gives you:
 - **Persistent context.** One Codex thread follows each workstream instead of
   starting from a pasted summary every time.
 - **Human-controlled feedback.** Manual mode holds Claude until you publish or
-  cancel the review; automatic mode is explicit and bounded.
+  cancel the review; automatic mode is explicit and can be unlimited or bounded.
 - **A second opinion on decisions.** When Claude asks a structured question,
   Codex reviews the choices and advises you; only you answer Claude.
 - **Project isolation.** Every application has a sibling reviewer with its own
@@ -159,7 +159,7 @@ Manual review stays armed by default. Change modes from the paired Codex thread:
 | --- | --- | --- |
 | Manual | `$bridge-manual` | Review every Claude Stop and wait for your publish or cancel decision. |
 | Once | `$bridge-once` | Review the next Stop, then turn interception off after your decision. |
-| Automatic | `$bridge-auto` | Allow bounded review, revision, or already-authorized continuation rounds. |
+| Automatic | `$bridge-auto [rounds]` | Allow automatic review, revision, or already-authorized continuation rounds, optionally bounded per cycle. |
 | Off | `$bridge-off` | Disable Stop interception and question advice. |
 
 Use `$bridge-status` to inspect routing and checkpoint state. Automatic review
@@ -170,7 +170,7 @@ just report api-retry
 ```
 
 See [Review workflows](docs/review-workflows.md) for all bridge skills,
-automatic-cycle limits, question advisories, reporting, and recovery.
+automatic-cycle controls, question advisories, reporting, and recovery.
 
 ## What stays under your control
 

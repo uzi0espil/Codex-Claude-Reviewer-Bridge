@@ -10,7 +10,7 @@ import { endpointPath, featureKey, logPath, reportsDirectory, reviewerRoot, runt
 import { StateStore } from "./store.js";
 import { AutoCycleReceipt, AutoReviewDecision, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
 import { buildReviewContextSeed, buildReviewPrompt, reviewContextSnapshot } from "./review-prompt.js";
-import { modeAfterUserDecision } from "./mode-policy.js";
+import { autoRoundLimitError, autoRoundLimitForMode, modeAfterUserDecision } from "./mode-policy.js";
 import { buildPublishedFeedback } from "./published-feedback.js";
 import { checkpointDecisionError, createCheckpoint, forcePublishError } from "./checkpoint-policy.js";
 import {
@@ -560,12 +560,16 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   }
   if (req.url === "/mode" && req.method === "POST") {
     if (!feature || !["off", "manual", "once", "auto"].includes(String(body.mode))) return send(res, 400, { error: "invalid feature or mode" });
+    const mode = body.mode as BridgeMode;
+    const roundLimitError = autoRoundLimitError(mode, body.roundLimit);
+    if (roundLimitError) return send(res, 400, { error: roundLimitError });
     const existing = store.get(feature);
-    const advisoryTurnId = body.mode === "off" ? existing?.activeQuestionAdvisory?.codexTurnId : undefined;
+    const advisoryTurnId = mode === "off" ? existing?.activeQuestionAdvisory?.codexTurnId : undefined;
     const pair = store.update(feature, (value) => {
-      value.mode = body.mode as BridgeMode;
+      value.mode = mode;
       value.autoRound = 0;
-      if (body.mode === "off") {
+      value.autoRoundLimit = autoRoundLimitForMode(mode, body.roundLimit as number | undefined);
+      if (mode === "off") {
         value.status = "idle";
         if (value.pending) release(value.pending.id, { kind: "allow" });
         value.pending = undefined;

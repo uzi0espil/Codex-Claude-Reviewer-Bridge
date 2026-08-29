@@ -80,6 +80,7 @@ export interface FeaturePair {
   status: PairStatus;
   checkpointSequence?: number;
   autoRound: number;
+  autoRoundLimit: number | null;
   pmSeeded: boolean;
   initialPrompt?: string;
   workstreamContext?: string;
