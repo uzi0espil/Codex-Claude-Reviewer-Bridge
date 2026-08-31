@@ -31,6 +31,16 @@ server.registerTool("review_bridge_status", {
   inputSchema: z.object({ feature: z.string() })
 }, async ({ feature }) => result(await bridgeRequest("/status", { feature })));
 
+server.registerTool("review_bridge_pull_review", {
+  description: "Start a one-off read-only Codex advisory for the latest Claude handoff captured while the bridge was off. The result is shown only to the user and cannot be published or delivered to Claude.",
+  inputSchema: z.object({ feature: z.string() })
+}, async ({ feature }) => result(await bridgeRequest("/pull-review", { feature })));
+
+server.registerTool("review_bridge_pull_queue", {
+  description: "Create an unheld checkpoint from the latest Claude handoff captured while the bridge was off. Requires manual, once, or auto mode; any resulting feedback is delivered on Claude's next user prompt.",
+  inputSchema: z.object({ feature: z.string() })
+}, async ({ feature }) => result(await bridgeRequest("/pull-queue", { feature })));
+
 server.registerTool("review_bridge_record_auto_decision", {
   description: "Record the control decision for the exact automatic review checkpoint. pass_continue requires a concrete next action already authorized by the user. This does not itself release Claude or modify project files. Call exactly once near the end of an injected auto-review turn, then return a normal Markdown response.",
   inputSchema: z.object({

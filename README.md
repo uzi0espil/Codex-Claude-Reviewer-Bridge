@@ -169,6 +169,13 @@ reports can be printed without invoking either model:
 just report api-retry
 ```
 
+While the bridge is off, it retains only Claude's latest completed assistant
+handoff. Use `$bridge-pull-review` for a one-off Codex opinion that stays between
+you and the reviewer, or arm manual, once, or auto mode and use
+`$bridge-pull-queue` to process that handoff through the checkpoint flow. Because
+the off-mode Stop has already completed, queued feedback reaches Claude on your
+next submitted prompt; automatic mode continues normally after that handoff.
+
 See [Review workflows](docs/review-workflows.md) for all bridge skills,
 automatic-cycle controls, question advisories, reporting, and recovery.
 

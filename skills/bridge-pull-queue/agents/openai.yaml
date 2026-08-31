@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bridge Pull Queue"
+  short_description: "Queue the latest bypassed Claude handoff"
+  default_prompt: "Use $bridge-pull-queue to review Claude's latest captured handoff through the armed bridge mode."

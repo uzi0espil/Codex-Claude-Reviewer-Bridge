@@ -115,6 +115,28 @@ Without Just:
 
 `$bridge-off` disables Stop interception and structured-question advice. If a
 Stop is currently held, turning the bridge off releases it without feedback.
+The bridge retains only the latest completed assistant handoff it bypasses so
+that it can be pulled later; it does not retain or parse Claude's transcript.
+
+## Pull a handoff missed while off
+
+Use `$bridge-pull-review` for a one-off, read-only opinion in Codex. It works
+without changing off mode, creates no checkpoint or automatic decision, and
+cannot publish or queue feedback for Claude.
+
+Use `$bridge-pull-queue` when the result should re-enter Claude's workflow. First
+arm `$bridge-manual`, `$bridge-once`, or `$bridge-auto`, then pull the captured
+handoff. Manual and once produce the usual publish-or-cancel checkpoint. Auto
+uses its existing pass, revise, continuation, and needs-user decisions and round
+limit. The pulled checkpoint is not connected to a held Stop, so revision
+feedback or an approved continuation is attached to Claude's next
+user-submitted prompt. After that prompt, normal automatic interception can
+continue unattended.
+
+Each command can process a captured handoff once, independently: a review-only
+pull does not prevent one later queue pull of the same handoff. A newer off-mode
+Stop replaces the captured handoff and makes both commands available again.
+Structured questions and partial turns are not pull candidates.
 
 ## Bridge commands
 
@@ -125,6 +147,8 @@ Stop is currently held, turning the bridge off releases it without feedback.
 | `$bridge-once` | Review only the next completed handoff. |
 | `$bridge-auto [rounds]` | Arm unlimited automatic review, or bound unattended deliveries per cycle with a positive integer. |
 | `$bridge-off` | Disable interception and question advice. |
+| `$bridge-pull-review` | Review the latest off-mode handoff for the user only. |
+| `$bridge-pull-queue` | Put the latest off-mode handoff through the currently armed checkpoint mode. |
 | `$bridge-status` | Show mode, pairing, pending checkpoint, and recovery state. |
 | `$bridge-publish` | Publish the latest completed checkpoint review. |
 | `$bridge-cancel` | Release the latest checkpoint without feedback. |
@@ -156,7 +180,8 @@ stale decisions are rejected.
 
 Run `$bridge-status` when a review does not appear, Claude remains held, or
 routing is unclear. It reports the feature's mode, immutable session and thread
-IDs, pending checkpoint, queued question advice, and queued next-prompt feedback.
+IDs, pending checkpoint, captured off-mode handoff availability, queued question
+advice, and queued next-prompt feedback.
 
 Normal publication uses `$bridge-publish`. Reserve `$bridge-force-publish` for
 recovery after a restart, cancelled checkpoint, disconnected Stop hook, or a

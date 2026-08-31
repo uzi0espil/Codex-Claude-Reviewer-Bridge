@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { localReviewPolicyPath, reviewPolicyPath } from "./paths.js";
-import { FeaturePair, PendingReview } from "./types.js";
+import { FeaturePair, PendingReview, PulledReview } from "./types.js";
 
 const fallbackPolicy = [
   "Review the latest handoff as an independent, evidence-driven reviewer.",
@@ -30,7 +30,8 @@ const bridgeProtocol = [
   "- In auto mode, call `review_bridge_record_auto_decision` exactly once after the assessment, using the exact feature and checkpoint supplied by the current checkpoint prompt. Choose `pass` only when the reviewed work and the user's authorized workflow are complete. Choose `pass_continue` only when this gate is clean and Claude has a concrete next action already authorized by the user; put only that action in `continuation`. Never create authorization, broaden scope, or infer permission for an external mutation. Choose `revise` only for actionable material defects. Choose `needs_user` for a user choice, unavailable required validation, unclear authorization, unresolved ambiguity, or an exhausted unattended limit.",
   "- After the auto decision call, return concise normal Markdown, never JSON. For `revise`, return the complete feedback Claude should receive. For `needs_user`, explain the decision required. For `pass` or `pass_continue`, report only the current gate's outcome, validation, residual risks, and—when continuing—the next gate. Do not generate a cycle recap: the bridge assembles cumulative reports out of band. The bridge sends Claude only revision feedback or the separate continuation, never the Codex report.",
   "",
-  "For a Claude question advisory, inspect the evidence and explain material tradeoffs, assumptions, uncertainty, and a recommendation when supported. Do not publish or answer Claude automatically; the user personally submits the final answer in Claude."
+  "For a Claude question advisory, inspect the evidence and explain material tradeoffs, assumptions, uncertainty, and a recommendation when supported. Do not publish or answer Claude automatically; the user personally submits the final answer in Claude.",
+  "For a pulled review-only advisory, give the user a concise findings-first assessment. Do not record an automatic decision, create publishable feedback, or deliver anything to Claude."
 ].join("\n");
 
 export interface ReviewContextSnapshot {
@@ -50,7 +51,7 @@ export function buildReviewContextSeed(pair: FeaturePair, context: ReviewContext
   return [
     `[Review bridge context for workstream: ${pair.displayName}]`,
     `Context SHA-256: ${context.sha256}`,
-    "This protocol and policy govern every subsequent bridge-injected checkpoint and Claude question advisory in this Codex thread until an updated context is injected. Apply them without requiring the stable instructions to be repeated in each turn.",
+    "This protocol and policy govern every subsequent bridge-injected checkpoint, Claude question advisory, and pulled review-only advisory in this Codex thread until an updated context is injected. Apply them without requiring the stable instructions to be repeated in each turn.",
     "",
     context.content
   ].join("\n");
@@ -90,5 +91,20 @@ export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint
     "",
     "Latest Claude message:",
     message
+  ].filter((line): line is string => line !== undefined).join("\n");
+}
+
+export function buildPulledReviewPrompt(pair: FeaturePair, review: PulledReview): string {
+  return [
+    `[Pulled Claude review for user: ${pair.displayName}]`,
+    `Captured message: ${review.capturedMessageId}`,
+    `Claude session: ${review.claudeSessionId}`,
+    `Bridge mode: ${pair.mode}.`,
+    "Follow the bridge protocol and review policy established in this thread. This injected turn remains strictly read-only.",
+    compactedPolicyReminder(pair),
+    "This is a review-only advisory for the user. Return concise findings-first Markdown. Do not call the automatic-decision tool, create a checkpoint decision, publish feedback, or queue anything for Claude.",
+    "",
+    "Latest captured Claude message:",
+    review.claudeMessage
   ].filter((line): line is string => line !== undefined).join("\n");
 }
