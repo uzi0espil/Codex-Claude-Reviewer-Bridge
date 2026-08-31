@@ -20,7 +20,28 @@ export interface PendingReview {
   autoDecision?: AutoReviewDecision;
   autoContinuation?: string;
   deliveryKind?: "feedback" | "continuation";
+  source?: "stop" | "pull-queue";
   createdAt: string;
+}
+
+export interface CapturedClaudeMessage {
+  id: string;
+  claudeSessionId: string;
+  message: string;
+  capturedAt: string;
+  reviewRequestedAt?: string;
+  reviewedAt?: string;
+  queueRequestedAt?: string;
+  queueCheckpointId?: string;
+}
+
+export interface PulledReview {
+  id: string;
+  capturedMessageId: string;
+  claudeSessionId: string;
+  claudeMessage: string;
+  createdAt: string;
+  codexTurnId?: string;
 }
 
 export type AutoReviewDecision = "pass" | "pass_continue" | "revise" | "needs_user";
@@ -89,6 +110,8 @@ export interface FeaturePair {
   queuedClaudeContext?: string;
   questionAdvisoryQueue?: QuestionAdvisory[];
   activeQuestionAdvisory?: QuestionAdvisory;
+  pulledReview?: PulledReview;
+  capturedClaudeMessage?: CapturedClaudeMessage;
   seenQuestionAdvisoryIds?: string[];
   lastCodexResponse?: string;
   lastAutoCycle?: AutoCycleReceipt;

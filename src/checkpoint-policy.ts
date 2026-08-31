@@ -4,7 +4,8 @@ export function createCheckpoint(
   pair: FeaturePair,
   id: string,
   claudeMessage: string,
-  createdAt = new Date().toISOString()
+  createdAt = new Date().toISOString(),
+  source: PendingReview["source"] = "stop"
 ): PendingReview {
   const previousSequence = Math.max(pair.checkpointSequence ?? 0, pair.pending?.sequence ?? 0);
   const sequence = previousSequence + 1;
@@ -13,6 +14,7 @@ export function createCheckpoint(
     sequence,
     supersedes: pair.pending ? { id: pair.pending.id, sequence: pair.pending.sequence } : undefined,
     claudeMessage,
+    source,
     createdAt
   };
 }

@@ -170,6 +170,11 @@ The normal loop is:
 See [Review workflows](review-workflows.md) for other modes, all bridge commands,
 automatic reports, checkpoint behavior, and recovery.
 
+If work completes while the bridge is off, its latest assistant handoff can be
+inspected with `$bridge-pull-review`. To send a resulting checkpoint back to
+Claude, arm manual, once, or auto mode and use `$bridge-pull-queue`; any feedback
+is attached to Claude's next user-submitted prompt.
+
 Claude `AskUserQuestion` calls are mirrored as read-only Codex advisories. Discuss
 the recommendation in Codex, then answer personally in Claude. Advisories are
 not publishable checkpoints.

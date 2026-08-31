@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bridge Pull Review"
+  short_description: "Review the latest bypassed Claude handoff"
+  default_prompt: "Use $bridge-pull-review to give me a one-off review of Claude's latest captured handoff."

@@ -10,6 +10,7 @@ import { featureKey, reviewerRoot } from "../paths.js";
 import { maxReviewPolicyBytes, readPolicyFile, writePolicyFile } from "../policy-store.js";
 import { buildPublishedFeedback } from "../published-feedback.js";
 import {
+  buildPulledReviewPrompt,
   buildReviewContextSeed,
   buildReviewPrompt,
   compactedPolicyReminder,
@@ -32,6 +33,7 @@ import {
   formatAutoCycleReport,
   resolveAutoReview
 } from "../auto-review.js";
+import { captureClaudeMessage, createPulledReview, pullQueueError, pullReviewError } from "../pulled-message.js";
 
 function pair(overrides: Partial<FeaturePair> = {}): FeaturePair {
   return {
@@ -115,6 +117,12 @@ test("state persists immutable routing and mutable mode", () => {
         headline: "Choose a tradeoff.",
         reportPath: "reviews/feature-one/checkpoint-1.md"
       };
+      current.capturedClaudeMessage = captureClaudeMessage(
+        "claude-id",
+        "Captured handoff",
+        new Date(3).toISOString(),
+        "captured-id"
+      );
     });
     const reloaded = new StateStore(filename).get("feature-one");
     assert.equal(reloaded?.claudeSessionId, "claude-id");
@@ -124,6 +132,7 @@ test("state persists immutable routing and mutable mode", () => {
     assert.equal(reloaded?.autoRoundLimit, 2);
     assert.equal(reloaded?.pending?.autoDecision, "needs_user");
     assert.equal(reloaded?.lastAutoCycle?.reportPath, "reviews/feature-one/checkpoint-1.md");
+    assert.equal(reloaded?.capturedClaudeMessage?.message, "Captured handoff");
     assert.throws(() => store.ensure("Feature One", path.dirname(directory)));
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
@@ -216,6 +225,78 @@ test("automatic review prompts request a control tool and human-readable respons
   assert.match(prompt, /0\/unlimited/i);
   assert.doesNotMatch(prompt, /cycle report/i);
   assert.ok(prompt.length < 1_000);
+});
+
+test("pulled review prompts are user-only and never request automatic control", () => {
+  const current = pair({ mode: "off" });
+  const captured = captureClaudeMessage(
+    "claude-session",
+    "Please review this completed change.",
+    new Date(1).toISOString(),
+    "captured-1"
+  );
+  const prompt = buildPulledReviewPrompt(
+    current,
+    createPulledReview(captured, new Date(2).toISOString(), "pulled-1")
+  );
+  assert.match(prompt, /review-only advisory for the user/i);
+  assert.match(prompt, /Bridge mode: off/);
+  assert.match(prompt, /Latest captured Claude message:\nPlease review this completed change\./);
+  assert.doesNotMatch(prompt, /review_bridge_record_auto_decision/);
+});
+
+test("captured handoffs can be reviewed and queued independently once", () => {
+  const captured = captureClaudeMessage(
+    "claude-session",
+    "Implementation complete.",
+    new Date(1).toISOString(),
+    "captured-1"
+  );
+  const current = pair({ mode: "off", capturedClaudeMessage: captured });
+
+  assert.equal(pullReviewError(current), undefined);
+  assert.match(pullQueueError(current) ?? "", /requires bridge mode manual, once, or auto/i);
+
+  current.capturedClaudeMessage!.reviewRequestedAt = new Date(2).toISOString();
+  assert.match(pullReviewError(current) ?? "", /already queued or active/i);
+  current.capturedClaudeMessage!.reviewedAt = new Date(3).toISOString();
+  assert.match(pullReviewError(current) ?? "", /already been reviewed/i);
+
+  current.mode = "auto";
+  assert.equal(pullQueueError(current), undefined);
+  current.capturedClaudeMessage!.queueRequestedAt = new Date(4).toISOString();
+  current.capturedClaudeMessage!.queueCheckpointId = "checkpoint-1";
+  assert.match(pullQueueError(current) ?? "", /already been queued/i);
+});
+
+test("pull validation rejects conflicting bridge work and permits a newer capture", () => {
+  const current = pair({
+    mode: "manual",
+    capturedClaudeMessage: captureClaudeMessage(
+      "claude-session",
+      "First handoff",
+      new Date(1).toISOString(),
+      "captured-1"
+    )
+  });
+  current.pending = createCheckpoint(current, "checkpoint-live", "Live handoff");
+  assert.match(pullReviewError(current) ?? "", /checkpoint is already pending/i);
+  assert.match(pullQueueError(current) ?? "", /checkpoint is already pending/i);
+
+  current.pending = undefined;
+  current.capturedClaudeMessage!.reviewRequestedAt = new Date(2).toISOString();
+  current.capturedClaudeMessage!.reviewedAt = new Date(3).toISOString();
+  current.capturedClaudeMessage = captureClaudeMessage(
+    "claude-session",
+    "Newer handoff",
+    new Date(4).toISOString(),
+    "captured-2"
+  );
+  assert.equal(pullReviewError(current), undefined);
+  assert.equal(pullQueueError(current), undefined);
+
+  const checkpoint = createCheckpoint(current, "checkpoint-pull", "Newer handoff", new Date(5).toISOString(), "pull-queue");
+  assert.equal(checkpoint.source, "pull-queue");
 });
 
 test("compaction adds one policy-file reminder instead of duplicating policy content", () => {

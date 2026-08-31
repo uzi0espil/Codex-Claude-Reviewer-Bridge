@@ -24,8 +24,9 @@ cache never stores application policy, credentials, sessions, or bridge state.
   read-only review turns.
 - **App-server proxy** multiplexes the broker and one interactive Codex terminal
   over the broker's single upstream app-server connection.
-- **Codex MCP server** exposes status, mode, publish, cancel, recovery, and one
-  path-fixed application-policy writer to the interactive reviewer.
+- **Codex MCP server** exposes status, mode, publish, cancel, off-mode handoff
+  pulling, recovery, and one path-fixed application-policy writer to the
+  interactive reviewer.
 - **Codex terminal** connects remotely to the broker-managed proxy so hook turns
   and user conversation share one visible thread and notification stream.
 - **Reviewer CLI** owns cross-platform instance creation, setup, updates, process
@@ -43,6 +44,13 @@ thread is replaced, or app-server emits a `contextCompaction` item. Later
 checkpoints contain only checkpoint-specific control data, a short read-only
 reminder, and Claude's latest assistant message; Codex reads the current worktree
 for authoritative state.
+
+Even in off mode, the Stop hook receives the completed assistant handoff before
+it immediately allows Claude to finish. The broker retains only the latest such
+handoff. A pull-review starts a non-publishable advisory turn, while a pull-queue
+creates a normal unheld checkpoint in the selected armed mode. Both wait behind
+an active Codex turn, and a live checkpoint takes precedence over a queued pull
+advisory.
 
 The broker reserves a Claude UUID before launch, but `SessionStart` only proves
 that Claude observed it. The session becomes resumable after `UserPromptSubmit`
@@ -108,8 +116,9 @@ endpoint file, and exits.
   `pass_continue`, revise, or needs-user while the reviewer response remains
   normal Markdown. Human publish or cancel decisions reset the round counter
   without disarming auto mode.
-- `off`: Stop interception and question advice are bypassed, and any held Stop
-  is released.
+- `off`: Stop interception and question advice are bypassed, any held Stop is
+  released, and the latest bypassed assistant handoff remains available for
+  explicit pulling.
 
 On `pass`, the Stop hook allows Claude to finish and supplies only a fixed
 one-line `systemMessage`; it never places the Codex report or response headline
@@ -156,13 +165,15 @@ the stronger elevated sandbox after completing its one-time system setup.
 ## Persistence and privacy
 
 Ignored `runtime/state.json` contains pair identifiers, pending checkpoints,
-the latest automatic-cycle receipt, question-advisory routing metadata, and
-queued feedback. Ignored `reviews/` contains out-of-band automatic review
+the latest automatic-cycle receipt, question-advisory routing metadata, the
+latest off-mode assistant handoff and its pull state, and queued feedback.
+Ignored `reviews/` contains out-of-band automatic review
 reports. `runtime/endpoint.json`
 contains the ephemeral loopback URL,
 bearer token, reviewer proxy URL, and broker PID. Both app-server sockets bind
-only to loopback. The bridge never needs Claude's
-full transcript path.
+only to loopback. The bridge never reads or stores Claude's full transcript
+path. Pulling cannot recover handoffs that occurred before a bridge version with
+capture support was installed.
 
 The generated Claude settings deny normal Claude tools access to the reviewer
 home. This reduces accidental prompt discovery but is not an operating-system

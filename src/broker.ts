@@ -9,7 +9,7 @@ import { AppServerProxy } from "./app-server-proxy.js";
 import { endpointPath, featureKey, logPath, reportsDirectory, reviewerRoot, runtimeDirectory } from "./paths.js";
 import { StateStore } from "./store.js";
 import { AutoCycleReceipt, AutoReviewDecision, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
-import { buildReviewContextSeed, buildReviewPrompt, reviewContextSnapshot } from "./review-prompt.js";
+import { buildPulledReviewPrompt, buildReviewContextSeed, buildReviewPrompt, reviewContextSnapshot } from "./review-prompt.js";
 import { autoRoundLimitError, autoRoundLimitForMode, modeAfterUserDecision } from "./mode-policy.js";
 import { buildPublishedFeedback } from "./published-feedback.js";
 import { checkpointDecisionError, createCheckpoint, forcePublishError } from "./checkpoint-policy.js";
@@ -28,6 +28,7 @@ import { StopHookResult } from "./claude-hook-output.js";
 import { runSingleFlight } from "./single-flight.js";
 import { planAutoDelivery } from "./auto-delivery.js";
 import { CodexThreadBusyError, isCodexThreadBusyError } from "./codex-turn-policy.js";
+import { captureClaudeMessage, createPulledReview, pullQueueError, pullReviewError } from "./pulled-message.js";
 
 type Release = StopHookResult;
 type Waiter = { resolve: (release: Release) => void; response: ServerResponse; onClose: () => void };
@@ -36,6 +37,7 @@ const store = new StateStore();
 const waiters = new Map<string, Waiter>();
 const reviewTransitions = new Map<string, Promise<void>>();
 const questionTransitions = new Map<string, Promise<void>>();
+const pulledReviewTransitions = new Map<string, Promise<void>>();
 const threadInitializations = new Map<string, Promise<FeaturePair>>();
 const activeCodexThreads = new Set<string>();
 const token = randomBytes(32).toString("hex");
@@ -278,6 +280,60 @@ function scheduleQuestionAdvisory(feature: string): void {
   });
 }
 
+function schedulePulledReview(feature: string): void {
+  const previous = pulledReviewTransitions.get(feature) ?? Promise.resolve();
+  const transition = previous
+    .catch((error) => log(`Prior pulled-review transition failed for ${feature}: ${String(error)}`))
+    .then(async () => {
+      let pair = store.get(feature);
+      const pulled = pair?.pulledReview;
+      if (!pair || !pulled || pulled.codexTurnId) return;
+      if (pair.pending || pair.queuedClaudeContext) return;
+      if (pair.codexThreadId && activeCodexThreads.has(pair.codexThreadId)) return;
+      pair = await ensureCodexThread(pair);
+      const current = store.get(feature);
+      if (!current?.pulledReview || current.pulledReview.id !== pulled.id || current.pending) return;
+      if (activeCodexThreads.has(current.codexThreadId!)) return;
+      try {
+        const consumedCompactionReminder = Boolean(current.reviewContextCompacted);
+        const turnId = await app.startReview(
+          current.codexThreadId!,
+          current.projectRoot,
+          buildPulledReviewPrompt(current, current.pulledReview)
+        );
+        let installed = false;
+        store.update(feature, (value) => {
+          if (value.pulledReview?.id !== pulled.id || value.pending) return;
+          value.pulledReview.codexTurnId = turnId;
+          if (consumedCompactionReminder) value.reviewContextCompacted = false;
+          installed = true;
+        });
+        if (!installed) {
+          await interruptReview(current.codexThreadId!, turnId);
+          return;
+        }
+        log(`Started pulled review ${pulled.id} for ${feature} as Codex turn ${turnId}.`);
+      } catch (error) {
+        if (isCodexThreadBusyError(error) || activeCodexThreads.has(current.codexThreadId!)) {
+          log(`Pulled review ${pulled.id} remains queued for ${feature} until the active Codex turn completes.`);
+          return;
+        }
+        store.update(feature, (value) => {
+          if (value.pulledReview?.id !== pulled.id) return;
+          if (value.capturedClaudeMessage?.id === pulled.capturedMessageId) {
+            value.capturedClaudeMessage.reviewRequestedAt = undefined;
+          }
+          value.pulledReview = undefined;
+        });
+        log(`Pulled review ${pulled.id} failed to start for ${feature}: ${String(error)}`);
+      }
+    });
+  pulledReviewTransitions.set(feature, transition);
+  void transition.finally(() => {
+    if (pulledReviewTransitions.get(feature) === transition) pulledReviewTransitions.delete(feature);
+  });
+}
+
 function scheduleReview(pair: FeaturePair, pendingId: string, supersededTurnId?: string): void {
   const previous = reviewTransitions.get(pair.feature) ?? Promise.resolve();
   const transition = previous
@@ -295,6 +351,16 @@ function scheduleReview(pair: FeaturePair, pendingId: string, supersededTurnId?:
           }
           log(`Interrupted obsolete question advisory turn ${advisoryTurnId} for checkpoint ${pendingId}.`);
         }
+        const pulledReview = current.pulledReview;
+        if (pulledReview) {
+          if (pulledReview.codexTurnId && current.codexThreadId) {
+            await interruptReview(current.codexThreadId, pulledReview.codexTurnId);
+          }
+          store.update(pair.feature, (value) => {
+            if (value.pulledReview?.id === pulledReview.id) value.pulledReview = undefined;
+          });
+          log(`Discarded obsolete pulled review ${pulledReview.id} for checkpoint ${pendingId}.`);
+        }
         if (supersededTurnId && current.codexThreadId) {
           await interruptReview(current.codexThreadId, supersededTurnId);
         }
@@ -310,6 +376,11 @@ function scheduleReview(pair: FeaturePair, pendingId: string, supersededTurnId?:
         }
         log(`Review failed for ${pair.feature}: ${String(error)}`);
         store.update(pair.feature, (value) => {
+          if (value.pending?.source === "pull-queue"
+            && value.capturedClaudeMessage?.queueCheckpointId === pendingId) {
+            value.capturedClaudeMessage.queueRequestedAt = undefined;
+            value.capturedClaudeMessage.queueCheckpointId = undefined;
+          }
           value.status = "failed";
           value.mode = "off";
           value.pending = undefined;
@@ -339,6 +410,11 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
   const pendingId = pair.pending.id;
   if (turn.status !== "completed" || !turn.text) {
     store.update(pair.feature, (value) => {
+      if (value.pending?.source === "pull-queue"
+        && value.capturedClaudeMessage?.queueCheckpointId === pendingId) {
+        value.capturedClaudeMessage.queueRequestedAt = undefined;
+        value.capturedClaudeMessage.queueCheckpointId = undefined;
+      }
       value.status = "failed";
       value.mode = "off";
       value.pending = undefined;
@@ -441,14 +517,35 @@ function finishQuestionAdvisory(turn: CompletedTurn): void {
   log(`Question advisory ${advisoryId} for ${pair.feature} finished with status ${turn.status}.`);
 }
 
+function finishPulledReview(turn: CompletedTurn): void {
+  const pair = store.all().find((candidate) => candidate.pulledReview?.codexTurnId === turn.turnId);
+  if (!pair?.pulledReview) return;
+  const pulled = pair.pulledReview;
+  store.update(pair.feature, (value) => {
+    if (value.pulledReview?.id !== pulled.id) return;
+    if (value.capturedClaudeMessage?.id === pulled.capturedMessageId) {
+      if (turn.status === "completed" && turn.text) {
+        value.capturedClaudeMessage.reviewedAt = new Date().toISOString();
+      } else {
+        value.capturedClaudeMessage.reviewRequestedAt = undefined;
+      }
+    }
+    value.pulledReview = undefined;
+  });
+  log(`Pulled review ${pulled.id} for ${pair.feature} finished with status ${turn.status}.`);
+}
+
 async function handleTurnCompleted(turn: CompletedTurn): Promise<void> {
   activeCodexThreads.delete(turn.threadId);
   await finishReview(turn);
   finishQuestionAdvisory(turn);
+  finishPulledReview(turn);
   for (const pair of store.all()) {
     if (pair.codexThreadId !== turn.threadId) continue;
     if (pair.status === "reviewing" && pair.pending && !pair.pending.codexTurnId) {
       scheduleReview(pair, pair.pending.id);
+    } else if (pair.pulledReview && !pair.pulledReview.codexTurnId) {
+      schedulePulledReview(pair.feature);
     } else if (pair.questionAdvisoryQueue?.length) scheduleQuestionAdvisory(pair.feature);
   }
 }
@@ -493,6 +590,23 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
       createdAt: pair.activeQuestionAdvisory.createdAt,
       codexTurnId: pair.activeQuestionAdvisory.codexTurnId
     } : undefined,
+    pulledReview: pair.pulledReview ? {
+      id: pair.pulledReview.id,
+      capturedMessageId: pair.pulledReview.capturedMessageId,
+      createdAt: pair.pulledReview.createdAt,
+      codexTurnId: pair.pulledReview.codexTurnId
+    } : undefined,
+    capturedClaudeMessage: pair.capturedClaudeMessage ? {
+      id: pair.capturedClaudeMessage.id,
+      claudeSessionId: pair.capturedClaudeMessage.claudeSessionId,
+      capturedAt: pair.capturedClaudeMessage.capturedAt,
+      reviewState: pair.capturedClaudeMessage.reviewedAt
+        ? "completed"
+        : pair.pulledReview?.capturedMessageId === pair.capturedClaudeMessage.id
+          ? "queued-or-active"
+          : pair.capturedClaudeMessage.reviewRequestedAt ? "consumed" : "available",
+      queueState: pair.capturedClaudeMessage.queueRequestedAt ? "consumed" : "available"
+    } : undefined,
     seenQuestionAdvisoryIds: pair.seenQuestionAdvisoryIds?.length ?? 0,
     pending: pair.pending ? {
       ...pair.pending,
@@ -527,7 +641,8 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     let pair = store.ensure(String(body.feature), String(body.projectRoot));
     pair = await ensureCodexThread(pair);
     send(res, 200, { ...publicPair(pair), appServerUrl });
-    scheduleQuestionAdvisory(pair.feature);
+    if (pair.pulledReview) schedulePulledReview(pair.feature);
+    else scheduleQuestionAdvisory(pair.feature);
     return;
   }
   if (req.url === "/pairs" && req.method === "GET") return send(res, 200, store.all().map(publicPair));
@@ -566,6 +681,12 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const existing = store.get(feature);
     const advisoryTurnId = mode === "off" ? existing?.activeQuestionAdvisory?.codexTurnId : undefined;
     const pair = store.update(feature, (value) => {
+      if (mode === "off" && value.pending && value.pending.source !== "pull-queue") {
+        value.capturedClaudeMessage = captureClaudeMessage(
+          value.claudeSessionId ?? "unknown",
+          value.pending.claudeMessage
+        );
+      }
       value.mode = mode;
       value.autoRound = 0;
       value.autoRoundLimit = autoRoundLimitForMode(mode, body.roundLimit as number | undefined);
@@ -583,6 +704,64 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       log(`Interrupted question advisory turn ${advisoryTurnId} because ${feature} was switched off.`);
     }
     return send(res, 200, publicPair(pair));
+  }
+  if (req.url === "/pull-review" && req.method === "POST") {
+    if (!feature) return send(res, 400, { error: "feature required" });
+    const existing = store.get(feature);
+    if (!existing) return send(res, 404, { error: "unknown feature" });
+    const validationError = pullReviewError(existing);
+    if (validationError) return send(res, 409, { error: validationError });
+    const captured = existing.capturedClaudeMessage!;
+    const pulledReview = createPulledReview(captured);
+    const requestedAt = new Date().toISOString();
+    const pair = store.update(feature, (value) => {
+      if (value.capturedClaudeMessage?.id !== captured.id) return;
+      value.capturedClaudeMessage.reviewRequestedAt = requestedAt;
+      value.pulledReview = pulledReview;
+    });
+    const dispatch = pair.codexThreadId && activeCodexThreads.has(pair.codexThreadId) ? "queued" : "starting";
+    send(res, 200, {
+      accepted: true,
+      feature,
+      capturedMessageId: captured.id,
+      pulledReviewId: pulledReview.id,
+      dispatch,
+      delivery: "reviewer-only"
+    });
+    schedulePulledReview(feature);
+    return;
+  }
+  if (req.url === "/pull-queue" && req.method === "POST") {
+    if (!feature) return send(res, 400, { error: "feature required" });
+    const existing = store.get(feature);
+    if (!existing) return send(res, 404, { error: "unknown feature" });
+    const validationError = pullQueueError(existing);
+    if (validationError) return send(res, 409, { error: validationError });
+    const captured = existing.capturedClaudeMessage!;
+    const pendingId = store.newPendingId();
+    const checkpoint = createCheckpoint(existing, pendingId, captured.message, new Date().toISOString(), "pull-queue");
+    const requestedAt = new Date().toISOString();
+    const pair = store.update(feature, (value) => {
+      if (value.capturedClaudeMessage?.id !== captured.id) return;
+      value.capturedClaudeMessage.queueRequestedAt = requestedAt;
+      value.capturedClaudeMessage.queueCheckpointId = pendingId;
+      value.status = "reviewing";
+      value.checkpointSequence = checkpoint.sequence;
+      value.pending = checkpoint;
+      value.questionAdvisoryQueue = undefined;
+      value.lastCodexResponse = undefined;
+    });
+    send(res, 200, {
+      accepted: true,
+      feature,
+      mode: pair.mode,
+      capturedMessageId: captured.id,
+      checkpointId: pendingId,
+      checkpointSequence: checkpoint.sequence,
+      delivery: "next-prompt-if-feedback"
+    });
+    scheduleReview(pair, pendingId);
+    return;
   }
   if (req.url === "/publish" && req.method === "POST") {
     if (!feature) return send(res, 400, { error: "feature required" });
@@ -697,7 +876,16 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   if (req.url === "/hook/stop" && req.method === "POST") {
     const input = body.input as ClaudeHookInput;
     const pair = store.get(String(body.feature));
-    if (!pair || pair.mode === "off" || !input.last_assistant_message) return send(res, 200, { kind: "allow" });
+    if (!pair || !input.last_assistant_message) return send(res, 200, { kind: "allow" });
+    if (pair.mode === "off") {
+      store.update(pair.feature, (value) => {
+        recordClaudeSession(value, input.session_id, true);
+        value.status = "idle";
+        value.capturedClaudeMessage = captureClaudeMessage(input.session_id, input.last_assistant_message!);
+      });
+      log(`Captured the latest off-mode Claude handoff for ${pair.feature}.`);
+      return send(res, 200, { kind: "allow" });
+    }
     const superseded = pair.pending;
     const supersededQueuedFeedback = Boolean(pair.queuedClaudeContext);
     const pendingId = store.newPendingId();
@@ -710,6 +898,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       value.queuedClaudeContext = undefined;
       value.questionAdvisoryQueue = undefined;
       value.lastCodexResponse = undefined;
+      value.capturedClaudeMessage = undefined;
     });
     if (superseded) {
       release(superseded.id, { kind: "allow" });

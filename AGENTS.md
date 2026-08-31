@@ -10,8 +10,9 @@ host-level write access.
 
 - For review, explanation, diagnosis, and assessment, do not edit files, commit,
   publish, or approve external actions.
-- A bridge-injected checkpoint or Claude question advisory is always read-only,
-  even if an earlier interactive turn used write permissions.
+- A bridge-injected checkpoint, Claude question advisory, or pulled review-only
+  advisory is always read-only, even if an earlier interactive turn used write
+  permissions.
 - A Claude question advisory is advice for the user, not an answer to Claude.
   Analyze the options and evidence, then leave the final selection or text to
   the user in Claude's own question UI. Do not publish it through the bridge.
