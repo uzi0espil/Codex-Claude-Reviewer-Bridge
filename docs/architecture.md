@@ -27,6 +27,9 @@ cache never stores application policy, credentials, sessions, or bridge state.
 - **Codex MCP server** exposes status, mode, publish, cancel, off-mode handoff
   pulling, recovery, and one path-fixed application-policy writer to the
   interactive reviewer.
+- **Application review-tools MCP server** exposes scanner evidence and a
+  path-fixed, prompt-gated manifest writer before onboarding. After approval, a
+  fresh session also exposes one dynamic tool per approved recipe.
 - **Codex terminal** connects remotely to the broker-managed proxy so hook turns
   and user conversation share one visible thread and notification stream.
 - **Reviewer CLI** owns cross-platform instance creation, setup, updates, process
@@ -156,6 +159,25 @@ for research. Interactive write access is a separate explicit permission profile
 each later injected turn reselects `bridge-review`, so interactive implementation
 work does not weaken checkpoint reviews.
 
+Setup scans the bound repository for language manifests, package scripts, common
+task runners, Compose configuration, CI, and validation-like scripts. The ignored
+`review-tools.detected.json` output is evidence only and is never loaded as an
+executable manifest. `$bridge-init-tools` checks repository instructions and CI,
+asks only material questions, and previews a curated manifest. The fixed writer
+validates its schema and immutable project binding, requires the previously
+observed SHA-256, and atomically replaces only ignored
+`review-tools.local.json`. Its MCP approval mode is `prompt`; all other tool
+server capabilities are harmless until the approved manifest exists.
+
+Approved runners use fixed argv execution with `shell: false`, bounded typed
+inputs, repository-path validation, output caps, timeouts, and one active command
+at a time. Host, Compose, existing-service execution, and staged-service
+execution are language-neutral. Staged execution copies only an approved source
+subtree to a unique container scratch directory, retrieves only declared
+artifacts into ignored reviewer runtime storage, and attempts cleanup. Manifest
+approval is standing authorization for those exact capabilities, not for an
+arbitrary shell or implementation changes.
+
 On native Windows, generated reviewer configuration selects the `unelevated`
 sandbox implementation. This avoids making administrator-approved elevated
 sandbox setup a hidden prerequisite for automatic reviews while retaining
@@ -184,3 +206,9 @@ application-specific `review-policy.local.md` is ignored and merged after it.
 The policy writer accepts no path, uses an expected SHA-256 to reject stale
 updates, and is configured to prompt for user approval. It never writes the
 application repository.
+
+Scanner recommendations in `review-tools.detected.json` and approved recipes in
+`review-tools.local.json` are also ignored and application-bound. Validation
+artifacts are kept below ignored `runtime/review-tools/`. No manifest contains
+credentials; approved runners inherit the reviewer's runtime environment when a
+tool legitimately needs existing developer authentication.

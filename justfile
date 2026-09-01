@@ -37,6 +37,8 @@ function runNpm(script) {
       return runReviewer(["login", ...stripJustDelimiter(args)]);
     case "policy":
       return runReviewer(["policy", ...args]);
+    case "tools":
+      return runReviewer(["tools", ...args]);
     case "pair":
       return runReviewer(["start-pair", "--feature", args[0], ...args.slice(1)]);
     case "server":
@@ -79,6 +81,11 @@ login *options:
 # Create or refresh the private application review policy.
 [script("node")]
 policy *codex_args:
+    {{ runner }}
+
+# Detect and curate private application review tools.
+[script("node")]
+tools *codex_args:
     {{ runner }}
 
 # Open the paired Claude and Codex terminals for a feature.

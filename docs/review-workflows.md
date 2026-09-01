@@ -143,6 +143,7 @@ Structured questions and partial turns are not pull candidates.
 | Command | Purpose |
 | --- | --- |
 | `$bridge-init-policy` | Create or refresh the private application review policy. |
+| `$bridge-init-tools` | Curate and approve application-specific validation tools. |
 | `$bridge-manual` | Review every completed Claude handoff with human approval. |
 | `$bridge-once` | Review only the next completed handoff. |
 | `$bridge-auto [rounds]` | Arm unlimited automatic review, or bound unattended deliveries per cycle with a positive integer. |
