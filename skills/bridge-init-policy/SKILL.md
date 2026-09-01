@@ -23,6 +23,32 @@ encode conclusions about one implementation into the policy.
 - Never read or record credentials, tokens, production secrets, or test-account
   passwords in the policy.
 
+## Preserve validation fidelity
+
+Before drafting validation requirements, build a private inventory of
+repository-established checks from CI jobs, path filters, documented developer
+commands, manifests, and task runners. For each relevant check, record:
+
+- the changed files, risks, or workflow conditions that trigger it;
+- dependency installation and other setup steps;
+- the exact working directory;
+- required services, environment, fixtures, credentials, or hardware;
+- the exact command and fixed arguments, including exclusions and selectors;
+- whether it is mandatory, conditional, destructive, expensive, or CI-only.
+
+Treat prerequisites, working directories, exclusions, and ordering as part of
+the validation procedure. Do not shorten or generalize a command in a way that
+changes its scope. Distinguish unconditional gates from path-filtered checks and
+ordinary local commands.
+
+Before previewing the policy, reconcile every stated validation requirement
+against this inventory and cite its repository evidence. If an approved review
+tool manifest exists, compare its catalog with the required checks and identify
+missing capabilities. If no manifest exists, distinguish evidence the policy
+requires from commands the reviewer is currently authorized to execute. Do not
+turn an approximate command list into policy; defer exact executable recipes to
+`$bridge-init-tools`.
+
 ## Ask only unresolved questions
 
 Ask concise questions only when the answer changes the rubric and cannot be
@@ -52,11 +78,13 @@ baseline. Use these sections, omitting only genuinely inapplicable material:
 8. `## Findings, severity, and automatic-mode escalation`
 
 Distinguish requirements established by repository evidence from user-selected
-preferences. Use commands that actually exist. For frontend applications,
-describe routes, states, breakpoints, themes, console/accessibility checks, and
-what to report when the application cannot be exercised. For non-frontend
-applications, state that browser validation is not normally required instead of
-inventing it.
+preferences. Include a command only with its verified invocation context; when
+the durable rule is about evidence rather than invocation, name the required
+capability and cite its authoritative CI job or documentation instead. For
+frontend applications, describe routes, states, breakpoints, themes,
+console/accessibility checks, and what to report when the application cannot be
+exercised. For non-frontend applications, state that browser validation is not
+normally required instead of inventing it.
 
 ## Preview and save
 

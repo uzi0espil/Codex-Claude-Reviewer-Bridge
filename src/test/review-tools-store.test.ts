@@ -8,7 +8,9 @@ import {
   readReviewToolsDetection,
   readReviewToolsManifestFile,
   readReviewToolsManifestRevision,
+  readReviewToolsReadinessCache,
   refreshReviewToolsDetection,
+  writeReviewToolsReadinessCache,
   writeReviewToolsManifest
 } from "../review-tools-store.js";
 
@@ -102,6 +104,29 @@ test("refreshes reviewer-local detection without approving candidates", () => {
     const loaded = readReviewToolsDetection(detectionPath, root);
     assert.equal(loaded?.sha256, detected.sha256);
     assert.equal(fs.existsSync(path.join(root, "review-tools.local.json")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("caches readiness evidence only for the matching manifest revision", () => {
+  const root = fixture();
+  const cachePath = path.join(root, "runtime", "readiness.json");
+  const manifestSha = "a".repeat(64);
+  try {
+    const record = {
+      success: true,
+      probedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      exitCode: 0,
+      timedOut: false,
+      durationMs: 12
+    };
+    writeReviewToolsReadinessCache(manifestSha, { backend: record }, cachePath);
+    assert.deepEqual(readReviewToolsReadinessCache(manifestSha, cachePath)?.tools.backend, record);
+    assert.equal(readReviewToolsReadinessCache("b".repeat(64), cachePath), undefined);
+    fs.writeFileSync(cachePath, "{invalid json\n", "utf8");
+    assert.equal(readReviewToolsReadinessCache(manifestSha, cachePath), undefined);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

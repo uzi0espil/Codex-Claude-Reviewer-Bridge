@@ -6,12 +6,14 @@ import {
   loadBoundProjectRoot,
   reviewToolsManifestSchema,
   validatedRepositoryPath,
+  type ReviewToolProbeRecord,
   type ReviewToolsManifest
 } from "./review-tools.js";
-import { reviewerRoot } from "./paths.js";
+import { reviewerRoot, runtimeDirectory } from "./paths.js";
 
 export const reviewToolsManifestPath = path.join(reviewerRoot, "review-tools.local.json");
 export const reviewToolsDetectionPath = path.join(reviewerRoot, "review-tools.detected.json");
+export const reviewToolsReadinessPath = path.join(runtimeDirectory, "review-tools", "readiness.json");
 export const maxReviewToolsManifestBytes = 1_048_576;
 
 export type HashedFile<T> = {
@@ -28,6 +30,13 @@ export type ManifestWriteResult = {
   created: boolean;
   toolCount: number;
   restartRequired: true;
+};
+
+export type ReviewToolsReadinessCache = {
+  schemaVersion: 1;
+  manifestSha256: string;
+  updatedAt: string;
+  tools: Record<string, ReviewToolProbeRecord>;
 };
 
 function hash(value: Buffer | string): string {
@@ -70,11 +79,14 @@ function atomicWrite(filename: string, encoded: Buffer): void {
 }
 
 function assertManifestPaths(manifest: ReviewToolsManifest, projectRoot: string): void {
-  for (const recipe of manifest.tools) {
-    if (recipe.runner.cwd !== ".") validatedRepositoryPath(projectRoot, recipe.runner.cwd, `working directory for '${recipe.id}'`);
-    if (recipe.runner.kind !== "host") {
-      for (const file of recipe.runner.files) validatedRepositoryPath(projectRoot, file, `Compose file for '${recipe.id}'`);
+  const assertRunnerPaths = (runner: ReviewToolsManifest["tools"][number]["runner"], label: string): void => {
+    if (runner.cwd !== ".") validatedRepositoryPath(projectRoot, runner.cwd, `working directory for '${label}'`);
+    if (runner.kind !== "host") {
+      for (const file of runner.files) validatedRepositoryPath(projectRoot, file, `Compose file for '${label}'`);
     }
+  };
+  for (const recipe of manifest.tools) {
+    assertRunnerPaths(recipe.runner, recipe.id);
     if (recipe.runner.kind === "compose_stage_exec") {
       validatedRepositoryPath(projectRoot, recipe.runner.sourceDirectory, `staged source directory for '${recipe.id}'`);
       for (const artifact of recipe.runner.artifacts) {
@@ -82,7 +94,56 @@ function assertManifestPaths(manifest: ReviewToolsManifest, projectRoot: string)
         validatedRepositoryPath(projectRoot, artifact.replaceAll(/\{[a-z][a-z0-9_]*\}/g, "placeholder"), `artifact path for '${recipe.id}'`);
       }
     }
+    if (recipe.readiness?.mode === "probe") {
+      assertRunnerPaths(recipe.readiness.runner, `${recipe.id} readiness probe`);
+    }
   }
+}
+
+function isProbeRecord(value: unknown): value is ReviewToolProbeRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.success === "boolean"
+    && typeof record.probedAt === "string"
+    && typeof record.expiresAt === "string"
+    && (typeof record.exitCode === "number" || record.exitCode === null)
+    && typeof record.timedOut === "boolean"
+    && typeof record.durationMs === "number"
+    && (record.error === undefined || typeof record.error === "string");
+}
+
+export function readReviewToolsReadinessCache(
+  manifestSha256: string,
+  filename = reviewToolsReadinessPath
+): ReviewToolsReadinessCache | undefined {
+  try {
+    const current = readJsonFile<unknown>(filename)?.value;
+    if (!current || typeof current !== "object") return undefined;
+    const cache = current as Partial<ReviewToolsReadinessCache>;
+    if (cache.schemaVersion !== 1 || cache.manifestSha256 !== manifestSha256 || !cache.tools || typeof cache.tools !== "object") {
+      return undefined;
+    }
+    if (!Object.values(cache.tools).every(isProbeRecord)) return undefined;
+    return cache as ReviewToolsReadinessCache;
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeReviewToolsReadinessCache(
+  manifestSha256: string,
+  results: Record<string, ReviewToolProbeRecord>,
+  filename = reviewToolsReadinessPath
+): ReviewToolsReadinessCache {
+  const existing = readReviewToolsReadinessCache(manifestSha256, filename);
+  const cache: ReviewToolsReadinessCache = {
+    schemaVersion: 1,
+    manifestSha256,
+    updatedAt: new Date().toISOString(),
+    tools: { ...(existing?.tools ?? {}), ...results }
+  };
+  atomicWrite(filename, Buffer.from(`${JSON.stringify(cache, null, 2)}\n`, "utf8"));
+  return cache;
 }
 
 export function readReviewToolsManifestFile(

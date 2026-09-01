@@ -178,6 +178,14 @@ artifacts into ignored reviewer runtime storage, and attempts cleanup. Manifest
 approval is standing authorization for those exact capabilities, not for an
 arbitrary shell or implementation changes.
 
+The same manifest controls readiness. Static mode performs no runtime command
+and is the backward-compatible default. Trusted mode records the user's explicit
+acceptance of runtime prerequisites after structural validation. Per-tool probe
+mode executes only a fixed approved host or Compose runner and caches its result
+under ignored reviewer runtime state for the approved duration. Doctor output
+preserves the evidence basis, and no readiness mode can override an invalid
+binding, missing path, Compose file, or host executable.
+
 On native Windows, generated reviewer configuration selects the `unelevated`
 sandbox implementation. This avoids making administrator-approved elevated
 sandbox setup a hidden prerequisite for automatic reviews while retaining

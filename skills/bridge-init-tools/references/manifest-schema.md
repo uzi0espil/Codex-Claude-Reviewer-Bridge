@@ -7,6 +7,7 @@ The manifest is JSON with this top-level shape:
   "schemaVersion": 1,
   "projectRoot": "<exact absolute bound application path>",
   "approvedAt": "<ISO-8601 timestamp>",
+  "readinessDefaults": { "mode": "static" },
   "tools": []
 }
 ```
@@ -14,6 +15,48 @@ The manifest is JSON with this top-level shape:
 Each tool needs a unique lowercase `id` matching
 `^[a-z][a-z0-9_]{1,63}$`, a title, description, runner, optional typed inputs,
 a timeout from 1 to 86400 seconds, MCP annotations, and repository evidence.
+Existing manifests that omit `readinessDefaults` remain valid and default to
+`static`.
+
+## Readiness
+
+The global readiness default is either:
+
+- `static`: inspect host executables, repository paths, and Compose files
+  without executing a runtime command. Container-backed tools normally report
+  `needs_runtime_probe`.
+- `trusted`: after structural checks pass, report runtime readiness as `ready`
+  with basis `user_trusted`. This records an explicit user assumption; it is not
+  runtime evidence.
+
+A tool may override the default with `"readiness": { "mode": "static" }` or
+`"readiness": { "mode": "trusted" }`. It may instead define an approved probe:
+
+```json
+{
+  "readiness": {
+    "mode": "probe",
+    "runner": {
+      "kind": "compose_exec",
+      "files": ["compose.yml"],
+      "service": "backend",
+      "workdir": "/app",
+      "command": "python",
+      "args": ["--version"],
+      "cwd": "."
+    },
+    "timeoutSeconds": 30,
+    "cacheSeconds": 300
+  }
+}
+```
+
+Probe runners support `host`, `compose`, and `compose_exec`. They use fixed argv
+execution and have no dynamic inputs. `review_tools_probe` runs only these
+approved probes. Successful and failed results are cached in ignored reviewer
+runtime state by manifest SHA-256 for the approved duration. The doctor reports
+the readiness basis as `static`, `user_trusted`, or `runtime_probe`. Structural
+failures always remain `missing`, regardless of readiness mode.
 
 ## Runner kinds
 
@@ -70,4 +113,3 @@ not read-only. Mark truly stateful or cleanup-like operations accurately.
 The `evidence` array should cite repository-relative files and, when useful,
 keys or targets such as `package.json#scripts.test` or
 `.github/workflows/ci.yml`.
-

@@ -152,15 +152,19 @@ manifests, documented workflows, Compose services, and scripts. It supports
 mixed-language repositories and does not assume a particular framework. It
 curates a small set of host, Compose, existing-service, or staged-service
 runners; asks only about material choices such as data isolation, stateful
-commands, mandatory gates, and free-form arguments; and previews the complete
-JSON manifest before asking for approval.
+commands, mandatory gates, free-form arguments, and readiness behavior; and
+previews the complete JSON manifest before asking for approval. Readiness may
+remain static, explicitly trust runtime prerequisites, or use fixed approved
+probes for selected tools. The safe default is static.
 
 Approval writes only ignored `review-tools.local.json` through a path-fixed MCP
 tool with schema, project-binding, size, and optimistic-hash checks. Scanner
 output never becomes executable by itself. Start a fresh Codex session after
 creating or changing the manifest so the approved dynamic tools are published.
 Use `review_tools_catalog` and `review_tools_doctor` there to verify what is
-available before relying on it.
+available before relying on it. When probes were approved, use
+`review_tools_probe` to execute them and call the doctor again. Its output
+distinguishes static, user-trusted, and runtime-probed readiness.
 
 ## 4. Start and use a pair
 
@@ -221,6 +225,9 @@ Exercise these cases before relying on it:
 - Approve a small manifest, start a fresh session, and confirm its tools appear
   in `review_tools_catalog` and pass `review_tools_doctor` or report an exact
   runtime prerequisite.
+- Exercise one trusted tool and one fixed readiness probe. Confirm structural
+  errors remain missing, probe results expire as configured, and the doctor
+  reports the correct readiness basis.
 - Attempt setup with a second repository and confirm immutable binding rejects it.
 - Wait more than six minutes before publishing and confirm the Stop remains held.
 - Publish an edited subset and confirm Claude receives composed findings rather

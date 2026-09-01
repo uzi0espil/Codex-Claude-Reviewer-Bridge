@@ -1,5 +1,4 @@
 interface:
   display_name: "Initialize Review Tools"
-  short_description: "Curate safe project validation tools"
-  default_prompt: "Use $bridge-init-tools to inspect this project and propose its private review-tool manifest."
-
+  short_description: "Curate validation tools and readiness"
+  default_prompt: "Use $bridge-init-tools to inspect this project and propose its private review-tool manifest and readiness policy."

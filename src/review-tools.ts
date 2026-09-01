@@ -91,6 +91,42 @@ const runnerSchema = z.discriminatedUnion("kind", [
   })
 ]);
 
+const readinessRunnerSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("host"),
+    command: z.string().min(1).max(500),
+    ...commonRunner
+  }),
+  z.object({
+    kind: z.literal("compose"),
+    files: z.array(z.string().min(1).max(500)).min(1).max(20),
+    ...commonRunner
+  }),
+  z.object({
+    kind: z.literal("compose_exec"),
+    files: z.array(z.string().min(1).max(500)).min(1).max(20),
+    service: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/),
+    workdir: z.string().min(1).max(500).optional(),
+    command: z.string().min(1).max(500),
+    ...commonRunner
+  })
+]);
+
+const readinessSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("static") }),
+  z.object({ mode: z.literal("trusted") }),
+  z.object({
+    mode: z.literal("probe"),
+    runner: readinessRunnerSchema,
+    timeoutSeconds: z.number().int().min(1).max(86_400).default(30),
+    cacheSeconds: z.number().int().min(1).max(86_400).default(300)
+  })
+]);
+
+const readinessDefaultsSchema = z.object({
+  mode: z.enum(["static", "trusted"]).default("static")
+});
+
 export const reviewToolRecipeSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_]{1,63}$/),
   title: z.string().min(1).max(200),
@@ -99,7 +135,8 @@ export const reviewToolRecipeSchema = z.object({
   inputs: z.array(recipeInputSchema).max(50).default([]),
   timeoutSeconds: z.number().int().min(1).max(86_400).default(1_800),
   annotations: annotationSchema.default({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }),
-  evidence: z.array(z.string().min(1).max(1_000)).max(100).default([])
+  evidence: z.array(z.string().min(1).max(1_000)).max(100).default([]),
+  readiness: readinessSchema.optional()
 }).superRefine((recipe, context) => {
   const names = new Set<string>();
   for (const input of recipe.inputs) {
@@ -117,12 +154,20 @@ export const reviewToolRecipeSchema = z.object({
       context.addIssue({ code: "custom", message: `Environment variable '${name}' may contain a secret; inherit credentials from the approved runtime instead of storing them in the manifest.` });
     }
   }
+  if (recipe.readiness?.mode === "probe") {
+    for (const name of Object.keys(recipe.readiness.runner.environment)) {
+      if (/(?:TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY|PRIVATE_KEY)/i.test(name)) {
+        context.addIssue({ code: "custom", message: `Readiness environment variable '${name}' may contain a secret; inherit credentials from the approved runtime instead of storing them in the manifest.` });
+      }
+    }
+  }
 });
 
 export const reviewToolsManifestSchema = z.object({
   schemaVersion: z.literal(1),
   projectRoot: z.string().min(1),
   approvedAt: z.iso.datetime({ offset: true }),
+  readinessDefaults: readinessDefaultsSchema.default({ mode: "static" }),
   tools: z.array(reviewToolRecipeSchema).max(200)
 }).superRefine((manifest, context) => {
   const ids = new Set<string>();
@@ -136,6 +181,7 @@ export type ReviewToolInput = z.infer<typeof recipeInputSchema>;
 export type ReviewToolRecipe = z.infer<typeof reviewToolRecipeSchema>;
 export type ReviewToolsManifest = z.infer<typeof reviewToolsManifestSchema>;
 export type ReviewToolRunner = ReviewToolRecipe["runner"];
+export type ReviewToolReadiness = NonNullable<ReviewToolRecipe["readiness"]>;
 
 export interface CommandSpec {
   command: string;
@@ -178,12 +224,31 @@ export interface ReviewToolExecutionResult {
 export interface ReviewToolDoctorResult {
   projectRoot: string;
   ready: boolean;
+  allReady: boolean;
   tools: Array<{
     id: string;
-    status: "ready" | "needs_runtime_probe" | "missing";
+    status: "ready" | "needs_runtime_probe" | "failed" | "missing";
+    basis: "static" | "user_trusted" | "runtime_probe";
     executable: string;
     issues: string[];
+    probe?: ReviewToolProbeRecord;
   }>;
+}
+
+export interface ReviewToolProbeRecord {
+  success: boolean;
+  probedAt: string;
+  expiresAt: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  error?: string;
+}
+
+export interface ReviewToolsProbeResult {
+  projectRoot: string;
+  results: Record<string, ReviewToolProbeRecord>;
+  skipped: Array<{ id: string; reason: string }>;
 }
 
 const validationRoot = path.join(runtimeDirectory, "review-tools");
@@ -257,7 +322,8 @@ function executableAvailable(command: string, cwd: string): boolean {
 export function doctorReviewTools(
   manifest: ReviewToolsManifest,
   projectRoot = loadBoundProjectRoot(),
-  isExecutableAvailable: (command: string, cwd: string) => boolean = executableAvailable
+  isExecutableAvailable: (command: string, cwd: string) => boolean = executableAvailable,
+  probeResults: Record<string, ReviewToolProbeRecord> = {}
 ): ReviewToolDoctorResult {
   const tools = manifest.tools.map((recipe) => {
     const issues: string[] = [];
@@ -285,14 +351,67 @@ export function doctorReviewTools(
     const needsRuntimeProbe = recipe.runner.kind === "compose_exec"
       || recipe.runner.kind === "compose_stage_exec"
       || (recipe.runner.kind === "compose" && recipe.runner.args[0] !== "config");
+    const readiness = recipe.readiness ?? manifest.readinessDefaults;
+    if (readiness.mode === "probe") {
+      let probeCwd = projectRoot;
+      try {
+        probeCwd = resolveRepositoryDirectory(projectRoot, readiness.runner.cwd);
+      } catch (error) {
+        issues.push(`Readiness probe: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const probeExecutable = readiness.runner.kind === "host" ? readiness.runner.command : "docker";
+      if (!isExecutableAvailable(probeExecutable, probeCwd)) {
+        issues.push(`Readiness probe executable is unavailable on the host PATH: ${probeExecutable}`);
+      }
+      if (readiness.runner.kind !== "host") {
+        for (const composeFile of readiness.runner.files) {
+          try {
+            const safe = validatedRepositoryPath(projectRoot, composeFile, "Readiness probe Compose file");
+            if (!fs.existsSync(path.resolve(projectRoot, ...safe.split("/")))) {
+              issues.push(`Readiness probe Compose file does not exist: ${safe}`);
+            }
+          } catch (error) {
+            issues.push(error instanceof Error ? error.message : String(error));
+          }
+        }
+      }
+    }
+    const cachedProbe = probeResults[recipe.id];
+    const currentProbe = cachedProbe && Date.parse(cachedProbe.expiresAt) > Date.now() ? cachedProbe : undefined;
+    let status: ReviewToolDoctorResult["tools"][number]["status"];
+    let basis: ReviewToolDoctorResult["tools"][number]["basis"] = "static";
+    if (issues.length) {
+      status = "missing";
+    } else if (readiness.mode === "trusted") {
+      status = "ready";
+      basis = "user_trusted";
+    } else if (readiness.mode === "probe") {
+      basis = "runtime_probe";
+      status = currentProbe ? currentProbe.success ? "ready" : "failed" : "needs_runtime_probe";
+      if (currentProbe?.error) issues.push(currentProbe.error);
+      else if (currentProbe && !currentProbe.success) {
+        issues.push(currentProbe.timedOut
+          ? "Readiness probe timed out."
+          : `Readiness probe exited with code ${currentProbe.exitCode ?? "unknown"}.`);
+      }
+    } else {
+      status = needsRuntimeProbe ? "needs_runtime_probe" : "ready";
+    }
     return {
       id: recipe.id,
-      status: issues.length ? "missing" as const : needsRuntimeProbe ? "needs_runtime_probe" as const : "ready" as const,
+      status,
+      basis,
       executable,
-      issues
+      issues,
+      ...(currentProbe ? { probe: currentProbe } : {})
     };
   });
-  return { projectRoot, ready: tools.every(({ status }) => status !== "missing"), tools };
+  return {
+    projectRoot,
+    ready: tools.every(({ status }) => status !== "missing" && status !== "failed"),
+    allReady: tools.every(({ status }) => status === "ready"),
+    tools
+  };
 }
 
 export function validatedRepositoryPath(projectRoot: string, rawPath: string, label: string): string {
@@ -610,6 +729,72 @@ export class SingleReviewToolRunner {
       this.active = undefined;
     }
   }
+}
+
+export async function probeReviewTools(
+  singleRunner: SingleReviewToolRunner,
+  manifest: ReviewToolsManifest,
+  toolIds: string[] | undefined,
+  projectRoot = loadBoundProjectRoot()
+): Promise<ReviewToolsProbeResult> {
+  const recipes = new Map(manifest.tools.map((recipe) => [recipe.id, recipe]));
+  const selectedIds = toolIds ?? manifest.tools
+    .filter((recipe) => (recipe.readiness ?? manifest.readinessDefaults).mode === "probe")
+    .map((recipe) => recipe.id);
+  const duplicate = selectedIds.find((id, index) => selectedIds.indexOf(id) !== index);
+  if (duplicate) throw new Error(`Readiness tool id was selected more than once: ${duplicate}`);
+  const unknown = selectedIds.find((id) => !recipes.has(id));
+  if (unknown) throw new Error(`Unknown approved review tool id: ${unknown}`);
+
+  const results: Record<string, ReviewToolProbeRecord> = {};
+  const skipped: ReviewToolsProbeResult["skipped"] = [];
+  for (const id of selectedIds) {
+    const recipe = recipes.get(id)!;
+    const readiness = recipe.readiness ?? manifest.readinessDefaults;
+    if (readiness.mode !== "probe") {
+      skipped.push({ id, reason: `Readiness mode is '${readiness.mode}', so no runtime probe is configured.` });
+      continue;
+    }
+    const probeRecipe = reviewToolRecipeSchema.parse({
+      id: recipe.id,
+      title: recipe.title,
+      description: `Probe readiness for ${recipe.title}.`,
+      runner: readiness.runner,
+      timeoutSeconds: readiness.timeoutSeconds,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
+      evidence: recipe.evidence
+    });
+    const probedAt = new Date();
+    try {
+      const execution = await singleRunner.runExclusive(`readiness:${recipe.id}`, async () => (
+        runCommand(recipeCommand(probeRecipe, {}, projectRoot))
+      ));
+      results[id] = {
+        success: commandSucceeded(execution),
+        probedAt: probedAt.toISOString(),
+        expiresAt: new Date(probedAt.getTime() + readiness.cacheSeconds * 1_000).toISOString(),
+        exitCode: execution.exitCode,
+        timedOut: execution.timedOut,
+        durationMs: execution.durationMs
+      };
+    } catch (error) {
+      results[id] = {
+        success: false,
+        probedAt: probedAt.toISOString(),
+        expiresAt: new Date(probedAt.getTime() + readiness.cacheSeconds * 1_000).toISOString(),
+        exitCode: null,
+        timedOut: false,
+        durationMs: 0,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+  return { projectRoot, results, skipped };
 }
 
 function collectArtifactFiles(artifactRoot: string): NonNullable<ReviewToolExecutionResult["collectedFiles"]> {

@@ -130,6 +130,12 @@ becomes executable until you approve the complete manifest. No reviewer state
 remains in the npm cache. Keep the reviewer beside the application, never inside
 it.
 
+During tool initialization, you also choose how readiness is established. The
+safe default performs static checks and leaves container commands marked as
+needing a runtime probe. You may explicitly trust runtime prerequisites globally
+or approve fixed, bounded probes for selected tools. Readiness reports preserve
+whether each result came from static evidence, user trust, or an executed probe.
+
 ### 2. Start a workstream
 
 Run this from the generated reviewer:
@@ -199,6 +205,9 @@ automatic-cycle controls, question advisories, reporting, and recovery.
 - Scanner recommendations and approved application tools stay in ignored
   reviewer files. The fixed manifest writer is prompt-gated and approved tools
   use argv execution without shell interpolation.
+- Readiness policy is user-approved in the same manifest. Trusted readiness
+  cannot suppress structural failures, and runtime probes are fixed capabilities
+  rather than arbitrary shell access.
 - Interactive implementation access is a separate, explicit permission profile
   and does not weaken injected reviews.
 

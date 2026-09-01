@@ -6,6 +6,7 @@ import {
   executeReviewTool,
   doctorReviewTools,
   loadBoundProjectRoot,
+  probeReviewTools,
   recipeInputObjectSchema,
   reviewToolsManifestSchema,
   SingleReviewToolRunner,
@@ -16,7 +17,9 @@ import {
   readReviewToolsDetection,
   readReviewToolsManifestFile,
   readReviewToolsManifestRevision,
+  readReviewToolsReadinessCache,
   refreshReviewToolsDetection,
+  writeReviewToolsReadinessCache,
   writeReviewToolsManifest
 } from "./review-tools-store.js";
 
@@ -24,9 +27,12 @@ const projectRoot = loadBoundProjectRoot();
 const server = new McpServer({ name: "application-review-tools", version: bridgeVersion });
 const runner = new SingleReviewToolRunner();
 let manifest: ReviewToolsManifest | undefined;
+let loadedManifestSha256: string | undefined;
 let manifestError: string | undefined;
 try {
-  manifest = readReviewToolsManifestFile(undefined, projectRoot)?.value;
+  const loaded = readReviewToolsManifestFile(undefined, projectRoot);
+  manifest = loaded?.value;
+  loadedManifestSha256 = loaded?.sha256;
 } catch (error) {
   manifestError = error instanceof Error ? error.message : String(error);
 }
@@ -75,7 +81,7 @@ server.registerTool("review_tools_status", {
         invalid: true
       } : null,
       manifestError: currentManifestError ?? manifestError,
-      dynamicToolsRequireRestart: true
+      dynamicToolsRequireRestart: (approved?.sha256 ?? undefined) !== loadedManifestSha256
     });
   } catch (error) {
     return failure(error);
@@ -127,6 +133,8 @@ server.registerTool("review_tools_catalog", {
   schemaVersion: manifest.schemaVersion,
   projectRoot,
   approvedAt: manifest.approvedAt,
+  manifestSha256: loadedManifestSha256,
+  readinessDefaults: manifest.readinessDefaults,
   tools: manifest.tools
 } : {
   projectRoot,
@@ -136,16 +144,47 @@ server.registerTool("review_tools_catalog", {
 }));
 
 server.registerTool("review_tools_doctor", {
-  description: "Check the approved manifest binding, repository paths, Compose files, staged source directories, and host executables. Container-internal commands are reported as requiring a runtime probe; no validation command is executed.",
+  description: "Check approved tool structure and report effective readiness. Static mode never executes commands, trusted mode records the user's approved runtime assumption, and probe mode uses only unexpired results from review_tools_probe.",
   inputSchema: z.object({}),
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-}, async () => result(manifest ? doctorReviewTools(manifest, projectRoot) : {
+}, async () => result(manifest ? doctorReviewTools(
+  manifest,
+  projectRoot,
+  undefined,
+  loadedManifestSha256 ? readReviewToolsReadinessCache(loadedManifestSha256)?.tools : undefined
+) : {
   projectRoot,
   ready: false,
+  allReady: false,
   approved: false,
   error: manifestError,
   guidance: "No approved manifest exists. Complete $bridge-init-tools first."
 }));
+
+server.registerTool("review_tools_probe", {
+  description: "Run fixed, user-approved readiness probes for selected tools, or every configured probe when no ids are supplied. Probe results are cached by manifest hash for their approved duration. This never substitutes an unapproved shell command.",
+  inputSchema: z.object({
+    toolIds: z.array(z.string().regex(/^[a-z][a-z0-9_]{1,63}$/)).max(200).optional()
+  }),
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+}, async ({ toolIds }) => {
+  try {
+    if (!manifest || !loadedManifestSha256) throw new Error("No approved manifest with readiness probes is loaded.");
+    const current = readReviewToolsManifestFile(undefined, projectRoot);
+    if (current?.sha256 !== loadedManifestSha256) {
+      throw new Error("The approved manifest changed after this MCP server started. Start a fresh Codex session before probing readiness.");
+    }
+    const probed = await probeReviewTools(runner, manifest, toolIds, projectRoot);
+    const cache = writeReviewToolsReadinessCache(loadedManifestSha256, probed.results);
+    return result({
+      manifestSha256: loadedManifestSha256,
+      ...probed,
+      readiness: doctorReviewTools(manifest, projectRoot, undefined, cache.tools)
+    });
+  } catch (error) {
+    return failure(error);
+  }
+});
 
 server.registerTool("review_tools_write_manifest", {
   description: "Write a user-approved tool manifest to the one fixed reviewer-local file. The caller cannot choose a path. Pass null expectedSha256 only when no manifest exists; otherwise pass the exact hash from review_tools_status. A fresh Codex session is required before changed dynamic tools appear.",

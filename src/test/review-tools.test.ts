@@ -8,10 +8,13 @@ import { discoverReviewTools } from "../review-tools-discovery.js";
 import {
   doctorReviewTools,
   loadReviewToolsManifest,
+  probeReviewTools,
   recipeCommand,
   resolveHostExecutable,
   reviewToolRecipeSchema,
+  reviewToolsManifestSchema,
   runCommand,
+  SingleReviewToolRunner,
   validatedRepositoryPath
 } from "../review-tools.js";
 
@@ -135,7 +138,9 @@ test("loads only a manifest bound to the selected project", () => {
   const manifestPath = path.join(root, "manifest.json");
   try {
     fs.writeFileSync(manifestPath, JSON.stringify({ schemaVersion: 1, projectRoot: root, approvedAt: new Date().toISOString(), tools: [] }));
-    assert.equal(loadReviewToolsManifest(manifestPath, root).projectRoot, root);
+    const loaded = loadReviewToolsManifest(manifestPath, root);
+    assert.equal(loaded.projectRoot, root);
+    assert.equal(loaded.readinessDefaults.mode, "static");
     assert.throws(() => loadReviewToolsManifest(manifestPath, other), /not/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -155,10 +160,136 @@ test("doctor distinguishes host readiness from container runtime probes", () => 
       id: "container_check", title: "Container check", description: "Check a container tool.",
       runner: { kind: "compose_exec", files: ["compose.yml"], service: "runner", command: "cargo", args: ["test"], cwd: "." }
     });
-    const result = doctorReviewTools({ schemaVersion: 1, projectRoot: root, approvedAt: new Date().toISOString(), tools: [host, container] }, root, () => true);
+    const manifest = reviewToolsManifestSchema.parse({
+      schemaVersion: 1,
+      projectRoot: root,
+      approvedAt: new Date().toISOString(),
+      tools: [host, container]
+    });
+    const result = doctorReviewTools(manifest, root, () => true);
     assert.equal(result.ready, true);
+    assert.equal(result.allReady, false);
     assert.equal(result.tools[0].status, "ready");
+    assert.equal(result.tools[0].basis, "static");
     assert.equal(result.tools[1].status, "needs_runtime_probe");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("doctor honors global trusted readiness and per-tool overrides without hiding structural failures", () => {
+  const root = fixture();
+  try {
+    fs.writeFileSync(path.join(root, "compose.yml"), "services:\n  runner:\n    image: fixture\n");
+    const manifest = reviewToolsManifestSchema.parse({
+      schemaVersion: 1,
+      projectRoot: root,
+      approvedAt: new Date().toISOString(),
+      readinessDefaults: { mode: "trusted" },
+      tools: [
+        {
+          id: "trusted_container",
+          title: "Trusted container",
+          description: "Use an explicitly trusted runtime assumption.",
+          runner: { kind: "compose_exec", files: ["compose.yml"], service: "runner", command: "cargo", args: ["test"], cwd: "." }
+        },
+        {
+          id: "static_container",
+          title: "Static container",
+          description: "Keep the static default for this tool.",
+          runner: { kind: "compose_exec", files: ["compose.yml"], service: "runner", command: "cargo", args: ["test"], cwd: "." },
+          readiness: { mode: "static" }
+        },
+        {
+          id: "missing_container",
+          title: "Missing container",
+          description: "A trusted tool with a structural problem.",
+          runner: { kind: "compose_exec", files: ["missing.yml"], service: "runner", command: "cargo", args: ["test"], cwd: "." }
+        },
+        {
+          id: "missing_probe_executable",
+          title: "Missing probe executable",
+          description: "A probe whose host executable is unavailable.",
+          runner: { kind: "host", command: process.execPath, args: ["--version"], cwd: "." },
+          readiness: {
+            mode: "probe",
+            runner: { kind: "host", command: "missing-probe", args: ["--version"], cwd: "." }
+          }
+        }
+      ]
+    });
+    const result = doctorReviewTools(manifest, root, (command) => command !== "missing-probe");
+    assert.equal(result.ready, false);
+    assert.equal(result.allReady, false);
+    assert.equal(result.tools[0].status, "ready");
+    assert.equal(result.tools[0].basis, "user_trusted");
+    assert.equal(result.tools[1].status, "needs_runtime_probe");
+    assert.equal(result.tools[2].status, "missing");
+    assert.equal(result.tools[3].status, "missing");
+    assert.match(result.tools[3].issues[0], /probe executable is unavailable/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("approved readiness probes produce cached ready and failed states", async () => {
+  const root = fixture();
+  try {
+    const manifest = reviewToolsManifestSchema.parse({
+      schemaVersion: 1,
+      projectRoot: root,
+      approvedAt: new Date().toISOString(),
+      tools: [
+        {
+          id: "passing_probe",
+          title: "Passing probe",
+          description: "Use a passing fixed readiness probe.",
+          runner: { kind: "host", command: process.execPath, args: ["--version"], cwd: "." },
+          readiness: {
+            mode: "probe",
+            runner: { kind: "host", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: "." },
+            timeoutSeconds: 10,
+            cacheSeconds: 60
+          }
+        },
+        {
+          id: "failing_probe",
+          title: "Failing probe",
+          description: "Use a failing fixed readiness probe.",
+          runner: { kind: "host", command: process.execPath, args: ["--version"], cwd: "." },
+          readiness: {
+            mode: "probe",
+            runner: { kind: "host", command: process.execPath, args: ["-e", "process.exit(7)"], cwd: "." },
+            timeoutSeconds: 10,
+            cacheSeconds: 60
+          }
+        }
+      ]
+    });
+    const before = doctorReviewTools(manifest, root, () => true);
+    assert.deepEqual(before.tools.map(({ status }) => status), ["needs_runtime_probe", "needs_runtime_probe"]);
+    const probed = await probeReviewTools(new SingleReviewToolRunner(), manifest, undefined, root);
+    assert.equal(probed.results.passing_probe.success, true);
+    assert.equal(probed.results.failing_probe.exitCode, 7);
+    const after = doctorReviewTools(manifest, root, () => true, probed.results);
+    assert.equal(after.ready, false);
+    assert.equal(after.allReady, false);
+    assert.equal(after.tools[0].status, "ready");
+    assert.equal(after.tools[0].basis, "runtime_probe");
+    assert.equal(after.tools[1].status, "failed");
+    assert.match(after.tools[1].issues[0], /exited with code 7/);
+    const expired = {
+      ...probed.results,
+      passing_probe: {
+        ...probed.results.passing_probe,
+        expiresAt: new Date(Date.now() - 1_000).toISOString()
+      }
+    };
+    assert.equal(doctorReviewTools(manifest, root, () => true, expired).tools[0].status, "needs_runtime_probe");
+    await assert.rejects(
+      probeReviewTools(new SingleReviewToolRunner(), manifest, ["unknown_tool"], root),
+      /Unknown approved review tool id/
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -216,6 +347,23 @@ test("reports nonzero command exits as execution evidence", async () => {
     assert.equal(result.stdout, "out");
     assert.equal(result.stderr, "err");
     assert.equal(result.timedOut, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("terminates commands that exceed their approved timeout", async () => {
+  const root = fixture();
+  try {
+    const result = await runCommand({
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      cwd: root,
+      timeoutMs: 50,
+      label: "timeout_fixture"
+    });
+    assert.equal(result.timedOut, true);
+    assert.notEqual(result.signal === null && result.exitCode === 0, true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

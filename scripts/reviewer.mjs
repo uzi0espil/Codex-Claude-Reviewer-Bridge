@@ -526,7 +526,7 @@ async function tools(options, passthrough) {
   const discoveryScript = path.join(reviewerRoot, "dist", "review-tools-discover.js");
   if (!fs.existsSync(discoveryScript)) throw new Error(`Review-tool discovery is missing; run '${platformExample("setup")}'.`);
   run(process.execPath, [discoveryScript], { cwd: reviewerRoot });
-  const prompt = "Use $bridge-init-tools to inspect this application, curate the detected validation capabilities, ask only material questions, and preview an application-specific tool manifest for explicit approval.";
+  const prompt = "Use $bridge-init-tools to inspect this application, curate the detected validation capabilities and user-selected readiness behavior, ask only material questions, and preview an application-specific tool manifest for explicit approval.";
   run("codex", ["-C", projectRoot, "--profile", "bridge-review", ...passthrough, prompt], {
     cwd: projectRoot, env: { ...process.env, CODEX_HOME: reviewerRoot }
   });

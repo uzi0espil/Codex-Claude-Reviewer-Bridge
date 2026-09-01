@@ -27,6 +27,15 @@ fixed reviewer-local manifest through `review_tools_write_manifest`.
 4. If an approved manifest exists, use its exact SHA-256 from status and propose
    a focused update instead of rebuilding it blindly.
 
+Build a private validation inventory before curating recipes. For each relevant
+CI or documented check, preserve its trigger or path filter, setup, working
+directory, required services and environment, exact fixed arguments and
+exclusions, ordering constraints, and whether it is conditional or CI-only.
+Reconcile this inventory with the current review policy: every mandatory policy
+requirement should map to an approved capability or an explicit validation gap.
+Do not simplify a command in a way that broadens or narrows the evidence it
+produces.
+
 ## Curate capabilities
 
 Prefer a compact set that covers mandatory gates and useful targeted checks.
@@ -47,6 +56,17 @@ For Compose, distinguish:
 - staged execution, which copies an approved source subtree to a scratch
   directory inside the service and retrieves only declared artifacts.
 
+Choose readiness behavior with the user instead of treating one runtime policy
+as universal. Recommend the global `static` default, which reports container
+commands as `needs_runtime_probe` without executing anything. Offer global
+`trusted` readiness when the user explicitly accepts runtime prerequisites.
+Allow individual tools to override either default with `static`, `trusted`, or a
+fixed `probe`. A probe must be bounded, non-destructive, evidence-backed, and
+approved as part of the manifest. It may check service state, an executable,
+mounted paths, dependencies, or another prerequisite the user considers
+material. Never let trusted or probed readiness hide a structural manifest,
+path, Compose-file, or host-executable failure.
+
 Read [references/manifest-schema.md](references/manifest-schema.md) when composing
 or changing a manifest.
 
@@ -61,6 +81,8 @@ only when repository evidence cannot decide matters such as:
 - whether stateful commands, network access, generated artifacts, or
   reviewer-supplied script arguments are acceptable;
 - whether changed or untracked repository-owned scripts may be executed.
+- whether runtime readiness should remain static, be explicitly trusted, or use
+  approved probes, including any per-tool exceptions.
 
 Do not ask the user to identify languages, manifests, or commands already visible
 in the repository.
@@ -71,6 +93,9 @@ Present:
 
 - detected technology surfaces and the evidence used;
 - candidates accepted, changed, merged, or rejected, with brief reasons;
+- mandatory policy or CI checks mapped to proposed tools or explicit gaps;
+- the proposed readiness default, per-tool overrides, probe commands, cache
+  durations, and whether each ready state will be static, trusted, or probed;
 - unresolved validation gaps;
 - the complete proposed JSON manifest, or a clear complete diff for an update;
 - the current manifest SHA-256 that will be used for optimistic concurrency.
@@ -90,6 +115,7 @@ After explicit approval:
 3. Report the returned path, SHA-256, tool count, and that a fresh Codex session
    is required before newly approved dynamic tools appear.
 4. In that fresh session, call `review_tools_catalog` and
-   `review_tools_doctor`. Execute validation tools only when the user's review
-   or verification request authorizes doing so.
-
+   `review_tools_doctor`. If the approved manifest contains probes, call
+   `review_tools_probe` only when the user selected or requests runtime probing,
+   then call the doctor again. Execute validation tools only when the user's
+   review or verification request authorizes doing so.
