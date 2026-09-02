@@ -12,6 +12,7 @@ import {
   codexConfig,
   parseArguments,
   pairedCodexArguments,
+  policyCodexArguments,
   powershellQuote,
   readLatestAutoReport,
   shellQuote,
@@ -179,6 +180,27 @@ test("paired Codex sessions preserve injected review turns in terminal scrollbac
     "manual",
     ["--no-alt-screen"]
   ).filter((value) => value === "--no-alt-screen").length, 1);
+});
+
+test("policy initialization cannot access review-tool curation", () => {
+  const args = policyCodexArguments("C:\\project", [
+    "--model", "gpt-test",
+    "-c", "mcp_servers.review_tools.enabled=true"
+  ]);
+  assert.deepEqual(args.slice(0, 6), [
+    "-C", "C:\\project", "--profile", "bridge-review", "--model", "gpt-test"
+  ]);
+  assert.deepEqual(args.slice(-3, -1), [
+    "-c", "mcp_servers.review_tools.enabled=false"
+  ]);
+  assert.match(args.at(-1), /\$bridge-init-policy/);
+
+  const skill = fs.readFileSync(
+    fileURLToPath(new URL("../../skills/bridge-init-policy/SKILL.md", import.meta.url)),
+    "utf8"
+  );
+  assert.match(skill, /never refresh tool detection/);
+  assert.match(skill, /do not switch to `\$bridge-init-tools`/);
 });
 
 test("generates portable Claude hooks and Codex configuration", () => {

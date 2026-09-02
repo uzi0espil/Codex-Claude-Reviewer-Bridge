@@ -513,10 +513,20 @@ async function login(options) {
   run("codex", options["device-auth"] ? ["login", "--device-auth"] : ["login"], { env: environment });
 }
 
+export function policyCodexArguments(projectRoot, passthrough = []) {
+  const prompt = "Use $bridge-init-policy to inspect this application and create or refresh its private review policy and protocol.";
+  return [
+    "-C", projectRoot,
+    "--profile", "bridge-review",
+    ...passthrough,
+    "-c", "mcp_servers.review_tools.enabled=false",
+    prompt
+  ];
+}
+
 async function policy(options, passthrough) {
   const projectRoot = resolveProjectRoot(options["project-root"]);
-  const prompt = "Use $bridge-init-policy to inspect this application and create or refresh its private review policy and protocol.";
-  run("codex", ["-C", projectRoot, "--profile", "bridge-review", ...passthrough, prompt], {
+  run("codex", policyCodexArguments(projectRoot, passthrough), {
     cwd: projectRoot, env: { ...process.env, CODEX_HOME: reviewerRoot }
   });
 }

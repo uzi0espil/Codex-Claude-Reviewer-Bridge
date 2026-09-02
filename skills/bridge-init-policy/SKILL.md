@@ -49,6 +49,20 @@ requires from commands the reviewer is currently authorized to execute. Do not
 turn an approximate command list into policy; defer exact executable recipes to
 `$bridge-init-tools`.
 
+## Stay within the policy workflow
+
+Policy initialization defines review requirements; it does not curate executable
+tools. You may inspect the existing approved manifest as read-only evidence, but
+never refresh tool detection, build or validate a tool proposal, choose runners
+or readiness, accept validation gaps, call any `review_tools_*` tool, or ask the
+user to approve changes to `review-tools.local.json` in this workflow.
+
+If the approved manifest is absent, stale, or missing a required capability,
+state the exact gap in the policy preview and direct the user to run `just tools`
+after the policy workflow finishes. Continue drafting the policy independently;
+do not switch to `$bridge-init-tools` unless the user starts a separate tools
+session.
+
 ## Ask only unresolved questions
 
 Ask concise questions only when the answer changes the rubric and cannot be
