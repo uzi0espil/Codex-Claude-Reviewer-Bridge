@@ -204,6 +204,9 @@ test("policy initialization cannot access review-tool curation", () => {
   assert.match(skill, /Report point-in-time manifest coverage only in the surrounding session response/);
   assert.match(skill, /Never copy the current tool inventory/);
   assert.match(skill, /not in the proposed\s+policy text/);
+  assert.match(skill, /exact bytes using strict\s+UTF-8 decoding/);
+  assert.match(skill, /Before claiming that stored text is\s+corrupted/);
+  assert.match(skill, /Do not normalize them to ASCII/);
 });
 
 test("generates portable Claude hooks and Codex configuration", () => {

@@ -23,6 +23,21 @@ encode conclusions about one implementation into the policy.
 - Never read or record credentials, tokens, production secrets, or test-account
   passwords in the policy.
 
+## Preserve existing policy text faithfully
+
+Read the generic and local policy files from their exact bytes using strict
+UTF-8 decoding. A terminal, tool renderer, or transcript may display valid
+Unicode as mojibake or replacement text. Before claiming that stored text is
+corrupted, re-read the file with an explicit UTF-8 decoder and verify the exact
+decoded characters or code points.
+
+Valid Unicode punctuation and symbols, including curly quotes, arrows, and
+multiplication signs, are not corruption. Do not normalize them to ASCII or
+propose any other semantically neutral typography rewrite unless the user asks
+for that style change or repository policy requires it. If strict decoding
+really fails, describe the byte-level evidence and limit the proposed repair to
+the affected text.
+
 ## Preserve validation fidelity
 
 Before drafting validation requirements, build a private inventory of
