@@ -5,11 +5,15 @@ import path from "node:path";
 import test from "node:test";
 import { reviewToolsManifestProposalSchema } from "../review-tools.js";
 import {
+  acceptReviewToolsProposalGaps,
   readReviewToolsDetection,
   readReviewToolsManifestFile,
   readReviewToolsManifestRevision,
   readReviewToolsReadinessCache,
   preflightReviewToolsManifest,
+  reviewToolsProposalDetails,
+  ReviewToolsProposalRegistry,
+  summarizeReviewToolsPreflight,
   refreshReviewToolsDetection,
   writeReviewToolsReadinessCache,
   writeReviewToolsManifest
@@ -157,8 +161,14 @@ test("preflight enforces detected CI coverage while allowing one Compose executi
       "services:",
       "  backend:",
       "    image: fixture-backend",
+      "    volumes:",
+      "      - ./backend:/app/backend",
       "  frontend:",
       "    image: fixture-frontend",
+      "    volumes:",
+      "      - type: bind",
+      "        source: ./frontend",
+      "        target: /app",
       ""
     ].join("\n"));
     fs.writeFileSync(path.join(root, ".github", "workflows", "ci.yml"), [
@@ -231,14 +241,22 @@ test("preflight enforces detected CI coverage while allowing one Compose executi
           id: "backend_tests",
           title: "Backend tests",
           description: "Run backend tests in the existing backend service.",
-          runner: { kind: "compose_exec", files: ["compose.yml"], service: "backend", workdir: "/app/backend", command: "uv", args: ["run", "pytest", "-q"], cwd: "." },
+          runner: {
+            kind: "compose_exec", files: ["compose.yml"], service: "backend", workdir: "/app/backend",
+            worktree: { mode: "bind", paths: [{ repositoryPath: "backend", containerPath: "/app/backend" }] },
+            command: "uv", args: ["run", "pytest", "-q"], cwd: "."
+          },
           evidence: [backendDetected.source]
         },
         {
           id: "frontend_checks",
           title: "Frontend checks",
           description: "Run frontend checks in the existing frontend service.",
-          runner: { kind: "compose_exec", files: ["compose.yml"], service: "frontend", workdir: "/app", command: "npm", args: ["run", "test:run"], cwd: "." },
+          runner: {
+            kind: "compose_exec", files: ["compose.yml"], service: "frontend", workdir: "/app",
+            worktree: { mode: "bind", paths: [{ repositoryPath: "frontend", containerPath: "/app" }] },
+            command: "npm", args: ["run", "test:run"], cwd: "."
+          },
           evidence: [frontendDetected.source]
         }
       ]
@@ -255,6 +273,17 @@ test("preflight enforces detected CI coverage while allowing one Compose executi
     });
     assert.deepEqual(result.commandPreviews.map(({ runner }) => runner), ["compose_exec", "compose_exec"]);
     assert.equal(result.commandPreviews[0].command.join(" ").includes("exec -T -w /app/backend backend uv run pytest -q"), true);
+    const summary = summarizeReviewToolsPreflight(result);
+    assert.equal(typeof summary.proposalSha256, "string");
+    assert.equal("manifest" in summary, false);
+    assert.equal(summary.requirements[0].disposition, "tool");
+    assert.equal(summary.tools[0].worktree, "bind:backend");
+    const backendDetails = reviewToolsProposalDetails(proposal, undefined, ["backend_tests"]);
+    assert.deepEqual(backendDetails.tools.map(({ id }) => id), ["backend_tests"]);
+    assert.deepEqual(backendDetails.requirements.map(({ id }) => id), ["backend_tests"]);
+    const frontendDetails = reviewToolsProposalDetails(proposal, ["frontend_checks"]);
+    assert.deepEqual(frontendDetails.requirements.map(({ id }) => id), ["frontend_checks"]);
+    assert.throws(() => reviewToolsProposalDetails(proposal), /Select at least one/);
 
     const incomplete = preflightReviewToolsManifest({
       ...proposal,
@@ -274,6 +303,174 @@ test("preflight enforces detected CI coverage while allowing one Compose executi
     }, root, detectionPath, () => true);
     assert.equal(observational.valid, false);
     assert.match(observational.errors.join("\n"), /not an allowed runner for validation requirement 'backend_tests'/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("preflight proves language-neutral Compose worktree provenance and supports selective proposal details", () => {
+  const root = fixture();
+  const detectionPath = path.join(root, "review-tools.detected.json");
+  try {
+    fs.mkdirSync(path.join(root, "component", "src"), { recursive: true });
+    fs.mkdirSync(path.join(root, "stale"), { recursive: true });
+    fs.mkdirSync(path.join(root, "config"), { recursive: true });
+    fs.mkdirSync(path.join(root, "checks"), { recursive: true });
+    fs.writeFileSync(path.join(root, "checks", "verify.task"), "fixture\n");
+    fs.writeFileSync(path.join(root, "compose.yml"), [
+      "services:",
+      "  runner:",
+      "    image: fixture",
+      "    volumes:",
+      "      - ./stale:/workspace",
+      ""
+    ].join("\n"));
+    fs.writeFileSync(path.join(root, "config", "compose.override.yml"), [
+      "services:",
+      "  runner:",
+      "    volumes:",
+      "      - type: bind",
+      "        source: ./component",
+      "        target: /workspace",
+      ""
+    ].join("\n"));
+    const detection = refreshReviewToolsDetection(root, detectionPath);
+    const tool = {
+      id: "component_check",
+      title: "Component check",
+      description: "Run a repository-defined check in an existing service.",
+      runner: {
+        kind: "compose_exec" as const,
+        files: ["compose.yml", "config/compose.override.yml"],
+        service: "runner",
+        workdir: "/workspace",
+        worktree: { mode: "bind" as const, paths: [{ repositoryPath: "component/src", containerPath: "/workspace/src" }] },
+        command: "toolchain",
+        args: ["check"],
+        cwd: "."
+      },
+      inputs: [],
+      evidence: ["compose.yml"]
+    };
+    const proposal = reviewToolsManifestProposalSchema.parse({
+      schemaVersion: 2,
+      projectRoot: root,
+      detectionSha256: detection.sha256,
+      runnerPolicy: { host: "disallowed", compose: "disallowed", composeExec: "allowed", composeStageExec: "disallowed" },
+      readinessDefaults: { mode: "trusted" },
+      requirements: [{
+        id: "component_validation", title: "Component validation", description: "Validate the component.",
+        requiredWhen: "The component changes.", procedure: ["Run the repository check."], prerequisites: ["Matching runtime dependencies"],
+        allowedRunners: ["compose_exec"], evidence: ["compose.yml"], detectedRequirementIds: []
+      }],
+      coverage: [{ requirementId: "component_validation", disposition: "tool", toolIds: ["component_check"] }],
+      tools: [tool]
+    });
+    const valid = preflightReviewToolsManifest(proposal, root, detectionPath, () => true);
+    assert.equal(valid.valid, true);
+    const details = reviewToolsProposalDetails(proposal, ["component_check"], ["component_validation"]);
+    assert.equal(details.tools.length, 1);
+    assert.equal(details.requirements.length, 1);
+    assert.deepEqual(details.tools[0].commandPreview.slice(-3), ["runner", "toolchain", "check"]);
+
+    const wrongMapping = preflightReviewToolsManifest({
+      ...proposal,
+      tools: [{
+        ...tool,
+        runner: { ...tool.runner, files: ["compose.yml"], worktree: { mode: "bind", paths: [{ repositoryPath: "component/src", containerPath: "/workspace/src" }] } }
+      }]
+    }, root, detectionPath, () => true);
+    assert.equal(wrongMapping.valid, false);
+    assert.match(wrongMapping.errors.join("\n"), /maps '\/workspace\/src' from 'stale'/);
+
+    const unspecified = preflightReviewToolsManifest({
+      ...proposal,
+      tools: [{ ...tool, runner: { ...tool.runner, worktree: { mode: "unspecified" } } }]
+    }, root, detectionPath, () => true);
+    assert.equal(unspecified.valid, false);
+    assert.match(unspecified.errors.join("\n"), /must explicitly declare/);
+
+    const undeclaredRepositoryPath = preflightReviewToolsManifest({
+      ...proposal,
+      tools: [{ ...tool, runner: { ...tool.runner, args: ["checks/verify.task"] } }]
+    }, root, detectionPath, () => true);
+    assert.equal(undeclaredRepositoryPath.valid, false);
+    assert.match(undeclaredRepositoryPath.errors.join("\n"), /outside its declared worktree paths/);
+
+    const runtimeOnlyWithPaths = preflightReviewToolsManifest({
+      ...proposal,
+      tools: [{
+        ...tool,
+        runner: { ...tool.runner, worktree: { mode: "none" } },
+        inputs: [{ name: "targets", description: "Repository targets.", type: "repo_paths", maxItems: 2 }]
+      }]
+    }, root, detectionPath, () => true);
+    assert.equal(runtimeOnlyWithPaths.valid, false);
+    assert.match(runtimeOnlyWithPaths.errors.join("\n"), /accepts repository paths but declares runtime-only/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("proposal gap acceptance is mechanical and hash-bound summaries stay concise", () => {
+  const root = fixture();
+  const detectionPath = path.join(root, "review-tools.detected.json");
+  try {
+    const detection = refreshReviewToolsDetection(root, detectionPath);
+    const proposal = reviewToolsManifestProposalSchema.parse({
+      schemaVersion: 2,
+      projectRoot: root,
+      detectionSha256: detection.sha256,
+      runnerPolicy: { host: "allowed", compose: "disallowed", composeExec: "disallowed", composeStageExec: "disallowed" },
+      readinessDefaults: { mode: "static" },
+      requirements: [{
+        id: "external_gate", title: "External gate", description: "A CI-only gate.", requiredWhen: "Release builds.",
+        procedure: ["Run in CI."], prerequisites: ["External hardware"], allowedRunners: ["host"], evidence: ["README.md"], detectedRequirementIds: []
+      }],
+      coverage: [{ requirementId: "external_gate", disposition: "gap", reason: "Requires external hardware.", accepted: false }],
+      tools: []
+    });
+    const before = preflightReviewToolsManifest(proposal, root, detectionPath, () => true);
+    const summary = summarizeReviewToolsPreflight(before);
+    assert.equal(summary.writable, false);
+    assert.equal(JSON.stringify(summary).includes('"procedure"'), false);
+    const accepted = acceptReviewToolsProposalGaps(proposal);
+    assert.equal(accepted.coverage[0].disposition === "gap" && accepted.coverage[0].accepted, true);
+    assert.deepEqual(accepted.requirements, proposal.requirements);
+    assert.deepEqual(accepted.tools, proposal.tools);
+    assert.equal(summarizeReviewToolsPreflight(preflightReviewToolsManifest(accepted, root, detectionPath, () => true)).writable, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("proposal registry resolves exact handles and evicts superseded history", () => {
+  const root = fixture();
+  const detectionPath = path.join(root, "review-tools.detected.json");
+  try {
+    const detection = refreshReviewToolsDetection(root, detectionPath);
+    const base = reviewToolsManifestProposalSchema.parse({
+      schemaVersion: 2,
+      projectRoot: root,
+      detectionSha256: detection.sha256,
+      runnerPolicy: { host: "allowed", compose: "disallowed", composeExec: "disallowed", composeStageExec: "disallowed" },
+      requirements: [], coverage: [], tools: []
+    });
+    const registry = new ReviewToolsProposalRegistry(2);
+    const first = registry.add(base);
+    assert.equal(registry.get(first.toUpperCase()), base);
+    const secondProposal = reviewToolsManifestProposalSchema.parse({ ...base, readinessDefaults: { mode: "trusted" } });
+    const second = registry.add(secondProposal);
+    const thirdProposal = reviewToolsManifestProposalSchema.parse({
+      ...base,
+      tools: [{ id: "runtime_info", title: "Runtime info", description: "Inspect runtime.", runner: { kind: "host", command: process.execPath, args: ["--version"], cwd: "." }, evidence: ["package.json"] }]
+    });
+    const third = registry.add(thirdProposal);
+    assert.throws(() => registry.get(first), /unavailable or expired/);
+    assert.equal(registry.get(second), secondProposal);
+    assert.equal(registry.get(third), thirdProposal);
+    thirdProposal.tools[0].title = "Mutated after preview";
+    assert.throws(() => registry.get(third), /no longer matches its approval handle/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

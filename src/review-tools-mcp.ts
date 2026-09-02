@@ -20,8 +20,12 @@ import {
   readReviewToolsReadinessCache,
   refreshReviewToolsDetection,
   preflightReviewToolsManifest,
+  acceptReviewToolsProposalGaps,
+  reviewToolsProposalDetails,
+  ReviewToolsProposalRegistry,
+  summarizeReviewToolsPreflight,
   writeReviewToolsReadinessCache,
-  writeReviewToolsManifest
+  writeReviewToolsManifest,
 } from "./review-tools-store.js";
 
 const projectRoot = loadBoundProjectRoot();
@@ -30,6 +34,7 @@ const runner = new SingleReviewToolRunner();
 let manifest: ReviewToolsManifest | undefined;
 let loadedManifestSha256: string | undefined;
 let manifestError: string | undefined;
+const proposalRegistry = new ReviewToolsProposalRegistry();
 try {
   const loaded = readReviewToolsManifestFile(undefined, projectRoot);
   manifest = loaded?.value;
@@ -154,14 +159,34 @@ server.registerTool("review_tools_catalog", {
 }));
 
 server.registerTool("review_tools_validate_manifest", {
-  description: "Validate a complete version-2 manifest proposal without writing it or executing application commands. Checks the current detection revision, requirement coverage, accepted gaps, runner policy, paths, host executables, Compose structure, readiness structure, and rendered fixed argv previews.",
+  description: "Validate a complete version-2 manifest proposal without writing it or executing application commands. Returns a concise, hash-bound approval summary instead of echoing the full manifest. The handle can be inspected selectively and later approved.",
   inputSchema: z.object({
     manifest: reviewToolsManifestProposalSchema
   }),
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
 }, async ({ manifest: proposedManifest }) => {
   try {
-    return result(preflightReviewToolsManifest(proposedManifest, projectRoot));
+    const preflight = preflightReviewToolsManifest(proposedManifest, projectRoot);
+    if (preflight.manifest) proposalRegistry.add(preflight.manifest);
+    return result(summarizeReviewToolsPreflight(preflight));
+  } catch (error) {
+    return failure(error);
+  }
+});
+
+server.registerTool("review_tools_proposal_details", {
+  description: "Inspect selected requirements or tools from a previously validated proposal handle. Omit both filters only when the user explicitly asks for the entire proposal detail.",
+  inputSchema: z.object({
+    proposalSha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
+    toolIds: z.array(z.string().regex(/^[a-z][a-z0-9_]{1,63}$/)).max(50).optional(),
+    requirementIds: z.array(z.string().regex(/^[a-z][a-z0-9_]{1,63}$/)).max(50).optional()
+  }).refine(({ toolIds, requirementIds }) => Boolean(toolIds?.length || requirementIds?.length), {
+    message: "Select at least one tool or requirement; the concise summary is the default whole-proposal view."
+  }),
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+}, async ({ proposalSha256, toolIds, requirementIds }) => {
+  try {
+    return result(reviewToolsProposalDetails(proposalRegistry.get(proposalSha256), toolIds, requirementIds));
   } catch (error) {
     return failure(error);
   }
@@ -211,15 +236,21 @@ server.registerTool("review_tools_probe", {
 });
 
 server.registerTool("review_tools_write_manifest", {
-  description: "Write a user-approved tool manifest to the one fixed reviewer-local file. The caller cannot choose a path. Pass null expectedSha256 only when no manifest exists; otherwise pass the exact hash from review_tools_status. A fresh Codex session is required before changed dynamic tools appear.",
+  description: "Write the exact hash-bound proposal that the user approved to the fixed reviewer-local file. Pending gaps are accepted mechanically only when acceptPendingGaps is explicitly true. The caller cannot submit or alter manifest JSON at approval time.",
   inputSchema: z.object({
-    manifest: reviewToolsManifestProposalSchema,
+    proposalSha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
+    acceptPendingGaps: z.literal(true),
     expectedSha256: z.string().regex(/^[a-fA-F0-9]{64}$/).nullable()
   }),
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
-}, async ({ manifest: proposedManifest, expectedSha256 }) => {
+}, async ({ proposalSha256, expectedSha256 }) => {
   try {
-    return result(writeReviewToolsManifest(proposedManifest, expectedSha256, undefined, projectRoot));
+    const proposedManifest = proposalRegistry.get(proposalSha256);
+    const acceptedManifest = acceptReviewToolsProposalGaps(proposedManifest);
+    return result({
+      proposalSha256,
+      ...writeReviewToolsManifest(acceptedManifest, expectedSha256, undefined, projectRoot)
+    });
   } catch (error) {
     return failure(error);
   }

@@ -134,6 +134,30 @@ failures always remain `missing`, regardless of readiness mode.
   approved source subtree into it, executes there, retrieves declared artifacts
   into the reviewer's ignored runtime directory, and attempts cleanup.
 
+Every new `compose_exec` proposal also declares worktree provenance. Use a bind
+claim when the command reads repository content:
+
+```json
+{
+  "worktree": {
+    "mode": "bind",
+    "paths": [
+      { "repositoryPath": "frontend", "containerPath": "/workspace/frontend" },
+      { "repositoryPath": "package-lock.json", "containerPath": "/workspace/package-lock.json" }
+    ]
+  }
+}
+```
+
+Preflight parses the selected Compose files, applies later volume declarations
+by container target, and proves that each declared container path maps to the
+exact current repository path. Both short and long bind syntax are supported.
+Named volumes and image-copied files do not satisfy a current-worktree claim.
+Use `{ "worktree": { "mode": "none" } }` only when the command consumes no
+repository content. A tool with repository-path inputs cannot use that mode.
+Older manifests without this declaration remain readable, but any new or
+updated version-2 proposal must make the choice explicit.
+
 Every runner may include a fixed `environment` object, but never store tokens,
 passwords, credentials, private keys, or secret-like variables. Prefer inheriting
 the approved runtime environment.
@@ -180,9 +204,12 @@ keys or targets such as `package.json#scripts.test` or
 
 ## Preflight
 
-Call `review_tools_validate_manifest` before asking for approval and again after
-accepted gaps are toggled. It does not execute application commands. It verifies
+Call `review_tools_validate_manifest` before asking for approval. It does not
+execute application commands. It verifies
 the detection revision, coverage, runner policy, paths, host executables,
-Compose files and statically declared services, readiness structure, path-input
-scope, and logical argv previews. The second result must report `writable: true`
-before `review_tools_write_manifest` is called.
+Compose files, statically declared services and bind provenance, readiness
+structure, path-input scope, and logical argv previews. It returns a concise
+summary and a proposal SHA-256 instead of echoing the full JSON. Use
+`review_tools_proposal_details` for selected drill-downs. After explicit user
+approval, `review_tools_write_manifest` accepts the proposal handle, mechanically
+accepts its previewed gaps, reruns preflight, and writes that exact proposal.

@@ -63,6 +63,22 @@ const commonRunner = {
   environment: z.record(z.string(), z.string().max(2_000)).default({})
 };
 
+const composeWorktreeSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("unspecified") }),
+  z.object({ mode: z.literal("none") }),
+  z.object({
+    mode: z.literal("bind"),
+    paths: z.array(z.object({
+      repositoryPath: z.string().min(1).max(500),
+      containerPath: z.string().min(1).max(500).refine(
+        (value) => path.posix.isAbsolute(value.replaceAll("\\", "/"))
+          && !value.replaceAll("\\", "/").split("/").includes(".."),
+        "Container worktree paths must be absolute and must not contain '..'."
+      )
+    })).min(1).max(100)
+  })
+]);
+
 const runnerSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("host"),
@@ -79,6 +95,7 @@ const runnerSchema = z.discriminatedUnion("kind", [
     files: z.array(z.string().min(1).max(500)).min(1).max(20),
     service: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/),
     workdir: z.string().min(1).max(500).optional(),
+    worktree: composeWorktreeSchema.default({ mode: "unspecified" }),
     command: z.string().min(1).max(500),
     ...commonRunner
   }),

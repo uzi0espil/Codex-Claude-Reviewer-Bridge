@@ -37,6 +37,7 @@
     "@modelcontextprotocol/server": "2.0.0",
     "@playwright/mcp": "0.0.79",
     "ws": "8.21.3",
+    "yaml": "2.9.0",
     "zod": "4.4.3"
   },
   "devDependencies": {

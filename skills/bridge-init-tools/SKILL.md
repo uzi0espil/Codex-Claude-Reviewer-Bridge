@@ -71,6 +71,14 @@ staged Compose execution. For Compose, distinguish:
 - staged execution, which copies an approved source subtree to a scratch
   directory inside the service and retrieves only declared artifacts.
 
+For every existing-service execution tool, declare its worktree provenance.
+Use `worktree.mode: bind` with the exact repository and container paths the
+command depends on, or `worktree.mode: none` only for a genuinely runtime-only
+command. Preflight must prove bind claims against the selected Compose files.
+An image `COPY` is not proof that a reviewer sees the current worktree, and a
+mount of one package does not make sibling scripts, manifests, or lockfiles
+current. Apply this rule to every language, build system, and repository layout.
+
 Only after runner policy is settled, choose readiness behavior with the user
 instead of treating one runtime policy as universal. Recommend the global
 `static` default, which reports container
@@ -109,26 +117,35 @@ in the repository.
 Before presenting the approval preview, call `review_tools_validate_manifest`
 with the complete version-2 proposal. Validation gaps must have `accepted: false`
 at this stage. Resolve every structural, detection-revision, runner-policy,
-coverage, path, executable, Compose-service, and command-shape error. Explain
+coverage, path, worktree-provenance, executable, Compose-service, and
+command-shape error. Explain
 warnings rather than silently discarding affected requirements. This validation
-must not execute an application command.
+must not execute an application command. Retain the returned proposal SHA-256;
+it identifies the exact proposal being reviewed.
 
 Present:
 
 - detected technology surfaces and the evidence used;
 - candidates accepted, changed, merged, or rejected, with brief reasons;
-- every structured requirement, including its detected CI ids, mapped to proposed
-  tools or an explicit pending gap;
+- a compact requirement table mapping every check to proposed tools or an
+  explicit pending gap;
 - the independent runner policy and why each chosen runner matches its execution
   environment;
 - the proposed readiness default, per-tool overrides, probe commands, cache
   durations, and whether each ready state will be static, trusted, or probed;
 - unresolved validation gaps;
-- the complete proposed JSON proposal, without `approvedAt`, or a clear complete
-  diff for an update;
-- the preflight result, including command previews, warnings, coverage counts,
-  and pending gaps;
+- a compact tool table with runner, readiness, worktree source, and a shortened
+  command preview;
+- the preflight warnings, coverage counts, pending gaps, and proposal SHA-256;
 - the current manifest SHA-256 that will be used for optimistic concurrency.
+
+Do not print the complete JSON manifest in the normal workflow. Use
+`review_tools_proposal_details` to expand only the requirements or tools the
+user asks about. Offer an interactive correction point before approval: ask
+whether a required check is missing, whether a proposed gap should become a
+tool, and whether the runner, current-worktree, data-access, and readiness
+assumptions are accurate. If the user changes anything, build and validate a
+new proposal; its new hash supersedes the old one.
 
 End that turn by asking for explicit approval. Do not call
 `review_tools_write_manifest` in the same turn as the preview. If the user wants
@@ -140,16 +157,16 @@ After explicit approval:
 
 1. Recheck `review_tools_status`. If its manifest hash differs from the preview,
    inspect the current manifest, rebuild the diff, and request approval again.
-2. Change only the previewed gaps from `accepted: false` to `accepted: true`, then
-   call `review_tools_validate_manifest` again. If it is not writable, stop and
-   correct or re-approve the proposal.
-3. Call `review_tools_write_manifest` with the complete version-2 proposal and
-   the exact observed hash, or `null` only when no manifest existed at preview time.
-   The writer supplies the actual `approvedAt` timestamp; never invent it.
-4. Report the returned path, SHA-256, requirement count, accepted-gap count,
+2. Call `review_tools_write_manifest` with the approved proposal SHA-256,
+   `acceptPendingGaps: true`, and the exact observed manifest hash, or `null`
+   only when no manifest existed at preview time. The writer retrieves the exact
+   cached proposal, accepts only its previewed gaps, reruns preflight, and supplies
+   the actual `approvedAt` timestamp. Never resend or reconstruct manifest JSON
+   after approval.
+3. Report the returned path, SHA-256, requirement count, accepted-gap count,
    tool count, approval time, and that a fresh Codex session is required before
    newly approved dynamic tools appear.
-5. In that fresh session, call `review_tools_catalog` and
+4. In that fresh session, call `review_tools_catalog` and
    `review_tools_doctor`. If the approved manifest contains probes, call
    `review_tools_probe` only when the user selected or requests runtime probing,
    then call the doctor again. Execute validation tools only when the user's

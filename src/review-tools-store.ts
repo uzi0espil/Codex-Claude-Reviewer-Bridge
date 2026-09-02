@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { parse as parseYaml } from "yaml";
 import { discoverReviewTools, type ReviewToolDiscovery } from "./review-tools-discovery.js";
 import {
   currentReviewToolsManifestSchema,
@@ -62,6 +64,35 @@ export type ReviewToolsPreflightResult = {
   manifest?: ReviewToolsManifestProposal;
 };
 
+export type ReviewToolsProposalSummary = {
+  proposalSha256?: string;
+  valid: boolean;
+  writable: boolean;
+  errors: string[];
+  warnings: string[];
+  coverage: ReviewToolsPreflightResult["coverage"];
+  runnerPolicy?: ReviewToolsManifestProposal["runnerPolicy"];
+  readinessDefaults?: ReviewToolsManifestProposal["readinessDefaults"];
+  requirements: Array<{
+    id: string;
+    title: string;
+    requiredWhen: string;
+    disposition: "tool" | "gap" | "missing";
+    toolIds?: string[];
+    gapReason?: string;
+    accepted?: boolean;
+  }>;
+  tools: Array<{
+    id: string;
+    title: string;
+    runner: ReviewToolsManifestProposal["tools"][number]["runner"]["kind"];
+    readiness: string;
+    worktree: string;
+    command: string;
+    inputs: Array<{ name: string; type: string; required: boolean }>;
+  }>;
+};
+
 export type ReviewToolsReadinessCache = {
   schemaVersion: 1;
   manifestSha256: string;
@@ -69,8 +100,38 @@ export type ReviewToolsReadinessCache = {
   tools: Record<string, ReviewToolProbeRecord>;
 };
 
+export class ReviewToolsProposalRegistry {
+  readonly #limit: number;
+  readonly #proposals = new Map<string, ReviewToolsManifestProposal>();
+
+  constructor(limit = 8) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Proposal registry limit must be between 1 and 100.");
+    this.#limit = limit;
+  }
+
+  add(proposal: ReviewToolsManifestProposal): string {
+    const sha256 = reviewToolsProposalSha256(proposal);
+    this.#proposals.delete(sha256);
+    this.#proposals.set(sha256, proposal);
+    while (this.#proposals.size > this.#limit) this.#proposals.delete(this.#proposals.keys().next().value!);
+    return sha256;
+  }
+
+  get(sha256: string): ReviewToolsManifestProposal {
+    const normalized = sha256.toLowerCase();
+    const proposal = this.#proposals.get(normalized);
+    if (!proposal) throw new Error("The proposal handle is unavailable or expired. Validate the proposal again before inspecting or approving it.");
+    if (reviewToolsProposalSha256(proposal) !== normalized) throw new Error("The cached review-tool proposal no longer matches its approval handle.");
+    return proposal;
+  }
+}
+
 function hash(value: Buffer | string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+export function reviewToolsProposalSha256(manifest: ReviewToolsManifestProposal): string {
+  return hash(JSON.stringify(manifest));
 }
 
 function canonical(value: string): string {
@@ -109,10 +170,10 @@ function atomicWrite(filename: string, encoded: Buffer): void {
 }
 
 function assertManifestPaths(manifest: ReviewToolsManifest, projectRoot: string): void {
-  const assertRunnerPaths = (runner: ReviewToolsManifest["tools"][number]["runner"], label: string): void => {
+  const assertRunnerPaths = (runner: { kind: string; cwd: string; files?: string[] }, label: string): void => {
     if (runner.cwd !== ".") validatedRepositoryPath(projectRoot, runner.cwd, `working directory for '${label}'`);
     if (runner.kind !== "host") {
-      for (const file of runner.files) validatedRepositoryPath(projectRoot, file, `Compose file for '${label}'`);
+      for (const file of runner.files ?? []) validatedRepositoryPath(projectRoot, file, `Compose file for '${label}'`);
     }
   };
   for (const recipe of manifest.tools) {
@@ -131,10 +192,176 @@ function assertManifestPaths(manifest: ReviewToolsManifest, projectRoot: string)
         validatedRepositoryPath(projectRoot, artifact.replaceAll(/\{[a-z][a-z0-9_]*\}/g, "placeholder"), `artifact path for '${recipe.id}'`);
       }
     }
+    if (recipe.runner.kind === "compose_exec" && recipe.runner.worktree.mode === "bind") {
+      for (const claim of recipe.runner.worktree.paths) {
+        validatedRepositoryPath(projectRoot, claim.repositoryPath, `worktree path for '${recipe.id}'`);
+      }
+    }
     if (recipe.readiness?.mode === "probe") {
       assertRunnerPaths(recipe.readiness.runner, `${recipe.id} readiness probe`);
     }
   }
+}
+
+type ComposeBind = { source: string; target: string; composeFile: string };
+
+function isPathLikeComposeSource(source: string): boolean {
+  return source === "." || source === ".." || source.startsWith("./") || source.startsWith("../")
+    || source.startsWith("/") || source.startsWith("~") || /^[A-Za-z]:[\\/]/.test(source);
+}
+
+function resolveComposeSource(projectDirectory: string, source: string): string {
+  if (source === "~") return os.homedir();
+  if (source.startsWith("~/") || source.startsWith("~\\")) return path.resolve(os.homedir(), source.slice(2));
+  return path.resolve(projectDirectory, source);
+}
+
+function shortComposeBind(value: string, composeFile: string, projectDirectory: string): ComposeBind | undefined {
+  const parts = value.split(":");
+  let source: string | undefined;
+  let target: string | undefined;
+  if (parts.length >= 3 && /^[A-Za-z]$/.test(parts[0]) && /^[\\/]/.test(parts[1])) {
+    source = `${parts[0]}:${parts[1]}`;
+    target = parts[2];
+  } else if (parts.length >= 2) {
+    [source, target] = parts;
+  }
+  if (!source || !target || !isPathLikeComposeSource(source) || !path.posix.isAbsolute(target.replaceAll("\\", "/"))) return undefined;
+  return {
+    source: resolveComposeSource(projectDirectory, source),
+    target: path.posix.normalize(target.replaceAll("\\", "/")),
+    composeFile
+  };
+}
+
+function composeServiceBinds(files: string[], service: string, projectRoot: string): { binds: ComposeBind[]; errors: string[] } {
+  const byTarget = new Map<string, ComposeBind>();
+  const errors: string[] = [];
+  const firstComposeFile = path.resolve(projectRoot, ...files[0].replaceAll("\\", "/").split("/"));
+  const projectDirectory = path.dirname(firstComposeFile);
+  for (const relativeFile of files) {
+    const absoluteFile = path.resolve(projectRoot, ...relativeFile.replaceAll("\\", "/").split("/"));
+    let document: unknown;
+    try {
+      document = parseYaml(fs.readFileSync(absoluteFile, "utf8"));
+    } catch (error) {
+      errors.push(`Cannot parse Compose file '${relativeFile}' while checking worktree mounts: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+    const serviceValue = document && typeof document === "object"
+      ? (document as { services?: Record<string, unknown> }).services?.[service]
+      : undefined;
+    if (!serviceValue || typeof serviceValue !== "object") continue;
+    const volumes = (serviceValue as { volumes?: unknown }).volumes;
+    if (!Array.isArray(volumes)) continue;
+    for (const volume of volumes) {
+      let bind: ComposeBind | undefined;
+      if (typeof volume === "string") {
+        bind = shortComposeBind(volume, absoluteFile, projectDirectory);
+      } else if (volume && typeof volume === "object") {
+        const entry = volume as { type?: unknown; source?: unknown; target?: unknown };
+        if ((entry.type === undefined || entry.type === "bind") && typeof entry.source === "string"
+            && typeof entry.target === "string" && isPathLikeComposeSource(entry.source)
+            && path.posix.isAbsolute(entry.target.replaceAll("\\", "/"))) {
+          bind = {
+            source: resolveComposeSource(projectDirectory, entry.source),
+            target: path.posix.normalize(entry.target.replaceAll("\\", "/")),
+            composeFile: absoluteFile
+          };
+        }
+      }
+      if (bind) byTarget.set(bind.target, bind);
+    }
+  }
+  return { binds: [...byTarget.values()], errors };
+}
+
+function fixedRepositoryReferences(recipe: ReviewToolsManifestProposal["tools"][number], projectRoot: string): string[] {
+  if (recipe.runner.kind !== "compose_exec") return [];
+  const references = new Set<string>();
+  const commandCandidates = /[\\/]/.test(recipe.runner.command) || recipe.runner.command.startsWith(".")
+    ? [recipe.runner.command]
+    : [];
+  for (const token of [...commandCandidates, ...recipe.runner.args]) {
+    if (!token || token.includes("{input:") || token.includes("{stage}") || token.startsWith("-")) continue;
+    try {
+      const safe = validatedRepositoryPath(projectRoot, token, `fixed argument for '${recipe.id}'`).split("::", 1)[0];
+      if (fs.existsSync(path.resolve(projectRoot, ...safe.split("/")))) references.add(safe);
+    } catch {
+      // Most argv entries are not repository paths. Only existing safe paths are provenance evidence.
+    }
+  }
+  return [...references];
+}
+
+function isPathWithin(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function validateComposeWorktree(
+  recipe: ReviewToolsManifestProposal["tools"][number],
+  projectRoot: string
+): string[] {
+  if (recipe.runner.kind !== "compose_exec") return [];
+  const fixedReferences = fixedRepositoryReferences(recipe, projectRoot);
+  if (recipe.runner.worktree.mode === "unspecified") {
+    return [`Tool '${recipe.id}' must explicitly declare whether it uses authoritative worktree binds or is runtime-only.`];
+  }
+  if (recipe.runner.worktree.mode === "none") {
+    const errors: string[] = [];
+    if (recipe.inputs.some(({ type }) => type === "repo_paths")) {
+      errors.push(`Tool '${recipe.id}' accepts repository paths but declares runtime-only Compose execution.`);
+    }
+    if (fixedReferences.length) {
+      errors.push(`Tool '${recipe.id}' references repository content (${fixedReferences.join(", ")}) but declares runtime-only Compose execution.`);
+    }
+    return errors;
+  }
+  const { binds, errors } = composeServiceBinds(recipe.runner.files, recipe.runner.service, projectRoot);
+  for (const claim of recipe.runner.worktree.paths) {
+    let safeRepositoryPath: string;
+    try {
+      safeRepositoryPath = validatedRepositoryPath(projectRoot, claim.repositoryPath, `worktree path for '${recipe.id}'`);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+      continue;
+    }
+    const repositoryPath = path.resolve(projectRoot, ...safeRepositoryPath.split("/"));
+    if (!fs.existsSync(repositoryPath)) {
+      errors.push(`Tool '${recipe.id}' declares a worktree path that does not exist: ${safeRepositoryPath}`);
+      continue;
+    }
+    const containerPath = path.posix.normalize(claim.containerPath.replaceAll("\\", "/"));
+    const matching = binds
+      .filter((bind) => containerPath === bind.target || containerPath.startsWith(`${bind.target.replace(/\/$/, "")}/`))
+      .sort((left, right) => right.target.length - left.target.length)[0];
+    if (!matching) {
+      errors.push(`Tool '${recipe.id}' expects current worktree path '${safeRepositoryPath}' at '${containerPath}', but service '${recipe.runner.service}' has no matching bind mount.`);
+      continue;
+    }
+    const suffix = path.posix.relative(matching.target, containerPath);
+    const mountedHostPath = path.resolve(matching.source, ...suffix.split("/").filter(Boolean));
+    if (canonical(mountedHostPath) !== canonical(repositoryPath)) {
+      const sourceDisplay = isPathWithin(projectRoot, matching.source)
+        ? path.relative(projectRoot, matching.source).replaceAll("\\", "/") || "."
+        : matching.source;
+      errors.push(`Tool '${recipe.id}' maps '${containerPath}' from '${sourceDisplay}', not authoritative repository path '${safeRepositoryPath}'.`);
+    }
+  }
+  for (const reference of fixedReferences) {
+    const referencePath = path.resolve(projectRoot, ...reference.split("/"));
+    const covered = recipe.runner.worktree.paths.some((claim) => {
+      try {
+        const safeClaim = validatedRepositoryPath(projectRoot, claim.repositoryPath, `worktree path for '${recipe.id}'`);
+        return isPathWithin(path.resolve(projectRoot, ...safeClaim.split("/")), referencePath);
+      } catch {
+        return false;
+      }
+    });
+    if (!covered) errors.push(`Tool '${recipe.id}' references repository content '${reference}' outside its declared worktree paths.`);
+  }
+  return errors;
 }
 
 function commandPreview(recipe: ReviewToolsManifestProposal["tools"][number]): string[] {
@@ -249,6 +476,7 @@ export function preflightReviewToolsManifest(
     if (manifest.runnerPolicy[policy] !== "allowed") {
       errors.push(`Tool '${recipe.id}' uses ${recipe.runner.kind}, but runner policy '${policy}' is disallowed.`);
     }
+    errors.push(...validateComposeWorktree(recipe, projectRoot));
     if (recipe.readiness?.mode === "probe") {
       const probePolicy = runnerPolicyKey(recipe.readiness.runner.kind);
       if (manifest.runnerPolicy[probePolicy] !== "allowed") {
@@ -303,6 +531,117 @@ export function preflightReviewToolsManifest(
     })),
     manifest
   };
+}
+
+function compactCommand(command: string[]): string {
+  const rendered = command.map((part) => /\s/.test(part) ? JSON.stringify(part) : part).join(" ");
+  return rendered.length <= 240 ? rendered : `${rendered.slice(0, 237)}...`;
+}
+
+export function summarizeReviewToolsPreflight(preflight: ReviewToolsPreflightResult): ReviewToolsProposalSummary {
+  const manifest = preflight.manifest;
+  if (!manifest) {
+    return {
+      valid: preflight.valid,
+      writable: preflight.writable,
+      errors: preflight.errors,
+      warnings: preflight.warnings,
+      coverage: preflight.coverage,
+      requirements: [],
+      tools: []
+    };
+  }
+  const coverageById = new Map(manifest.coverage.map((entry) => [entry.requirementId, entry]));
+  const previewsById = new Map(preflight.commandPreviews.map((preview) => [preview.id, preview]));
+  const readinessById = new Map(preflight.doctor?.tools.map((tool) => [tool.id, tool]) ?? []);
+  return {
+    proposalSha256: reviewToolsProposalSha256(manifest),
+    valid: preflight.valid,
+    writable: preflight.writable,
+    errors: preflight.errors,
+    warnings: preflight.warnings,
+    coverage: preflight.coverage,
+    runnerPolicy: manifest.runnerPolicy,
+    readinessDefaults: manifest.readinessDefaults,
+    requirements: manifest.requirements.map((requirement) => {
+      const coverage = coverageById.get(requirement.id);
+      return {
+        id: requirement.id,
+        title: requirement.title,
+        requiredWhen: requirement.requiredWhen,
+        disposition: coverage?.disposition ?? "missing",
+        ...(coverage?.disposition === "tool" ? { toolIds: coverage.toolIds } : {}),
+        ...(coverage?.disposition === "gap" ? { gapReason: coverage.reason, accepted: coverage.accepted } : {})
+      };
+    }),
+    tools: manifest.tools.map((tool) => {
+      const readiness = tool.readiness ?? manifest.readinessDefaults;
+      const effective = readinessById.get(tool.id);
+      return {
+        id: tool.id,
+        title: tool.title,
+        runner: tool.runner.kind,
+        readiness: `${readiness.mode}:${effective?.status ?? "unknown"}`,
+        worktree: tool.runner.kind === "compose_exec"
+          ? tool.runner.worktree.mode === "bind"
+            ? `bind:${tool.runner.worktree.paths.map(({ repositoryPath }) => repositoryPath).join(",")}`
+            : tool.runner.worktree.mode
+          : tool.runner.kind === "compose_stage_exec" ? `staged:${tool.runner.sourceDirectory}` : "host",
+        command: compactCommand(previewsById.get(tool.id)?.command ?? []),
+        inputs: tool.inputs.map(({ name, type, required }) => ({ name, type, required }))
+      };
+    })
+  };
+}
+
+export function reviewToolsProposalDetails(
+  manifest: ReviewToolsManifestProposal,
+  toolIds?: string[],
+  requirementIds?: string[]
+): {
+  proposalSha256: string;
+  requirements: ReviewToolsManifestProposal["requirements"];
+  coverage: ReviewToolsManifestProposal["coverage"];
+  tools: Array<ReviewToolsManifestProposal["tools"][number] & { commandPreview: string[] }>;
+} {
+  if (!toolIds?.length && !requirementIds?.length) {
+    throw new Error("Select at least one proposal tool or validation requirement for detailed inspection.");
+  }
+  const selectedTools = new Set(toolIds ?? []);
+  const selectedRequirements = new Set(requirementIds ?? []);
+  const unknownTools = toolIds?.filter((id) => !manifest.tools.some((tool) => tool.id === id)) ?? [];
+  const unknownRequirements = requirementIds?.filter((id) => !manifest.requirements.some((requirement) => requirement.id === id)) ?? [];
+  if (unknownTools.length || unknownRequirements.length) {
+    throw new Error([
+      unknownTools.length ? `Unknown proposal tool ids: ${unknownTools.join(", ")}.` : "",
+      unknownRequirements.length ? `Unknown proposal requirement ids: ${unknownRequirements.join(", ")}.` : ""
+    ].filter(Boolean).join(" "));
+  }
+  for (const entry of manifest.coverage) {
+    if (entry.disposition === "tool" && entry.toolIds.some((toolId) => selectedTools.has(toolId))) {
+      selectedRequirements.add(entry.requirementId);
+    }
+  }
+  for (const entry of manifest.coverage) {
+    if (selectedRequirements.has(entry.requirementId) && entry.disposition === "tool") {
+      for (const toolId of entry.toolIds) selectedTools.add(toolId);
+    }
+  }
+  return {
+    proposalSha256: reviewToolsProposalSha256(manifest),
+    requirements: manifest.requirements.filter(({ id }) => selectedRequirements.has(id)),
+    coverage: manifest.coverage.filter(({ requirementId }) => selectedRequirements.has(requirementId)),
+    tools: manifest.tools
+      .filter(({ id }) => selectedTools.has(id))
+      .map((tool) => ({ ...tool, commandPreview: commandPreview(tool) }))
+  };
+}
+
+export function acceptReviewToolsProposalGaps(manifest: ReviewToolsManifestProposal): ReviewToolsManifestProposal {
+  return reviewToolsManifestProposalSchema.parse({
+    ...manifest,
+    coverage: manifest.coverage.map((entry) => entry.disposition === "gap" ? { ...entry, accepted: true } : entry)
+  });
 }
 
 function isProbeRecord(value: unknown): value is ReviewToolProbeRecord {
