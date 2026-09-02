@@ -45,7 +45,10 @@ const recipeInputSchema = z.discriminatedUnion("type", [
   }),
   baseInputSchema.extend({
     type: z.literal("repo_paths"),
-    maxItems: z.number().int().min(1).max(500).default(20)
+    maxItems: z.number().int().min(1).max(500).default(20),
+    allowedPrefixes: z.array(z.string().min(1).max(500)).max(50).default([]),
+    extensions: z.array(z.string().regex(/^\.[A-Za-z0-9][A-Za-z0-9._-]*$/)).max(50).default([]),
+    pathKind: z.enum(["any", "file", "directory"]).default("any")
   }),
   baseInputSchema.extend({
     type: z.literal("strings"),
@@ -148,6 +151,13 @@ export const reviewToolRecipeSchema = z.object({
     if (input.type === "enum" && input.default !== undefined && !input.values.includes(input.default)) {
       context.addIssue({ code: "custom", message: `Default for '${input.name}' is not one of its values.` });
     }
+    if (input.type === "repo_paths") {
+      for (const prefix of input.allowedPrefixes) {
+        if (!prefix.trim() || prefix.startsWith("-") || path.posix.isAbsolute(prefix.replaceAll("\\", "/"))) {
+          context.addIssue({ code: "custom", message: `Repository path prefix for '${input.name}' must be repository-relative.` });
+        }
+      }
+    }
   }
   for (const name of Object.keys(recipe.runner.environment)) {
     if (/(?:TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY|PRIVATE_KEY)/i.test(name)) {
@@ -161,25 +171,116 @@ export const reviewToolRecipeSchema = z.object({
       }
     }
   }
+  const inputNames = new Set(recipe.inputs.map(({ name }) => name));
+  const templates = [
+    ...recipe.runner.args,
+    ...(recipe.runner.kind === "compose_stage_exec" ? [recipe.runner.workdir, ...recipe.runner.artifacts] : [])
+  ];
+  for (const template of templates) {
+    for (const match of template.matchAll(/\{input:([a-z][a-z0-9_]*)\}/g)) {
+      if (!inputNames.has(match[1])) context.addIssue({ code: "custom", message: `Template references unknown input '${match[1]}'.` });
+    }
+    if (template.includes("{stage}") && recipe.runner.kind !== "compose_stage_exec") {
+      context.addIssue({ code: "custom", message: "The {stage} placeholder is only valid for staged Compose tools." });
+    }
+  }
 });
 
-export const reviewToolsManifestSchema = z.object({
+const legacyReviewToolsManifestSchema = z.object({
   schemaVersion: z.literal(1),
   projectRoot: z.string().min(1),
   approvedAt: z.iso.datetime({ offset: true }),
   readinessDefaults: readinessDefaultsSchema.default({ mode: "static" }),
   tools: z.array(reviewToolRecipeSchema).max(200)
-}).superRefine((manifest, context) => {
+});
+
+const runnerPolicySchema = z.object({
+  host: z.enum(["allowed", "disallowed"]),
+  compose: z.enum(["allowed", "disallowed"]),
+  composeExec: z.enum(["allowed", "disallowed"]),
+  composeStageExec: z.enum(["allowed", "disallowed"])
+});
+
+const validationRequirementSchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9_]{1,63}$/),
+  title: z.string().min(1).max(200),
+  description: z.string().min(1).max(2_000),
+  requiredWhen: z.string().min(1).max(2_000),
+  procedure: z.array(z.string().min(1).max(10_000)).min(1).max(100),
+  prerequisites: z.array(z.string().min(1).max(2_000)).max(100).default([]),
+  allowedRunners: z.array(z.enum(["host", "compose", "compose_exec", "compose_stage_exec"])).min(1).max(4),
+  evidence: z.array(z.string().min(1).max(1_000)).min(1).max(100),
+  detectedRequirementIds: z.array(z.string().regex(/^[a-z][a-z0-9_]{1,63}$/)).max(100).default([])
+});
+
+const validationCoverageSchema = z.discriminatedUnion("disposition", [
+  z.object({
+    requirementId: z.string().regex(/^[a-z][a-z0-9_]{1,63}$/),
+    disposition: z.literal("tool"),
+    toolIds: z.array(z.string().regex(/^[a-z][a-z0-9_]{1,63}$/)).min(1).max(50)
+  }),
+  z.object({
+    requirementId: z.string().regex(/^[a-z][a-z0-9_]{1,63}$/),
+    disposition: z.literal("gap"),
+    reason: z.string().min(1).max(2_000),
+    accepted: z.boolean().default(false)
+  })
+]);
+
+const currentManifestBodySchema = z.object({
+  schemaVersion: z.literal(2),
+  projectRoot: z.string().min(1),
+  detectionSha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
+  runnerPolicy: runnerPolicySchema,
+  readinessDefaults: readinessDefaultsSchema.default({ mode: "static" }),
+  requirements: z.array(validationRequirementSchema).max(500),
+  coverage: z.array(validationCoverageSchema).max(500),
+  tools: z.array(reviewToolRecipeSchema).max(200)
+});
+
+function refineCurrentManifest(
+  manifest: z.infer<typeof currentManifestBodySchema>,
+  context: z.RefinementCtx
+): void {
   const ids = new Set<string>();
   for (const tool of manifest.tools) {
     if (ids.has(tool.id)) context.addIssue({ code: "custom", message: `Duplicate tool id '${tool.id}'.` });
     ids.add(tool.id);
   }
-});
+  const requirementIds = new Set<string>();
+  for (const requirement of manifest.requirements) {
+    if (requirementIds.has(requirement.id)) context.addIssue({ code: "custom", message: `Duplicate validation requirement id '${requirement.id}'.` });
+    requirementIds.add(requirement.id);
+  }
+  const covered = new Set<string>();
+  for (const entry of manifest.coverage) {
+    if (covered.has(entry.requirementId)) context.addIssue({ code: "custom", message: `Duplicate coverage disposition for '${entry.requirementId}'.` });
+    covered.add(entry.requirementId);
+  }
+}
+
+export const reviewToolsManifestProposalSchema = currentManifestBodySchema.superRefine(refineCurrentManifest);
+
+export const currentReviewToolsManifestSchema = currentManifestBodySchema.extend({
+  approvedAt: z.iso.datetime({ offset: true })
+}).superRefine(refineCurrentManifest);
+
+export const reviewToolsManifestSchema = z.discriminatedUnion("schemaVersion", [
+  legacyReviewToolsManifestSchema.superRefine((manifest, context) => {
+    const ids = new Set<string>();
+    for (const tool of manifest.tools) {
+      if (ids.has(tool.id)) context.addIssue({ code: "custom", message: `Duplicate tool id '${tool.id}'.` });
+      ids.add(tool.id);
+    }
+  }),
+  currentReviewToolsManifestSchema
+]);
 
 export type ReviewToolInput = z.infer<typeof recipeInputSchema>;
 export type ReviewToolRecipe = z.infer<typeof reviewToolRecipeSchema>;
 export type ReviewToolsManifest = z.infer<typeof reviewToolsManifestSchema>;
+export type ReviewToolsManifestProposal = z.infer<typeof reviewToolsManifestProposalSchema>;
+export type CurrentReviewToolsManifest = z.infer<typeof currentReviewToolsManifestSchema>;
 export type ReviewToolRunner = ReviewToolRecipe["runner"];
 export type ReviewToolReadiness = NonNullable<ReviewToolRecipe["readiness"]>;
 
@@ -319,6 +420,24 @@ function executableAvailable(command: string, cwd: string): boolean {
   }
 }
 
+function declaredComposeServices(filename: string): string[] {
+  const services: string[] = [];
+  let servicesIndent: number | undefined;
+  for (const line of fs.readFileSync(filename, "utf8").split(/\r?\n/)) {
+    if (servicesIndent === undefined) {
+      const match = /^(\s*)services:\s*(?:#.*)?$/.exec(line);
+      if (match) servicesIndent = match[1].length;
+      continue;
+    }
+    if (!line.trim() || /^\s*#/.test(line)) continue;
+    const indent = /^ */.exec(line)?.[0].length ?? 0;
+    if (indent <= servicesIndent) break;
+    const match = /^\s*([A-Za-z0-9][A-Za-z0-9_.-]*):\s*(?:#.*)?$/.exec(line);
+    if (match && indent === servicesIndent + 2) services.push(match[1]);
+  }
+  return services;
+}
+
 export function doctorReviewTools(
   manifest: ReviewToolsManifest,
   projectRoot = loadBoundProjectRoot(),
@@ -336,9 +455,20 @@ export function doctorReviewTools(
     let executable = recipe.runner.kind === "host" ? recipe.runner.command : "docker";
     if (!isExecutableAvailable(executable, cwd)) issues.push(`Executable is unavailable on the host PATH: ${executable}`);
     if (recipe.runner.kind !== "host") {
+      const declaredServices = new Set<string>();
       for (const composeFile of recipe.runner.files) {
-        const safe = validatedRepositoryPath(projectRoot, composeFile, "Compose file");
-        if (!fs.existsSync(path.resolve(projectRoot, ...safe.split("/")))) issues.push(`Compose file does not exist: ${safe}`);
+        try {
+          const safe = validatedRepositoryPath(projectRoot, composeFile, "Compose file");
+          const absolute = path.resolve(projectRoot, ...safe.split("/"));
+          if (!fs.existsSync(absolute)) issues.push(`Compose file does not exist: ${safe}`);
+          else for (const service of declaredComposeServices(absolute)) declaredServices.add(service);
+        } catch (error) {
+          issues.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+      if ((recipe.runner.kind === "compose_exec" || recipe.runner.kind === "compose_stage_exec")
+          && declaredServices.size > 0 && !declaredServices.has(recipe.runner.service)) {
+        issues.push(`Compose service is not declared in the approved files: ${recipe.runner.service}`);
       }
     }
     if (recipe.runner.kind === "compose_stage_exec") {
@@ -364,15 +494,20 @@ export function doctorReviewTools(
         issues.push(`Readiness probe executable is unavailable on the host PATH: ${probeExecutable}`);
       }
       if (readiness.runner.kind !== "host") {
+        const declaredServices = new Set<string>();
         for (const composeFile of readiness.runner.files) {
           try {
             const safe = validatedRepositoryPath(projectRoot, composeFile, "Readiness probe Compose file");
-            if (!fs.existsSync(path.resolve(projectRoot, ...safe.split("/")))) {
+            const absolute = path.resolve(projectRoot, ...safe.split("/"));
+            if (!fs.existsSync(absolute)) {
               issues.push(`Readiness probe Compose file does not exist: ${safe}`);
-            }
+            } else for (const service of declaredComposeServices(absolute)) declaredServices.add(service);
           } catch (error) {
             issues.push(error instanceof Error ? error.message : String(error));
           }
+        }
+        if (readiness.runner.kind === "compose_exec" && declaredServices.size > 0 && !declaredServices.has(readiness.runner.service)) {
+          issues.push(`Readiness probe Compose service is not declared in the approved files: ${readiness.runner.service}`);
         }
       }
     }
@@ -508,7 +643,29 @@ function normalizedInputValues(recipe: ReviewToolRecipe, raw: Record<string, unk
     const value = parsed[input.name];
     if (value === undefined) continue;
     if (input.type === "repo_paths") {
-      values[input.name] = (value as string[]).map((entry) => validatedRepositoryPath(projectRoot, entry, `input '${input.name}'`));
+      const entries = value as string[];
+      if (input.required && entries.length === 0) throw new Error(`Input '${input.name}' requires at least one repository path.`);
+      values[input.name] = entries.map((entry) => {
+        const safe = validatedRepositoryPath(projectRoot, entry, `input '${input.name}'`);
+        const filePart = safe.split("::", 1)[0];
+        if (input.allowedPrefixes.length) {
+          const allowed = input.allowedPrefixes.some((prefix) => {
+            const normalized = path.posix.normalize(prefix.replaceAll("\\", "/")).replace(/\/$/, "");
+            return filePart === normalized || filePart.startsWith(`${normalized}/`);
+          });
+          if (!allowed) throw new Error(`Input '${input.name}' is outside its approved repository prefixes: ${entry}`);
+        }
+        if (input.extensions.length && !input.extensions.some((extension) => filePart.toLowerCase().endsWith(extension.toLowerCase()))) {
+          throw new Error(`Input '${input.name}' does not use an approved extension: ${entry}`);
+        }
+        if (input.pathKind !== "any") {
+          const absolute = path.resolve(projectRoot, ...filePart.split("/"));
+          if (!fs.existsSync(absolute)) throw new Error(`Input '${input.name}' does not exist: ${entry}`);
+          const matchesKind = input.pathKind === "file" ? fs.statSync(absolute).isFile() : fs.statSync(absolute).isDirectory();
+          if (!matchesKind) throw new Error(`Input '${input.name}' is not an approved ${input.pathKind}: ${entry}`);
+        }
+        return safe;
+      });
     } else if (input.type === "strings") {
       values[input.name] = (value as string[]).map((entry) => {
         if (/[\0\r\n]/.test(entry)) throw new Error(`Input '${input.name}' cannot contain control characters.`);

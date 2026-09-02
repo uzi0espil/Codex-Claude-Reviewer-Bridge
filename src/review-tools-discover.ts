@@ -9,6 +9,5 @@ const projectRoot = process.argv[2] ? path.resolve(process.argv[2]) : loadBoundP
 const outputPath = process.argv[3] ? path.resolve(process.argv[3]) : path.join(reviewerRoot, "review-tools.detected.json");
 const discovery = discoverReviewTools(projectRoot);
 fs.writeFileSync(outputPath, `${JSON.stringify(discovery, null, 2)}\n`, "utf8");
-console.log(`Detected ${discovery.candidates.length} review-tool candidates across ${discovery.technologies.length} technology surfaces.`);
+console.log(`Detected ${discovery.candidates.length} review-tool candidates, ${discovery.requirements.filter(({ role }) => role === "validation").length} CI validation requirements, and ${discovery.requirements.filter(({ role }) => role === "support").length} CI support steps across ${discovery.technologies.length} technology surfaces.`);
 console.log(`Wrote ${outputPath}`);
-

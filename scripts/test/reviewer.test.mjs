@@ -225,7 +225,7 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     fs.mkdirSync(path.join(scripts, "powershell", "internal"), { recursive: true });
     fs.copyFileSync(fileURLToPath(new URL("../powershell/internal/Run-External.ps1", import.meta.url)), path.join(scripts, "powershell", "internal", "Run-External.ps1"));
     fs.writeFileSync(path.join(instance, "package.json"), '{"version":"test-version"}\n');
-    fs.writeFileSync(path.join(instance, "dist", "review-tools-discover.js"), "const fs=require('node:fs');const path=require('node:path');const root=JSON.parse(fs.readFileSync(path.join(__dirname,'..','bridge.local.json'),'utf8')).projectRoot;fs.writeFileSync(path.join(__dirname,'..','review-tools.detected.json'),JSON.stringify({schemaVersion:1,projectRoot:root,generatedAt:new Date().toISOString(),technologies:[],candidates:[],questions:[]})+'\\n');\n");
+    fs.writeFileSync(path.join(instance, "dist", "review-tools-discover.js"), "const fs=require('node:fs');const path=require('node:path');const root=JSON.parse(fs.readFileSync(path.join(__dirname,'..','bridge.local.json'),'utf8')).projectRoot;fs.writeFileSync(path.join(__dirname,'..','review-tools.detected.json'),JSON.stringify({schemaVersion:2,projectRoot:root,generatedAt:new Date().toISOString(),technologies:[],requirements:[],candidates:[],questions:[]})+'\\n');\n");
 
     const mockNames = ["npm", "codex", "claude"];
     if (process.platform === "win32") {
@@ -297,7 +297,7 @@ test("update fast-forwards an instance and reruns the updated setup", () => {
     git(["symbolic-ref", "HEAD", "refs/heads/main"], origin);
     git(["clone", origin, instance], temporary);
     fs.mkdirSync(path.join(instance, "dist"), { recursive: true });
-    fs.writeFileSync(path.join(instance, "dist", "review-tools-discover.js"), "const fs=require('node:fs');const path=require('node:path');const root=JSON.parse(fs.readFileSync(path.join(__dirname,'..','bridge.local.json'),'utf8')).projectRoot;fs.writeFileSync(path.join(__dirname,'..','review-tools.detected.json'),JSON.stringify({schemaVersion:1,projectRoot:root,generatedAt:new Date().toISOString(),technologies:[],candidates:[],questions:[]})+'\\n');\n");
+    fs.writeFileSync(path.join(instance, "dist", "review-tools-discover.js"), "const fs=require('node:fs');const path=require('node:path');const root=JSON.parse(fs.readFileSync(path.join(__dirname,'..','bridge.local.json'),'utf8')).projectRoot;fs.writeFileSync(path.join(__dirname,'..','review-tools.detected.json'),JSON.stringify({schemaVersion:2,projectRoot:root,generatedAt:new Date().toISOString(),technologies:[],requirements:[],candidates:[],questions:[]})+'\\n');\n");
 
     fs.writeFileSync(path.join(seed, "package.json"), '{"version":"0.3.0"}\n');
     git(["add", "package.json"], seed);

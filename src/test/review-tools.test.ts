@@ -116,6 +116,40 @@ test("rejects repository escapes, flag-shaped paths, and control characters", ()
   }
 });
 
+test("repository path inputs enforce approved prefixes, extensions, kind, and cardinality", () => {
+  const root = fixture();
+  try {
+    fs.mkdirSync(path.join(root, "results"));
+    fs.mkdirSync(path.join(root, "other"));
+    fs.writeFileSync(path.join(root, "results", "scorecard.json"), "{}\n");
+    fs.writeFileSync(path.join(root, "other", "scorecard.json"), "{}\n");
+    const recipe = reviewToolRecipeSchema.parse({
+      id: "scorecard_judge",
+      title: "Scorecard judge",
+      description: "Judge exactly one approved scorecard.",
+      runner: { kind: "host", command: process.execPath, args: ["judge.mjs"], cwd: "." },
+      inputs: [{
+        name: "scorecard",
+        description: "One scorecard JSON file.",
+        type: "repo_paths",
+        required: true,
+        flag: "--judge",
+        maxItems: 1,
+        allowedPrefixes: ["results"],
+        extensions: [".json"],
+        pathKind: "file"
+      }]
+    });
+    const command = recipeCommand(recipe, { scorecard: ["results/scorecard.json"] }, root);
+    assert.deepEqual(command.args.slice(-2), ["--judge", "results/scorecard.json"]);
+    assert.throws(() => recipeCommand(recipe, { scorecard: [] }, root), /requires at least one/);
+    assert.throws(() => recipeCommand(recipe, { scorecard: ["other/scorecard.json"] }, root), /outside its approved repository prefixes/);
+    assert.throws(() => recipeCommand(recipe, { scorecard: ["results/scorecard.txt"] }, root), /approved extension/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("resolves npm-style Windows shims to Node argv without cmd.exe", { skip: process.platform !== "win32" }, () => {
   const root = fixture();
   try {

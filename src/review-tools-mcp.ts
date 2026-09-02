@@ -8,7 +8,7 @@ import {
   loadBoundProjectRoot,
   probeReviewTools,
   recipeInputObjectSchema,
-  reviewToolsManifestSchema,
+  reviewToolsManifestProposalSchema,
   SingleReviewToolRunner,
   type ReviewToolRecipe,
   type ReviewToolsManifest
@@ -19,6 +19,7 @@ import {
   readReviewToolsManifestRevision,
   readReviewToolsReadinessCache,
   refreshReviewToolsDetection,
+  preflightReviewToolsManifest,
   writeReviewToolsReadinessCache,
   writeReviewToolsManifest
 } from "./review-tools-store.js";
@@ -69,6 +70,8 @@ server.registerTool("review_tools_status", {
         sha256: detected.sha256,
         generatedAt: detected.value.generatedAt,
         technologyCount: detected.value.technologies.length,
+        validationRequirementCount: detected.value.requirements.filter(({ role }) => role === "validation").length,
+        supportStepCount: detected.value.requirements.filter(({ role }) => role === "support").length,
         candidateCount: detected.value.candidates.length
       } : null,
       manifest: approved ? {
@@ -117,6 +120,7 @@ server.registerTool("review_tools_refresh_detection", {
       sha256: detected.sha256,
       generatedAt: detected.value.generatedAt,
       technologies: detected.value.technologies,
+      requirements: detected.value.requirements,
       candidateCount: detected.value.candidates.length,
       questions: detected.value.questions
     });
@@ -135,6 +139,12 @@ server.registerTool("review_tools_catalog", {
   approvedAt: manifest.approvedAt,
   manifestSha256: loadedManifestSha256,
   readinessDefaults: manifest.readinessDefaults,
+  ...(manifest.schemaVersion === 2 ? {
+    detectionSha256: manifest.detectionSha256,
+    runnerPolicy: manifest.runnerPolicy,
+    requirements: manifest.requirements,
+    coverage: manifest.coverage
+  } : {}),
   tools: manifest.tools
 } : {
   projectRoot,
@@ -142,6 +152,20 @@ server.registerTool("review_tools_catalog", {
   error: manifestError,
   guidance: "Use $bridge-init-tools to curate and approve application-specific review tools."
 }));
+
+server.registerTool("review_tools_validate_manifest", {
+  description: "Validate a complete version-2 manifest proposal without writing it or executing application commands. Checks the current detection revision, requirement coverage, accepted gaps, runner policy, paths, host executables, Compose structure, readiness structure, and rendered fixed argv previews.",
+  inputSchema: z.object({
+    manifest: reviewToolsManifestProposalSchema
+  }),
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+}, async ({ manifest: proposedManifest }) => {
+  try {
+    return result(preflightReviewToolsManifest(proposedManifest, projectRoot));
+  } catch (error) {
+    return failure(error);
+  }
+});
 
 server.registerTool("review_tools_doctor", {
   description: "Check approved tool structure and report effective readiness. Static mode never executes commands, trusted mode records the user's approved runtime assumption, and probe mode uses only unexpired results from review_tools_probe.",
@@ -189,7 +213,7 @@ server.registerTool("review_tools_probe", {
 server.registerTool("review_tools_write_manifest", {
   description: "Write a user-approved tool manifest to the one fixed reviewer-local file. The caller cannot choose a path. Pass null expectedSha256 only when no manifest exists; otherwise pass the exact hash from review_tools_status. A fresh Codex session is required before changed dynamic tools appear.",
   inputSchema: z.object({
-    manifest: reviewToolsManifestSchema,
+    manifest: reviewToolsManifestProposalSchema,
     expectedSha256: z.string().regex(/^[a-fA-F0-9]{64}$/).nullable()
   }),
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }

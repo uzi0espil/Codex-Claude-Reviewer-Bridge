@@ -5,7 +5,7 @@ description: Inspect the application bound to this isolated reviewer, curate sca
 
 # Initialize application review tools
 
-Create a small, evidence-backed capability set for independent review. Detection
+Create a complete, evidence-backed capability set for independent review. Detection
 is advisory: never execute a detected command or copy candidates wholesale merely
 because the scanner found them.
 
@@ -14,9 +14,9 @@ fixed reviewer-local manifest through `review_tools_write_manifest`.
 
 ## Establish current state
 
-1. Call `review_tools_status`, then `review_tools_detected`. If detection is
-   absent or stale for the task, call `review_tools_refresh_detection` and read
-   the refreshed result.
+1. Call `review_tools_status`, then `review_tools_detected`. Record the exact
+   detection SHA-256. If detection is absent or stale for the task, call
+   `review_tools_refresh_detection` and read the refreshed result.
 2. Inspect applicable `AGENTS.md` or `CLAUDE.md`, CI workflows, documented
    developer commands, package and workspace manifests, Compose files, validation
    scripts, and existing review policy. Do not read credential files or print
@@ -27,18 +27,30 @@ fixed reviewer-local manifest through `review_tools_write_manifest`.
 4. If an approved manifest exists, use its exact SHA-256 from status and propose
    a focused update instead of rebuilding it blindly.
 
-Build a private validation inventory before curating recipes. For each relevant
-CI or documented check, preserve its trigger or path filter, setup, working
-directory, required services and environment, exact fixed arguments and
-exclusions, ordering constraints, and whether it is conditional or CI-only.
-Reconcile this inventory with the current review policy: every mandatory policy
-requirement should map to an approved capability or an explicit validation gap.
+Build a private validation inventory before curating recipes. Start with every
+detected CI step whose role is `validation`; use detected `support` steps as setup
+and prerequisite evidence rather than independent gates. Then add requirements
+established by policy, repository documentation, package manifests, and task
+runners. For each relevant CI or documented check, preserve its trigger or path
+filter, setup, working directory, required services and environment, exact fixed
+arguments and exclusions, ordering constraints, and whether it is conditional
+or CI-only.
+Record the runner kinds that can genuinely produce that evidence; an
+observational Compose command cannot satisfy a test or migration requirement.
+Reconcile this inventory with the current review policy: every inventory
+requirement must map exactly once to one or more approved capabilities or an
+explicit validation gap. Never omit a difficult, expensive, stateful, CI-only,
+or service-backed requirement from the inventory. A gap is a visible user choice,
+not a shortcut for recipe design.
 Do not simplify a command in a way that broadens or narrows the evidence it
 produces.
 
 ## Curate capabilities
 
-Prefer a compact set that covers mandatory gates and useful targeted checks.
+Only after coverage is complete, prefer a compact set that deduplicates genuinely
+equivalent execution routes. Sharing a container does not make different checks
+equivalent: lint, tests, migrations, and backup validation remain distinct
+capabilities unless a repository-owned wrapper deliberately runs them together.
 Support any detected language or toolchain; do not assume Python, Node, Docker,
 or a single repository layout. Deduplicate wrapper commands that run the same
 underlying gate.
@@ -49,15 +61,19 @@ only when reviewers need a bounded choice or repository path. A free-form
 `strings` input needs specific user approval because it can alter script
 behavior.
 
-For Compose, distinguish:
+Choose execution policy separately from readiness. Ask which runner kinds the
+user permits and record all four choices in `runnerPolicy`: host commands,
+observational Compose commands, execution in existing Compose services, and
+staged Compose execution. For Compose, distinguish:
 
 - observational or configuration checks that do not change container state;
 - execution in an existing service, which may access development data;
 - staged execution, which copies an approved source subtree to a scratch
   directory inside the service and retrieves only declared artifacts.
 
-Choose readiness behavior with the user instead of treating one runtime policy
-as universal. Recommend the global `static` default, which reports container
+Only after runner policy is settled, choose readiness behavior with the user
+instead of treating one runtime policy as universal. Recommend the global
+`static` default, which reports container
 commands as `needs_runtime_probe` without executing anything. Offer global
 `trusted` readiness when the user explicitly accepts runtime prerequisites.
 Allow individual tools to override either default with `static`, `trusted`, or a
@@ -72,8 +88,9 @@ or changing a manifest.
 
 ## Ask only material questions
 
-Ask at most three concise questions at a time, recommending a safe default. Ask
-only when repository evidence cannot decide matters such as:
+Ask at most three concise questions at a time, recommending a safe default. Never
+combine runner authorization with readiness behavior; they are independent
+decisions. Ask only when repository evidence cannot decide matters such as:
 
 - which gates are mandatory versus conditional on changed files;
 - whether commands may use existing services and development data or require
@@ -89,15 +106,28 @@ in the repository.
 
 ## Preview, then wait
 
+Before presenting the approval preview, call `review_tools_validate_manifest`
+with the complete version-2 proposal. Validation gaps must have `accepted: false`
+at this stage. Resolve every structural, detection-revision, runner-policy,
+coverage, path, executable, Compose-service, and command-shape error. Explain
+warnings rather than silently discarding affected requirements. This validation
+must not execute an application command.
+
 Present:
 
 - detected technology surfaces and the evidence used;
 - candidates accepted, changed, merged, or rejected, with brief reasons;
-- mandatory policy or CI checks mapped to proposed tools or explicit gaps;
+- every structured requirement, including its detected CI ids, mapped to proposed
+  tools or an explicit pending gap;
+- the independent runner policy and why each chosen runner matches its execution
+  environment;
 - the proposed readiness default, per-tool overrides, probe commands, cache
   durations, and whether each ready state will be static, trusted, or probed;
 - unresolved validation gaps;
-- the complete proposed JSON manifest, or a clear complete diff for an update;
+- the complete proposed JSON proposal, without `approvedAt`, or a clear complete
+  diff for an update;
+- the preflight result, including command previews, warnings, coverage counts,
+  and pending gaps;
 - the current manifest SHA-256 that will be used for optimistic concurrency.
 
 End that turn by asking for explicit approval. Do not call
@@ -110,11 +140,16 @@ After explicit approval:
 
 1. Recheck `review_tools_status`. If its manifest hash differs from the preview,
    inspect the current manifest, rebuild the diff, and request approval again.
-2. Call `review_tools_write_manifest` with the complete manifest and the exact
-   observed hash, or `null` only when no manifest existed at preview time.
-3. Report the returned path, SHA-256, tool count, and that a fresh Codex session
-   is required before newly approved dynamic tools appear.
-4. In that fresh session, call `review_tools_catalog` and
+2. Change only the previewed gaps from `accepted: false` to `accepted: true`, then
+   call `review_tools_validate_manifest` again. If it is not writable, stop and
+   correct or re-approve the proposal.
+3. Call `review_tools_write_manifest` with the complete version-2 proposal and
+   the exact observed hash, or `null` only when no manifest existed at preview time.
+   The writer supplies the actual `approvedAt` timestamp; never invent it.
+4. Report the returned path, SHA-256, requirement count, accepted-gap count,
+   tool count, approval time, and that a fresh Codex session is required before
+   newly approved dynamic tools appear.
+5. In that fresh session, call `review_tools_catalog` and
    `review_tools_doctor`. If the approved manifest contains probes, call
    `review_tools_probe` only when the user selected or requests runtime probing,
    then call the doctor again. Execute validation tools only when the user's

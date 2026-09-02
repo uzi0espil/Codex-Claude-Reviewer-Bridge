@@ -66,7 +66,7 @@ test("the npx bootstrapper clones a pinned template and preserves its update ups
     fs.writeFileSync(path.join(seed, "scripts", "shell", "reviewer.sh"), "#!/bin/sh\n");
     fs.writeFileSync(path.join(seed, "skills", "bridge-init-policy", "SKILL.md"), "# fixture\n");
     fs.writeFileSync(path.join(seed, "skills", "bridge-init-tools", "SKILL.md"), "# fixture\n");
-    fs.writeFileSync(path.join(seed, "dist", "review-tools-discover.js"), "const fs=require('node:fs');const path=require('node:path');const root=JSON.parse(fs.readFileSync(path.join(__dirname,'..','bridge.local.json'),'utf8')).projectRoot;fs.writeFileSync(path.join(__dirname,'..','review-tools.detected.json'),JSON.stringify({schemaVersion:1,projectRoot:root,generatedAt:new Date().toISOString(),technologies:[],candidates:[],questions:[]})+'\\n');\n");
+    fs.writeFileSync(path.join(seed, "dist", "review-tools-discover.js"), "const fs=require('node:fs');const path=require('node:path');const root=JSON.parse(fs.readFileSync(path.join(__dirname,'..','bridge.local.json'),'utf8')).projectRoot;fs.writeFileSync(path.join(__dirname,'..','review-tools.detected.json'),JSON.stringify({schemaVersion:2,projectRoot:root,generatedAt:new Date().toISOString(),technologies:[],requirements:[],candidates:[],questions:[]})+'\\n');\n");
     fs.writeFileSync(path.join(seed, ".gitignore"), "/bridge.local.json\n/claude-bridge.settings.json\n/config.toml\n/runtime/\n");
     fs.writeFileSync(path.join(seed, "package.json"), '{"version":"0.3.2"}\n');
     git(["add", "."], seed);

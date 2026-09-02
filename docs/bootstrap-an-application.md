@@ -150,15 +150,25 @@ starts the tool workflow after policy initialization. Resume or refresh it with:
 `$bridge-init-tools` combines scanner evidence with repository instructions, CI,
 manifests, documented workflows, Compose services, and scripts. It supports
 mixed-language repositories and does not assume a particular framework. It
-curates a small set of host, Compose, existing-service, or staged-service
-runners; asks only about material choices such as data isolation, stateful
-commands, mandatory gates, free-form arguments, and readiness behavior; and
-previews the complete JSON manifest before asking for approval. Readiness may
-remain static, explicitly trust runtime prerequisites, or use fixed approved
-probes for selected tools. The safe default is static.
+builds a structured validation inventory, extracts GitHub Actions run steps as
+validation or support evidence, and requires every validation item to map to
+tools or a user-accepted gap. It asks
+separately which host, observational Compose, existing-service, and staged-service
+runners are permitted, then asks how readiness should behave. Readiness may remain
+static, explicitly trust runtime prerequisites, or use fixed approved probes for
+selected tools. The safe default is static.
+
+Before approval, a non-executing preflight binds the proposal to the current
+detection revision and checks coverage, runner policy, paths, host executables,
+Compose files and services, typed inputs, command previews, and pending gaps.
+Sharing a container does not make lint, tests, migrations, and backup validation
+equivalent; duplicate execution routes are removed only after semantic coverage
+is complete.
 
 Approval writes only ignored `review-tools.local.json` through a path-fixed MCP
-tool with schema, project-binding, size, and optimistic-hash checks. Scanner
+tool with schema, project-binding, detection-revision, coverage, runner-policy,
+preflight, size, and optimistic-hash checks. The writer records the actual
+approval time. Scanner
 output never becomes executable by itself. Start a fresh Codex session after
 creating or changing the manifest so the approved dynamic tools are published.
 Use `review_tools_catalog` and `review_tools_doctor` there to verify what is

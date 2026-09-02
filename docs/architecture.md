@@ -160,13 +160,18 @@ each later injected turn reselects `bridge-review`, so interactive implementatio
 work does not weaken checkpoint reviews.
 
 Setup scans the bound repository for language manifests, package scripts, common
-task runners, Compose configuration, CI, and validation-like scripts. The ignored
+task runners, Compose configuration, CI, and validation-like scripts. It extracts
+GitHub Actions run steps into a non-executable structured inventory, classifying
+validation gates separately from setup and support evidence. The ignored
 `review-tools.detected.json` output is evidence only and is never loaded as an
 executable manifest. `$bridge-init-tools` checks repository instructions and CI,
-asks only material questions, and previews a curated manifest. The fixed writer
-validates its schema and immutable project binding, requires the previously
-observed SHA-256, and atomically replaces only ignored
-`review-tools.local.json`. Its MCP approval mode is `prompt`; all other tool
+asks runner authorization separately from readiness, maps every requirement to
+tools or an explicitly accepted gap, and preflights the complete proposal before
+preview. The fixed writer validates its schema, detection revision, coverage,
+runner policy, and immutable project binding, requires the previously observed
+SHA-256, supplies the actual approval timestamp, and atomically replaces only
+ignored `review-tools.local.json`. Version-1 manifests remain readable; all new
+writes use version 2. Its MCP approval mode is `prompt`; all other tool
 server capabilities are harmless until the approved manifest exists.
 
 Approved runners use fixed argv execution with `shell: false`, bounded typed
@@ -178,7 +183,7 @@ artifacts into ignored reviewer runtime storage, and attempts cleanup. Manifest
 approval is standing authorization for those exact capabilities, not for an
 arbitrary shell or implementation changes.
 
-The same manifest controls readiness. Static mode performs no runtime command
+The manifest records runner authorization independently from readiness. Static mode performs no runtime command
 and is the backward-compatible default. Trusted mode records the user's explicit
 acceptance of runtime prerequisites after structural validation. Per-tool probe
 mode executes only a fixed approved host or Compose runner and caches its result

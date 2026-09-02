@@ -8,11 +8,24 @@ export interface DetectedReviewTool {
   recipe: ReviewToolRecipe;
 }
 
+export interface DetectedValidationRequirement {
+  id: string;
+  title: string;
+  description: string;
+  source: string;
+  requiredWhen: string;
+  command: string;
+  cwd: string;
+  services: string[];
+  role: "validation" | "support";
+}
+
 export interface ReviewToolDiscovery {
-  schemaVersion: 1;
+  schemaVersion: 2;
   projectRoot: string;
   generatedAt: string;
   technologies: Array<{ id: string; evidence: string[] }>;
+  requirements: DetectedValidationRequirement[];
   candidates: DetectedReviewTool[];
   questions: string[];
 }
@@ -22,6 +35,8 @@ const ignoredDirectories = new Set([
   ".vscode", "build", "coverage", "dist", "node_modules", "target", "vendor"
 ]);
 const validationName = /(?:^|[-_.:])(test|tests|lint|check|verify|validate|validation|audit|benchmark|smoke|typecheck|coverage|build)(?:$|[-_.:])/i;
+const ciValidationText = /\b(test|tests|pytest|vitest|jest|ruff|eslint|lint|format|typecheck|type-check|check|verify|validate|audit|benchmark|smoke|coverage|build|doctor|guard|parity|migration|migrate|backup|restore|knip|jscpd|react-doctor|schema|chain|bootstrap|round-trip|fails|failure|liveness)\b/i;
+const ciSupportStepName = /^(?:install|set up|setup|start|free disk|checkout|download|upload)\b/i;
 
 function relativePath(root: string, absolute: string): string {
   const relative = path.relative(root, absolute).replaceAll("\\", "/");
@@ -82,6 +97,117 @@ function composeServices(contents: string): string[] {
     if (match) services.push(match[1]);
   }
   return services;
+}
+
+function indentation(line: string): number {
+  return /^ */.exec(line)?.[0].length ?? 0;
+}
+
+function unquoteYamlScalar(value: string): string {
+  const trimmed = value.trim();
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function githubWorkflowRequirements(root: string, filename: string): DetectedValidationRequirement[] {
+  const relative = relativePath(root, filename);
+  const lines = readText(filename).split(/\r?\n/);
+  const requirements: DetectedValidationRequirement[] = [];
+  const jobsIndex = lines.findIndex((line) => /^jobs:\s*(?:#.*)?$/.test(line));
+  if (jobsIndex < 0) return requirements;
+
+  const jobStarts: Array<{ index: number; id: string; indent: number }> = [];
+  for (let index = jobsIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim() && indentation(line) === 0) break;
+    const match = /^(\s+)([A-Za-z0-9_-]+):\s*(?:#.*)?$/.exec(line);
+    if (match && match[1].length === 2) jobStarts.push({ index, id: match[2], indent: match[1].length });
+  }
+
+  for (let jobPosition = 0; jobPosition < jobStarts.length; jobPosition += 1) {
+    const job = jobStarts[jobPosition];
+    const end = jobStarts[jobPosition + 1]?.index ?? lines.length;
+    const jobLines = lines.slice(job.index + 1, end);
+    const jobIf = jobLines
+      .map((line) => ({ line, indent: indentation(line) }))
+      .find(({ line, indent }) => indent === job.indent + 2 && /^\s*if:\s*/.test(line));
+    const services: string[] = [];
+    const serviceStart = jobLines.findIndex((line) => indentation(line) === job.indent + 2 && /^\s*services:\s*(?:#.*)?$/.test(line));
+    if (serviceStart >= 0) {
+      for (let offset = serviceStart + 1; offset < jobLines.length; offset += 1) {
+        const line = jobLines[offset];
+        const indent = indentation(line);
+        if (line.trim() && indent <= job.indent + 2) break;
+        const match = /^\s+([A-Za-z0-9_.-]+):\s*(?:#.*)?$/.exec(line);
+        if (match && indent === job.indent + 4) services.push(match[1]);
+      }
+    }
+
+    const stepsStart = jobLines.findIndex((line) => indentation(line) === job.indent + 2 && /^\s*steps:\s*(?:#.*)?$/.test(line));
+    if (stepsStart < 0) continue;
+    const stepStarts: number[] = [];
+    for (let offset = stepsStart + 1; offset < jobLines.length; offset += 1) {
+      const line = jobLines[offset];
+      if (line.trim() && indentation(line) <= job.indent + 2) break;
+      if (/^\s*-\s+/.test(line) && indentation(line) === job.indent + 4) stepStarts.push(offset);
+    }
+    for (let stepPosition = 0; stepPosition < stepStarts.length; stepPosition += 1) {
+      const start = stepStarts[stepPosition];
+      const stepEnd = stepStarts[stepPosition + 1] ?? jobLines.length;
+      const stepLines = jobLines.slice(start, stepEnd);
+      const stepIndent = job.indent + 4;
+      let name = `Step ${stepPosition + 1}`;
+      let stepIf: string | undefined;
+      let cwd = ".";
+      let command = "";
+      for (let offset = 0; offset < stepLines.length; offset += 1) {
+        const line = stepLines[offset];
+        const normalized = offset === 0 ? line.replace(/^\s*-\s+/, "") : line.trimStart();
+        const nameMatch = /^name:\s*(.+)$/.exec(normalized);
+        if (nameMatch) name = unquoteYamlScalar(nameMatch[1]);
+        const ifMatch = /^if:\s*(.+)$/.exec(normalized);
+        if (ifMatch) stepIf = unquoteYamlScalar(ifMatch[1]);
+        const cwdMatch = /^working-directory:\s*(.+)$/.exec(normalized);
+        if (cwdMatch) cwd = unquoteYamlScalar(cwdMatch[1]);
+        const runMatch = /^run:\s*(.*)$/.exec(normalized);
+        if (!runMatch) continue;
+        const inline = runMatch[1].trim();
+        if (inline && inline !== "|" && inline !== ">" && inline !== "|-" && inline !== ">-") {
+          command = unquoteYamlScalar(inline);
+          continue;
+        }
+        const runIndent = indentation(line);
+        const block: string[] = [];
+        for (let blockOffset = offset + 1; blockOffset < stepLines.length; blockOffset += 1) {
+          const blockLine = stepLines[blockOffset];
+          if (blockLine.trim() && indentation(blockLine) <= runIndent) break;
+          block.push(blockLine.slice(Math.min(blockLine.length, runIndent + 2)));
+          offset = blockOffset;
+        }
+        command = block.join("\n").trim();
+      }
+      if (!command) continue;
+      const baseId = `ci_${slug(relative)}_${slug(job.id)}_${slug(name)}`.slice(0, 64).replace(/_+$/, "");
+      let id = baseId;
+      let suffix = 2;
+      while (requirements.some((entry) => entry.id === id)) id = `${baseId.slice(0, 61)}_${suffix++}`;
+      const conditions = [jobIf?.line.replace(/^\s*if:\s*/, ""), stepIf].filter(Boolean);
+      requirements.push({
+        id,
+        title: `${name} (${job.id})`,
+        description: `Validation-like GitHub Actions step '${name}' in job '${job.id}'. Preserve its command, setup, services, conditions, and working directory when curating a local capability.`,
+        source: `${relative}#jobs.${job.id}.steps.${stepPosition + 1}`,
+        requiredWhen: conditions.length ? conditions.join(" and ") : `When GitHub Actions job '${job.id}' is selected by its workflow triggers`,
+        command,
+        cwd,
+        services: [...new Set(services)].sort(),
+        role: !ciSupportStepName.test(name) && ciValidationText.test(`${name}\n${command}`) ? "validation" : "support"
+      });
+    }
+  }
+  return requirements;
 }
 
 export function discoverReviewTools(projectRoot: string): ReviewToolDiscovery {
@@ -383,6 +509,7 @@ export function discoverReviewTools(projectRoot: string): ReviewToolDiscovery {
 
   const ciFiles = files.filter((filename) => /[\\/]\.github[\\/]workflows[\\/].+\.ya?ml$/i.test(filename));
   if (ciFiles.length) technology("ci-github-actions", relativePath(root, ciFiles[0]));
+  const requirements = ciFiles.flatMap((filename) => githubWorkflowRequirements(root, filename));
   const questions: string[] = [];
   if (composeFiles.length) questions.push("May validation execute inside existing Compose services and access their development data, or must it use isolated ephemeral containers?");
   if ([...candidates.values()].some(({ recipe }) => recipe.inputs.some((input) => input.type === "strings"))) {
@@ -391,10 +518,11 @@ export function discoverReviewTools(projectRoot: string): ReviewToolDiscovery {
   if (technologies.size > 1) questions.push("Which detected project units are mandatory review gates, and which are conditional on the files changed?");
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     projectRoot: root,
     generatedAt: new Date().toISOString(),
     technologies: [...technologies.entries()].map(([id, evidence]) => ({ id, evidence: [...evidence].sort() })).sort((left, right) => left.id.localeCompare(right.id)),
+    requirements: requirements.sort((left, right) => left.id.localeCompare(right.id)),
     candidates: [...candidates.values()].sort((left, right) => left.recipe.id.localeCompare(right.recipe.id)),
     questions
   };

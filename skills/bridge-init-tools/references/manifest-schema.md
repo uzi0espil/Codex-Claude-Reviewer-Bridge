@@ -1,16 +1,77 @@
 # Review-tool manifest schema
 
-The manifest is JSON with this top-level shape:
+New proposals use schema version 2. They omit `approvedAt`; the path-fixed writer
+adds the actual approval time when it stores the manifest:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "projectRoot": "<exact absolute bound application path>",
-  "approvedAt": "<ISO-8601 timestamp>",
+  "detectionSha256": "<exact current review-tools.detected.json SHA-256>",
+  "runnerPolicy": {
+    "host": "allowed",
+    "compose": "allowed",
+    "composeExec": "allowed",
+    "composeStageExec": "disallowed"
+  },
   "readinessDefaults": { "mode": "static" },
+  "requirements": [],
+  "coverage": [],
   "tools": []
 }
 ```
+
+Version-1 manifests remain readable, but every new or updated write must be a
+complete version-2 proposal.
+
+## Validation inventory and coverage
+
+Each requirement needs a unique lowercase `id`, title, description,
+`requiredWhen`, one or more procedure statements, prerequisites, repository
+evidence, and any ids inherited from the current detected CI inventory:
+
+```json
+{
+  "id": "backend_tests",
+  "title": "Backend tests",
+  "description": "Run the CI-equivalent backend test suite.",
+  "requiredWhen": "Backend paths trigger the backend-test CI job.",
+  "procedure": ["Preserve CI services, environment, exclusions, and cwd."],
+  "prerequisites": ["PostgreSQL and object storage are available."],
+  "allowedRunners": ["compose_exec"],
+  "evidence": [".github/workflows/ci.yml#jobs.backend-test"],
+  "detectedRequirementIds": ["ci_ci_yml_backend_test_run_tests"]
+}
+```
+
+Every requirement has exactly one coverage disposition. A tool disposition may
+reference several tools when the requirement is intentionally split:
+
+```json
+{ "requirementId": "backend_tests", "disposition": "tool", "toolIds": ["backend_tests"] }
+```
+
+A gap remains pending in the approval preview:
+
+```json
+{ "requirementId": "cuda_image_smoke", "disposition": "gap", "reason": "CI-only 10 GB GPU image build.", "accepted": false }
+```
+
+Detected CI entries have a `role`: every `validation` entry must be represented
+by `detectedRequirementIds`; `support` entries supply setup and prerequisite
+evidence and may be referenced without receiving their own coverage disposition.
+
+After the user explicitly approves that preview, only `accepted` changes to
+`true`. The writer rejects missing dispositions, stale or omitted detected CI
+requirements, unknown tool references, and pending gaps.
+
+## Runner policy
+
+`runnerPolicy` independently allows or disallows `host`, `compose`,
+`composeExec`, and `composeStageExec`. A Compose exec permission means commands
+may enter an existing service and may observe its development environment and
+data. Readiness settings do not grant a runner kind and runner policy does not
+claim that runtime prerequisites are healthy.
 
 Each tool needs a unique lowercase `id` matching
 `^[a-z][a-z0-9_]{1,63}$`, a title, description, runner, optional typed inputs,
@@ -87,6 +148,9 @@ Inputs have a lowercase `name`, description, type, and optional `required`,
 - `integer`: optional default, minimum, and maximum.
 - `boolean`: requires a fixed flag.
 - `repo_paths`: bounded paths validated to remain inside the bound repository.
+  It may restrict `allowedPrefixes`, filename `extensions`, and `pathKind`
+  (`any`, `file`, or `directory`). Use `maxItems: 1` for CLIs that accept one
+  path after a flag.
 - `strings`: bounded raw argv entries; use only after specific approval.
 
 Inputs append argv entries; they never invoke a shell. A `valueTemplate` such
@@ -113,3 +177,12 @@ not read-only. Mark truly stateful or cleanup-like operations accurately.
 The `evidence` array should cite repository-relative files and, when useful,
 keys or targets such as `package.json#scripts.test` or
 `.github/workflows/ci.yml`.
+
+## Preflight
+
+Call `review_tools_validate_manifest` before asking for approval and again after
+accepted gaps are toggled. It does not execute application commands. It verifies
+the detection revision, coverage, runner policy, paths, host executables,
+Compose files and statically declared services, readiness structure, path-input
+scope, and logical argv previews. The second result must report `writable: true`
+before `review_tools_write_manifest` is called.
