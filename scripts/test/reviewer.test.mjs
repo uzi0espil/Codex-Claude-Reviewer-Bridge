@@ -283,7 +283,7 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     assert.match(generatedConfig, /\[permissions\.bridge-write\]/);
     assert.match(generatedConfig, /review_bridge_record_auto_decision/);
     assert.match(generatedConfig, /\[mcp_servers\.review_tools\]/);
-    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "review-tools.detected.json"), "utf8")).projectRoot, firstProject);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "review-tools.detected.json"), "utf8")).projectRoot, fs.realpathSync(firstProject));
 
     const rebound = spawnSync(process.execPath, [cli, "setup", "--project-root", secondProject, "--skip-playwright"], {
       cwd: instance, env: environment, encoding: "utf8"
