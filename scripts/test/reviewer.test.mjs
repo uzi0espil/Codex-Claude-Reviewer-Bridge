@@ -207,6 +207,9 @@ test("policy initialization cannot access review-tool curation", () => {
   assert.match(skill, /exact bytes using strict\s+UTF-8 decoding/);
   assert.match(skill, /Before claiming that stored text is\s+corrupted/);
   assert.match(skill, /Do not normalize them to ASCII/);
+  assert.match(skill, /If they are identical, or the proposed diff is\s+otherwise empty/);
+  assert.match(skill, /Do not ask for approval, call the policy writer, or\s+re-save an unchanged file/);
+  assert.match(skill, /explicit approval only when the proposed file content changes/);
 });
 
 test("generates portable Claude hooks and Codex configuration", () => {

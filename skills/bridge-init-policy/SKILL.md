@@ -125,9 +125,16 @@ normally required instead of inventing it.
 
 ## Preview and save
 
+Before requesting approval, compare the fully composed policy's exact UTF-8
+bytes with the existing overlay. If they are identical, or the proposed diff is
+otherwise empty, report that no durable policy change is needed and end the
+workflow successfully. Do not ask for approval, call the policy writer, or
+re-save an unchanged file merely to refresh it.
+
 Before writing, show the complete first draft or a clear diff against the current
 overlay. Explain uncertain or user-selected rules. End that turn by asking for
-explicit approval; do not call the write tool in the same turn as the preview.
+explicit approval only when the proposed file content changes; do not call the
+write tool in the same turn as the preview.
 
 After approval:
 
