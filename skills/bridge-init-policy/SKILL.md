@@ -49,6 +49,14 @@ requires from commands the reviewer is currently authorized to execute. Do not
 turn an approximate command list into policy; defer exact executable recipes to
 `$bridge-init-tools`.
 
+Report point-in-time manifest coverage only in the surrounding session response,
+outside the proposed policy Markdown. Never copy the current tool inventory,
+manifest hash, readiness states, accepted gaps, or missing-capability list into
+the durable overlay. Those facts change independently of the review policy and
+must be read dynamically from the currently approved manifest. The overlay may
+state the durable rule that application commands require an approved capability
+and that an absent capability is a validation gap.
+
 ## Stay within the policy workflow
 
 Policy initialization defines review requirements; it does not curate executable
@@ -58,10 +66,10 @@ or readiness, accept validation gaps, call any `review_tools_*` tool, or ask the
 user to approve changes to `review-tools.local.json` in this workflow.
 
 If the approved manifest is absent, stale, or missing a required capability,
-state the exact gap in the policy preview and direct the user to run `just tools`
-after the policy workflow finishes. Continue drafting the policy independently;
-do not switch to `$bridge-init-tools` unless the user starts a separate tools
-session.
+state the exact gap in the explanatory session response, not in the proposed
+policy text, and direct the user to run `just tools` after the policy workflow
+finishes. Continue drafting the policy independently; do not switch to
+`$bridge-init-tools` unless the user starts a separate tools session.
 
 ## Ask only unresolved questions
 

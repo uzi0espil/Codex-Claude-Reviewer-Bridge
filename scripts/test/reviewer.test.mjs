@@ -200,7 +200,10 @@ test("policy initialization cannot access review-tool curation", () => {
     "utf8"
   );
   assert.match(skill, /never refresh tool detection/);
-  assert.match(skill, /do not switch to `\$bridge-init-tools`/);
+  assert.match(skill, /do not switch to\s+`\$bridge-init-tools`/);
+  assert.match(skill, /Report point-in-time manifest coverage only in the surrounding session response/);
+  assert.match(skill, /Never copy the current tool inventory/);
+  assert.match(skill, /not in the proposed\s+policy text/);
 });
 
 test("generates portable Claude hooks and Codex configuration", () => {
