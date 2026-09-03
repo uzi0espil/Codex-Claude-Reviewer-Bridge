@@ -6,9 +6,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { spawn, ChildProcess } from "node:child_process";
 import { AppServerClient, CompletedTurn, StartedTurn } from "./app-server.js";
 import { AppServerProxy } from "./app-server-proxy.js";
-import { endpointPath, featureKey, logPath, reportsDirectory, reviewerRoot, runtimeDirectory } from "./paths.js";
+import { endpointPath, featureKey, logPath, reviewerRoot, runtimeDirectory } from "./paths.js";
 import { StateStore } from "./store.js";
-import { AutoCycleReceipt, AutoReviewDecision, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
+import { AutoReviewDecision, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
 import { buildPulledReviewPrompt, buildReviewContextSeed, buildReviewPrompt, reviewContextSnapshot } from "./review-prompt.js";
 import { autoRoundLimitError, autoRoundLimitForMode, modeAfterUserDecision } from "./mode-policy.js";
 import { buildPublishedFeedback } from "./published-feedback.js";
@@ -17,8 +17,6 @@ import {
   autoDecisionError,
   buildAutoContinuation,
   buildAutoCycleStatus,
-  createAutoCycleReceipt,
-  formatAutoCycleReport,
   resolveAutoReview
 } from "./auto-review.js";
 import { startStreamedJsonResponse } from "./streamed-json-response.js";
@@ -29,6 +27,7 @@ import { runSingleFlight } from "./single-flight.js";
 import { planAutoDelivery } from "./auto-delivery.js";
 import { CodexThreadBusyError, isCodexThreadBusyError } from "./codex-turn-policy.js";
 import { captureClaudeMessage, createPulledReview, pullQueueError, pullReviewError } from "./pulled-message.js";
+import { SessionReportLedger } from "./session-report.js";
 
 type Release = StopHookResult;
 type Waiter = { resolve: (release: Release) => void; response: ServerResponse; onClose: () => void };
@@ -41,6 +40,8 @@ const pulledReviewTransitions = new Map<string, Promise<void>>();
 const threadInitializations = new Map<string, Promise<FeaturePair>>();
 const activeCodexThreads = new Set<string>();
 const token = randomBytes(32).toString("hex");
+const brokerStartedAt = new Date().toISOString();
+const sessionReports = new SessionReportLedger(brokerStartedAt);
 let appProcess: ChildProcess | undefined;
 let app: AppServerClient;
 let appProxy: AppServerProxy | undefined;
@@ -49,23 +50,6 @@ let shutdownBroker: () => void = () => undefined;
 function log(message: string): void {
   fs.mkdirSync(runtimeDirectory, { recursive: true });
   fs.appendFileSync(logPath, `${new Date().toISOString()} ${message}\n`);
-}
-
-function persistAutoCycleReport(pair: FeaturePair, receipt: AutoCycleReceipt, response: string): AutoCycleReceipt {
-  const sequence = receipt.checkpointSequence ? `checkpoint-${receipt.checkpointSequence}` : `checkpoint-${receipt.checkpointId}`;
-  const relativePath = path.join("reviews", pair.feature, `${sequence}.md`);
-  const absolutePath = path.join(reportsDirectory, pair.feature, `${sequence}.md`);
-  const temporaryPath = `${absolutePath}.${process.pid}.tmp`;
-  try {
-    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-    fs.writeFileSync(temporaryPath, formatAutoCycleReport(pair.displayName, receipt, response), { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(temporaryPath, absolutePath);
-    return { ...receipt, reportPath: relativePath.split(path.sep).join("/") };
-  } catch (error) {
-    try { fs.rmSync(temporaryPath, { force: true }); } catch { /* best effort */ }
-    log(`Could not persist automatic review report for checkpoint ${receipt.checkpointId}: ${String(error)}`);
-    return receipt;
-  }
 }
 
 async function freePort(): Promise<number> {
@@ -228,6 +212,7 @@ async function startReview(pair: FeaturePair, pendingId: string): Promise<void> 
       if (consumedCompactionReminder) value.reviewContextCompacted = false;
     }
   });
+  sessionReports.update(pair.feature, pendingId, { codexTurnId: turnId });
   log(`Started Codex review turn ${turnId} for ${pair.feature} checkpoint ${pendingId}.`);
 }
 
@@ -375,6 +360,11 @@ function scheduleReview(pair: FeaturePair, pendingId: string, supersededTurnId?:
           return;
         }
         log(`Review failed for ${pair.feature}: ${String(error)}`);
+        sessionReports.complete(pair.feature, pendingId, undefined, {
+          status: "failed",
+          resolvedAt: new Date().toISOString(),
+          note: error instanceof Error ? error.message : String(error)
+        });
         store.update(pair.feature, (value) => {
           if (value.pending?.source === "pull-queue"
             && value.capturedClaudeMessage?.queueCheckpointId === pendingId) {
@@ -409,6 +399,12 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
   if (!pair?.pending) return;
   const pendingId = pair.pending.id;
   if (turn.status !== "completed" || !turn.text) {
+    sessionReports.complete(pair.feature, pendingId, turn.text, {
+      codexTurnId: turn.turnId,
+      status: "failed",
+      resolvedAt: new Date().toISOString(),
+      note: `Codex turn ended with status ${turn.status}.`
+    });
     store.update(pair.feature, (value) => {
       if (value.pending?.source === "pull-queue"
         && value.capturedClaudeMessage?.queueCheckpointId === pendingId) {
@@ -424,6 +420,10 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
   }
 
   if (pair.mode !== "auto") {
+    sessionReports.complete(pair.feature, pendingId, turn.text, {
+      codexTurnId: turn.turnId,
+      status: "waiting-user"
+    });
     store.update(pair.feature, (value) => {
       value.status = "waiting-user";
       value.lastCodexResponse = turn.text;
@@ -434,79 +434,81 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
 
   const resolution = resolveAutoReview(pair, turn.text);
   if (resolution.kind === "pass") {
-    const receipt = persistAutoCycleReport(
-      pair,
-      createAutoCycleReceipt(pair, turn.turnId, "passed", resolution.summary),
-      resolution.summary
-    );
-    const systemMessage = buildAutoCycleStatus(receipt);
+    const report = sessionReports.complete(pair.feature, pendingId, resolution.summary, {
+      codexTurnId: turn.turnId,
+      decision: pair.pending.autoDecision,
+      status: "passed",
+      resolvedAt: new Date().toISOString()
+    });
+    const systemMessage = buildAutoCycleStatus(pair.feature);
     store.update(pair.feature, (value) => {
       value.status = "passed";
       value.autoRound = 0;
       value.lastCodexResponse = turn.text;
-      value.lastAutoCycle = receipt;
       value.pending = undefined;
     });
-    log(`Completed ${pair.feature} checkpoint ${pendingId} as pass in ${receipt.durationMs}ms; report ${receipt.reportPath ?? "not saved"}.`);
+    log(`Completed ${pair.feature} checkpoint ${pendingId} as pass in ${report?.durationMs ?? 0}ms.`);
     release(pendingId, { kind: "allow", systemMessage });
     return;
   }
   if (resolution.kind === "continue") {
     const delivery = planAutoDelivery("continue", waiters.has(pendingId));
-    const receipt = persistAutoCycleReport(
-      pair,
-      createAutoCycleReceipt(pair, turn.turnId, delivery.outcome, resolution.summary),
-      resolution.summary
-    );
+    const report = sessionReports.complete(pair.feature, pendingId, resolution.summary, {
+      codexTurnId: turn.turnId,
+      decision: pair.pending.autoDecision,
+      status: delivery.outcome,
+      resolvedAt: delivery.clearPending ? new Date().toISOString() : undefined,
+      delivery: delivery.clearPending ? "stop-hook" : undefined
+    });
     const continuation = buildAutoContinuation(resolution.continuation);
     store.update(pair.feature, (value) => {
       value.status = delivery.status;
       value.autoRound += 1;
       value.lastCodexResponse = turn.text;
-      value.lastAutoCycle = receipt;
       if (delivery.clearPending) value.pending = undefined;
       else if (value.pending) {
         value.pending.codexResponse = continuation;
         value.pending.deliveryKind = "continuation";
       }
     });
-    log(`Completed ${pair.feature} checkpoint ${pendingId} as pass_continue (${delivery.outcome}) in ${receipt.durationMs}ms; report ${receipt.reportPath ?? "not saved"}.`);
+    log(`Completed ${pair.feature} checkpoint ${pendingId} as pass_continue (${delivery.outcome}) in ${report?.durationMs ?? 0}ms.`);
     if (delivery.clearPending) release(pendingId, { kind: "continue", text: continuation });
     return;
   }
   if (resolution.kind === "revise") {
     const delivery = planAutoDelivery("revise", waiters.has(pendingId));
-    const receipt = persistAutoCycleReport(
-      pair,
-      createAutoCycleReceipt(pair, turn.turnId, delivery.outcome, resolution.feedback),
-      resolution.feedback
-    );
+    const report = sessionReports.complete(pair.feature, pendingId, resolution.feedback, {
+      codexTurnId: turn.turnId,
+      decision: pair.pending.autoDecision,
+      status: delivery.outcome,
+      resolvedAt: new Date().toISOString(),
+      delivery: delivery.queueForNextPrompt ? "next-prompt" : "stop-hook"
+    });
     const feedback = buildPublishedFeedback(resolution.feedback);
     store.update(pair.feature, (value) => {
       value.status = delivery.status;
       value.autoRound += 1;
       value.lastCodexResponse = resolution.feedback;
-      value.lastAutoCycle = receipt;
       if (delivery.queueForNextPrompt) value.queuedClaudeContext = feedback;
       if (delivery.clearPending) value.pending = undefined;
     });
-    log(`Completed ${pair.feature} checkpoint ${pendingId} as revise (${delivery.outcome}) in ${receipt.durationMs}ms; report ${receipt.reportPath ?? "not saved"}.`);
+    log(`Completed ${pair.feature} checkpoint ${pendingId} as revise (${delivery.outcome}) in ${report?.durationMs ?? 0}ms.`);
     if (!delivery.queueForNextPrompt) release(pendingId, { kind: "feedback", text: feedback });
     return;
   }
   log(`Auto response requires user review: ${resolution.reason}.`);
-  const receipt = persistAutoCycleReport(
-    pair,
-    createAutoCycleReceipt(pair, turn.turnId, "waiting-user", resolution.response),
-    resolution.response
-  );
+  const report = sessionReports.complete(pair.feature, pendingId, resolution.response, {
+    codexTurnId: turn.turnId,
+    decision: pair.pending.autoDecision,
+    status: "waiting-user",
+    note: `Automatic review paused: ${resolution.reason}.`
+  });
   store.update(pair.feature, (value) => {
     value.status = "waiting-user";
     value.lastCodexResponse = resolution.response;
-    value.lastAutoCycle = receipt;
     if (value.pending) value.pending.codexResponse = resolution.response;
   });
-  log(`Completed ${pair.feature} checkpoint ${pendingId} awaiting user in ${receipt.durationMs}ms; report ${receipt.reportPath ?? "not saved"}.`);
+  log(`Completed ${pair.feature} checkpoint ${pendingId} awaiting user in ${report?.durationMs ?? 0}ms.`);
 }
 
 function finishQuestionAdvisory(turn: CompletedTurn): void {
@@ -583,7 +585,6 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
     workstreamContext: pair.workstreamContext ? "[stored for replacement thread recovery]" : undefined,
     queuedClaudeContext: pair.queuedClaudeContext ? "[queued for Claude's next prompt]" : undefined,
     lastCodexResponse: pair.lastCodexResponse ? "[held by bridge]" : undefined,
-    lastAutoCycle: pair.lastAutoCycle ? { ...pair.lastAutoCycle, headline: "[stored out of band]" } : undefined,
     questionAdvisoryQueue: pair.questionAdvisoryQueue?.map((item) => ({ id: item.id, createdAt: item.createdAt })),
     activeQuestionAdvisory: pair.activeQuestionAdvisory ? {
       id: pair.activeQuestionAdvisory.id,
@@ -650,6 +651,19 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const pair = feature ? store.get(feature) : undefined;
     return pair ? send(res, 200, publicPair(pair)) : send(res, 404, { error: "unknown feature" });
   }
+  if (req.url === "/report" && req.method === "POST") {
+    if (!feature) return send(res, 400, { error: "feature required" });
+    if (body.full !== undefined && typeof body.full !== "boolean") {
+      return send(res, 400, { error: "full must be a boolean" });
+    }
+    const pair = store.get(feature);
+    if (!pair) return send(res, 404, { error: "unknown feature" });
+    return send(res, 200, {
+      feature,
+      startedAt: sessionReports.startedAt,
+      report: sessionReports.render(feature, pair.displayName, body.full === true)
+    });
+  }
   if (req.url === "/auto-decision" && req.method === "POST") {
     if (!feature) return send(res, 400, { error: "feature required" });
     const existing = store.get(feature);
@@ -663,6 +677,9 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
           ? String(body.continuation).trim()
           : undefined;
       }
+    });
+    sessionReports.update(feature, String(body.checkpointId), {
+      decision: body.decision as AutoReviewDecision
     });
     return send(res, 200, {
       recorded: true,
@@ -680,6 +697,13 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     if (roundLimitError) return send(res, 400, { error: roundLimitError });
     const existing = store.get(feature);
     const advisoryTurnId = mode === "off" ? existing?.activeQuestionAdvisory?.codexTurnId : undefined;
+    if (mode === "off" && existing?.pending) {
+      sessionReports.update(feature, existing.pending.id, {
+        status: "released-mode-off",
+        resolvedAt: new Date().toISOString(),
+        note: "Checkpoint released because the bridge was switched off."
+      });
+    }
     const pair = store.update(feature, (value) => {
       if (mode === "off" && value.pending && value.pending.source !== "pull-queue") {
         value.capturedClaudeMessage = captureClaudeMessage(
@@ -751,6 +775,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       value.questionAdvisoryQueue = undefined;
       value.lastCodexResponse = undefined;
     });
+    sessionReports.start(pair, checkpoint);
     send(res, 200, {
       accepted: true,
       feature,
@@ -779,6 +804,13 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const text = continuationDelivery ? buildAutoContinuation(review) : buildPublishedFeedback(review);
     const pendingId = existing.pending?.id;
     const delivery = pendingId && waiters.has(pendingId) ? "stop-hook" : "next-prompt";
+    if (pendingId) {
+      sessionReports.update(feature, pendingId, {
+        status: "published",
+        delivery,
+        resolvedAt: new Date().toISOString()
+      });
+    }
     const pair = store.update(feature, (value) => {
       value.mode = modeAfterUserDecision(existing.mode);
       if (!continuationDelivery) value.autoRound = 0;
@@ -815,6 +847,12 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const decisionError = checkpointDecisionError(existing, body.checkpointId, false);
     if (decisionError) return send(res, 409, { error: decisionError });
     const pendingId = existing.pending?.id;
+    if (pendingId) {
+      sessionReports.update(feature, pendingId, {
+        status: "cancelled",
+        resolvedAt: new Date().toISOString()
+      });
+    }
     const pair = store.update(feature, (value) => {
       value.mode = modeAfterUserDecision(existing.mode);
       value.autoRound = 0;
@@ -890,6 +928,13 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const supersededQueuedFeedback = Boolean(pair.queuedClaudeContext);
     const pendingId = store.newPendingId();
     const checkpoint = createCheckpoint(pair, pendingId, input.last_assistant_message);
+    if (superseded) {
+      sessionReports.update(pair.feature, superseded.id, {
+        status: "superseded",
+        resolvedAt: new Date().toISOString(),
+        supersededBy: { id: checkpoint.id, sequence: checkpoint.sequence }
+      });
+    }
     const current = store.update(pair.feature, (value) => {
       recordClaudeSession(value, input.session_id, true);
       value.status = "reviewing";
@@ -900,6 +945,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       value.lastCodexResponse = undefined;
       value.capturedClaudeMessage = undefined;
     });
+    sessionReports.start(current, checkpoint);
     if (superseded) {
       release(superseded.id, { kind: "allow" });
       log(`Checkpoint ${pendingId} superseded unpublished checkpoint ${superseded.id} for ${pair.feature}.`);
@@ -953,7 +999,7 @@ async function main(): Promise<void> {
       token,
       appServerUrl,
       pid: process.pid,
-      startedAt: new Date().toISOString()
+      startedAt: brokerStartedAt
     };
     fs.writeFileSync(endpointPath, `${JSON.stringify(endpoint, null, 2)}\n`, { mode: 0o600 });
     log(`Bridge ready at ${endpoint.url}`);

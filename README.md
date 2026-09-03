@@ -172,12 +172,17 @@ Manual review stays armed by default. Change modes from the paired Codex thread:
 | Automatic | `$bridge-auto [rounds]` | Allow automatic review, revision, or already-authorized continuation rounds, optionally bounded per cycle. |
 | Off | `$bridge-off` | Disable Stop interception and question advice. |
 
-Use `$bridge-status` to inspect routing and checkpoint state. Automatic review
-reports can be printed without invoking either model:
+Use `$bridge-status` to inspect routing and checkpoint state. The live report
+contains every checkpoint created for the feature during the current bridge
+server session, regardless of mode, without invoking either model:
 
 ```text
 just report api-retry
 ```
+
+Codex responses are included by default. Add `--full` to include the Claude
+handoff captured for every checkpoint. The in-memory report is discarded when
+the bridge server stops.
 
 While the bridge is off, it retains only Claude's latest completed assistant
 handoff. Use `$bridge-pull-review` for a one-off Codex opinion that stays between
@@ -187,7 +192,7 @@ the off-mode Stop has already completed, queued feedback reaches Claude on your
 next submitted prompt; automatic mode continues normally after that handoff.
 
 See [Review workflows](docs/review-workflows.md) for all bridge skills,
-automatic-cycle controls, question advisories, reporting, and recovery.
+automatic controls, question advisories, live reporting, and recovery.
 
 ## What stays under your control
 
@@ -217,9 +222,9 @@ and Codex still run as the same operating-system user. Read the
 before relying on the bridge for sensitive work.
 
 > [!NOTE]
-> The bridge uses Codex's experimental remote app-server protocol. Automatic
-> review rounds are also persisted under ignored `reviews/` so their reports can
-> be recovered without invoking either model.
+> The bridge uses Codex's experimental remote app-server protocol. Checkpoint
+> reports are held only in broker memory and are unavailable after the server
+> stops.
 
 ## Documentation
 

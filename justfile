@@ -44,7 +44,7 @@ function runNpm(script) {
     case "server":
       return runReviewer(["ensure"]);
     case "report":
-      return runReviewer(["report", "--feature", args[0]]);
+      return runReviewer(["report", "--feature", args[0], ...args.slice(1)]);
     case "stop":
       return runReviewer(["stop"]);
     case "update":
@@ -98,9 +98,9 @@ pair feature *claude_args:
 server:
     {{ runner }}
 
-# Print the latest automatic review report without adding model context.
+# Print the live checkpoint report for the current server session.
 [script("node")]
-report feature:
+report feature *options:
     {{ runner }}
 
 # Gracefully stop the local review bridge server.

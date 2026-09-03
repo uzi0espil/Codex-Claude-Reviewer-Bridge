@@ -12,6 +12,7 @@ forced recovery publication without reproducing held response content. Report
 the active question advisory ID and queued advisory count without reproducing
 the question content. For `capturedClaudeMessage`, report its ID, capture time,
 session ID, and review/queue availability without reproducing the message. Report
-an active or queued `pulledReview` by ID. When `lastAutoCycle` exists, report its checkpoint, Codex
-turn, decision, outcome, elapsed time, and report path. Tell the user that
-`just report <feature>` prints the complete saved report without a model turn.
+an active or queued `pulledReview` by ID. If checkpoint history is relevant,
+tell the user that `just report <feature>` prints the live report for every
+checkpoint created during the current broker session without a model turn, and
+that `--full` also reveals the stored Claude handoffs.

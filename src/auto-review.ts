@@ -1,4 +1,4 @@
-import { AutoCycleReceipt, AutoReviewDecision, FeaturePair } from "./types.js";
+import { AutoReviewDecision, FeaturePair } from "./types.js";
 
 export type AutoReviewResolution =
   | { kind: "pass"; reviewRounds: number; summary: string }
@@ -81,63 +81,6 @@ export function buildAutoContinuation(continuation: string): string {
   ].join("\n");
 }
 
-function singleLineHeadline(response: string): string {
-  const firstLine = response.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "Review completed.";
-  const plain = firstLine.replace(/^#{1,6}\s+/, "").replace(/^[-*+]\s+/, "").replace(/\s+/g, " ");
-  return plain.length <= 160 ? plain : `${plain.slice(0, 157).trimEnd()}...`;
-}
-
-export function createAutoCycleReceipt(
-  pair: FeaturePair,
-  codexTurnId: string,
-  outcome: AutoCycleReceipt["outcome"],
-  response: string,
-  completedAt = new Date().toISOString()
-): AutoCycleReceipt {
-  if (!pair.pending) throw new Error("Cannot create an automatic cycle receipt without a pending checkpoint.");
-  const startedAt = pair.pending.createdAt;
-  const elapsed = Date.parse(completedAt) - Date.parse(startedAt);
-  return {
-    feature: pair.feature,
-    checkpointId: pair.pending.id,
-    checkpointSequence: pair.pending.sequence,
-    codexTurnId,
-    decision: pair.pending.autoDecision ?? "missing",
-    outcome,
-    reviewRound: pair.autoRound + 1,
-    startedAt,
-    completedAt,
-    durationMs: Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0,
-    headline: singleLineHeadline(response)
-  };
-}
-
-export function formatAutoCycleReport(feature: string, receipt: AutoCycleReceipt, response: string): string {
-  const checkpoint = receipt.checkpointSequence
-    ? `#${receipt.checkpointSequence} (${receipt.checkpointId})`
-    : receipt.checkpointId;
-  return [
-    `# Automatic review report — ${feature}`,
-    "",
-    `- Checkpoint: ${checkpoint}`,
-    `- Codex turn: ${receipt.codexTurnId}`,
-    `- Decision: ${receipt.decision}`,
-    `- Outcome: ${receipt.outcome}`,
-    `- Review round: ${receipt.reviewRound}`,
-    `- Started: ${receipt.startedAt}`,
-    `- Completed: ${receipt.completedAt}`,
-    `- Duration: ${(receipt.durationMs / 1000).toFixed(1)} seconds`,
-    "",
-    "## Codex report",
-    "",
-    response.trim(),
-    ""
-  ].join("\n");
-}
-
-export function buildAutoCycleStatus(receipt: AutoCycleReceipt): string {
-  if (!receipt.reportPath) {
-    return "Automatic review passed. The out-of-band report could not be saved; details remain in Codex.";
-  }
-  return `Automatic review passed. Details remain in Codex and \`just report ${receipt.feature}\`.`;
+export function buildAutoCycleStatus(feature: string): string {
+  return `Automatic review passed. Details remain in Codex and the live \`just report ${feature}\` session report.`;
 }

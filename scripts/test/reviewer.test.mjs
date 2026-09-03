@@ -14,7 +14,7 @@ import {
   pairedCodexArguments,
   policyCodexArguments,
   powershellQuote,
-  readLatestAutoReport,
+  readSessionReport,
   shellQuote,
   terminalLaunchSpec,
   tomlLiteral,
@@ -38,89 +38,26 @@ test("rejects unknown CLI options", () => {
   assert.throws(() => validateCommandArguments("stop", { feature: "x" }, []), /not valid for stop/);
   assert.throws(() => validateCommandArguments("setup", {}, ["--model", "x"]), /does not accept/);
   assert.doesNotThrow(() => validateCommandArguments("tools", { "project-root": "/tmp/app" }, ["--model", "x"]));
+  assert.doesNotThrow(() => validateCommandArguments("report", { feature: "x", full: true }, []));
 });
 
-test("reads the latest automatic report outside model history and rejects escaped paths", () => {
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "reviewer-report-"));
-  try {
-    const reportDirectory = path.join(temporary, "reviews", "feature-one");
-    fs.mkdirSync(path.join(temporary, "runtime"), { recursive: true });
-    fs.mkdirSync(reportDirectory, { recursive: true });
-    fs.writeFileSync(path.join(reportDirectory, "checkpoint-2.md"), "# Stored report\n", "utf8");
-    const state = {
-      version: 1,
-      pairs: {
-        "feature-one": { lastAutoCycle: { reportPath: "reviews/feature-one/checkpoint-2.md" } }
-      }
-    };
-    fs.writeFileSync(path.join(temporary, "runtime", "state.json"), `${JSON.stringify(state)}\n`, "utf8");
-    assert.equal(readLatestAutoReport("Feature One", temporary), "# Stored report\n");
-    state.pairs["feature-one"].lastAutoCycle.reportPath = "../outside.md";
-    fs.writeFileSync(path.join(temporary, "runtime", "state.json"), `${JSON.stringify(state)}\n`, "utf8");
-    assert.throws(() => readLatestAutoReport("feature-one", temporary), /path is invalid/i);
-  } finally {
-    fs.rmSync(temporary, { recursive: true, force: true });
-  }
-});
-
-test("assembles every available round from the latest automatic review cycle", () => {
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "reviewer-cycle-report-"));
-  try {
-    const reportDirectory = path.join(temporary, "reviews", "feature-one");
-    fs.mkdirSync(path.join(temporary, "runtime"), { recursive: true });
-    fs.mkdirSync(reportDirectory, { recursive: true });
-    const round = (checkpoint, reviewRound, decision, outcome, body) => [
-      "# Automatic review report - Feature One",
-      "",
-      `- Checkpoint: #${checkpoint} (checkpoint-${checkpoint})`,
-      `- Decision: ${decision}`,
-      `- Outcome: ${outcome}`,
-      `- Review round: ${reviewRound}`,
-      `- Started: 2026-01-01T00:00:0${reviewRound}.000Z`,
-      `- Completed: 2026-01-01T00:00:0${reviewRound + 1}.000Z`,
-      `- Duration: ${reviewRound}.0 seconds`,
-      "",
-      "## Codex report",
-      "",
-      body,
-      ""
-    ].join("\n");
-    fs.writeFileSync(path.join(reportDirectory, "checkpoint-18.md"), round(18, 2, "pass", "passed", "Previous cycle complete."));
-    fs.writeFileSync(path.join(reportDirectory, "checkpoint-19.md"), round(19, 1, "revise", "revision-sent", "First finding."));
-    fs.writeFileSync(path.join(reportDirectory, "checkpoint-20.md"), round(
-      20,
-      2,
-      "pass_continue",
-      "continuation-sent",
-      "Gate passed; continue.\n\n## Codex report\n\nNested heading remains part of this response."
-    ));
-    fs.writeFileSync(path.join(reportDirectory, "checkpoint-21.md"), round(21, 3, "needs_user", "waiting-user", "User choice required."));
-    fs.writeFileSync(path.join(reportDirectory, "checkpoint-22.md"), round(22, 1, "needs_user", "waiting-user", "Follow-up choice required."));
-    fs.writeFileSync(path.join(temporary, "runtime", "state.json"), `${JSON.stringify({
-      version: 1,
-      pairs: {
-        "feature-one": {
-          displayName: "Feature One",
-          lastAutoCycle: { reportPath: "reviews/feature-one/checkpoint-22.md" }
-        }
-      }
-    })}\n`, "utf8");
-
-    const report = readLatestAutoReport("Feature One", temporary);
-    assert.match(report, /Automatic review cycle report - Feature One/);
-    assert.match(report, /Rounds: 4/);
-    assert.match(report, /Checkpoints: #19 -> #22/);
-    assert.match(report, /Final decision: needs_user/);
-    assert.match(report, /Total review time: 7\.0 seconds/);
-    assert.doesNotMatch(report, /Previous cycle complete/);
-    assert.ok(report.indexOf("First finding.") < report.indexOf("Gate passed; continue."));
-    assert.ok(report.indexOf("Gate passed; continue.") < report.indexOf("User choice required."));
-    assert.match(report, /Nested heading remains part of this response/);
-    assert.ok(report.indexOf("User choice required.") < report.indexOf("Follow-up choice required."));
-    assert.match(report, /Cycle round 4 - needs_user[\s\S]*Unattended round: 1/);
-  } finally {
-    fs.rmSync(temporary, { recursive: true, force: true });
-  }
+test("reads the live session report from the broker with optional full content", async () => {
+  const calls = [];
+  const request = async (route, body) => {
+    calls.push({ route, body });
+    return { report: "# Live report\n" };
+  };
+  assert.equal(await readSessionReport("Feature One", true, request), "# Live report\n");
+  assert.deepEqual(calls, [{ route: "/report", body: { feature: "Feature One", full: true } }]);
+  await assert.rejects(
+    readSessionReport("Feature One", false, async () => ({ report: 42 })),
+    /invalid session report/i
+  );
+  assert.deepEqual(parseArguments(["--feature", "feature", "--full"]), {
+    options: { feature: "feature", full: true },
+    positionals: [],
+    passthrough: []
+  });
 });
 
 test("quotes Bash, PowerShell, and TOML literals without interpolation", () => {

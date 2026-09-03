@@ -211,7 +211,7 @@ The normal loop is:
 5. Continue until the workstream is complete; manual mode remains armed.
 
 See [Review workflows](review-workflows.md) for other modes, all bridge commands,
-automatic reports, checkpoint behavior, and recovery.
+live session reports, checkpoint behavior, and recovery.
 
 If work completes while the bridge is off, its latest assistant handoff can be
 inspected with `$bridge-pull-review`. To send a resulting checkpoint back to

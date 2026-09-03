@@ -46,27 +46,6 @@ export interface PulledReview {
 
 export type AutoReviewDecision = "pass" | "pass_continue" | "revise" | "needs_user";
 
-export interface AutoCycleReceipt {
-  feature: string;
-  checkpointId: string;
-  checkpointSequence?: number;
-  codexTurnId: string;
-  decision: AutoReviewDecision | "missing";
-  outcome:
-    | "passed"
-    | "continuation-sent"
-    | "continuation-awaiting-user"
-    | "revision-sent"
-    | "revision-queued"
-    | "waiting-user";
-  reviewRound: number;
-  startedAt: string;
-  completedAt: string;
-  durationMs: number;
-  headline: string;
-  reportPath?: string;
-}
-
 export interface ClaudeQuestionOption {
   label: string;
   description?: string;
@@ -114,7 +93,6 @@ export interface FeaturePair {
   capturedClaudeMessage?: CapturedClaudeMessage;
   seenQuestionAdvisoryIds?: string[];
   lastCodexResponse?: string;
-  lastAutoCycle?: AutoCycleReceipt;
   lastForcedPublishAt?: string;
   lastForcedPublishThreadId?: string;
   updatedAt: string;
