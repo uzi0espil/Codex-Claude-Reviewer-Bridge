@@ -50,6 +50,16 @@ function checkpointLabel(entry: SessionCheckpointReport): string {
   return entry.checkpointSequence ? `#${entry.checkpointSequence}` : entry.checkpointId;
 }
 
+function workstreamSubject(workstreamContext?: string): string {
+  const firstLine = workstreamContext?.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+  if (!firstLine) return "Not captured yet";
+  const plain = firstLine
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^[-*+>]\s+/, "")
+    .replace(/\s+/g, " ");
+  return plain.length <= 160 ? plain : `${plain.slice(0, 157).trimEnd()}...`;
+}
+
 function formatEntry(entry: SessionCheckpointReport, full: boolean): string[] {
   const lines = [
     `## Checkpoint ${checkpointLabel(entry)} - ${entry.status}`,
@@ -129,20 +139,30 @@ export class SessionReportLedger {
     return entry;
   }
 
-  render(feature: string, displayName: string, full = false): string {
+  render(feature: string, displayName: string, full = false, workstreamContext?: string): string {
     const entries = this.checkpoints.get(feature) ?? [];
     const last = entries.at(-1);
     const totalDuration = entries.reduce((total, entry) => total + (entry.durationMs ?? 0), 0);
     const sections = entries.flatMap((entry) => formatEntry(entry, full));
+    const initialRequest = full
+      ? [
+          "## Initial request",
+          "",
+          workstreamContext?.trim() || "_Not captured yet._",
+          ""
+        ]
+      : [];
     return [
       `# Review session report - ${displayName}`,
       "",
+      `- Subject: ${workstreamSubject(workstreamContext)}`,
       `- Checkpoints: ${entries.length}`,
       `- Server started: ${this.startedAt}`,
       last ? `- Latest checkpoint: ${checkpointLabel(last)}` : undefined,
       last ? `- Latest status: ${last.status}` : undefined,
       `- Total review time: ${(totalDuration / 1000).toFixed(1)} seconds`,
       "",
+      ...initialRequest,
       ...(entries.length ? sections : ["_No checkpoints have been created during this server session._", ""])
     ].filter((line) => line !== undefined).join("\n");
   }

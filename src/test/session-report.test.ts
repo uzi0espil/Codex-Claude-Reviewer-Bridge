@@ -54,8 +54,11 @@ test("session reports retain checkpoints across modes and update entries in plac
     resolvedAt: "2026-01-01T00:00:09.000Z"
   }, "2026-01-01T00:00:08.000Z");
 
-  const report = ledger.render("feature-one", "Feature One");
+  const workstreamContext = "Implement checkout retries\n\nKeep the private rollout details intact.";
+  const report = ledger.render("feature-one", "Feature One", false, workstreamContext);
   assert.match(report, /Review session report - Feature One/);
+  assert.match(report, /Subject: Implement checkout retries/);
+  assert.doesNotMatch(report, /private rollout details/);
   assert.match(report, /Checkpoints: 2/);
   assert.match(report, /Checkpoint #1 - published/);
   assert.match(report, /Mode: manual/);
@@ -68,7 +71,8 @@ test("session reports retain checkpoints across modes and update entries in plac
   assert.doesNotMatch(report, /Claude manual handoff|Claude automatic handoff/);
   assert.match(report, /--full/);
 
-  const full = ledger.render("feature-one", "Feature One", true);
+  const full = ledger.render("feature-one", "Feature One", true, workstreamContext);
+  assert.match(full, /Initial request[\s\S]*Keep the private rollout details intact/);
   assert.match(full, /Claude manual handoff/);
   assert.match(full, /Claude automatic handoff/);
 });
@@ -94,6 +98,7 @@ test("session reports show live pending and superseded checkpoints without leaki
 
   const secondPair = pair("feature-two", "manual");
   const secondReport = ledger.render(secondPair.feature, secondPair.displayName);
+  assert.match(secondReport, /Subject: Not captured yet/);
   assert.match(secondReport, /Checkpoints: 0/);
   assert.match(secondReport, /No checkpoints have been created/);
   assert.doesNotMatch(secondReport, /checkpoint-1|checkpoint-2/);

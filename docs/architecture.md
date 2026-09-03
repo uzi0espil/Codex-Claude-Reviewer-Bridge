@@ -131,7 +131,9 @@ checkpoint enters the ledger immediately and its entry is updated through
 review, delivery, cancellation, supersession, mode-off release, or failure.
 `reviewer report` requests a Markdown rendering through the authenticated local
 broker API and does not start a model turn. The default rendering omits the full
-Claude handoff; `--full` includes it. The proxy
+initial request and Claude handoffs but shows a subject derived from the first
+meaningful line of the initial request; `--full` includes the complete request
+and handoffs. The proxy
 intercepts the terminal's duplicate initialization, remaps bidirectional
 JSON-RPC request IDs, and forwards upstream notifications to the terminal while
 the broker consumes the same events. The report is never used as Stop feedback,

@@ -119,11 +119,13 @@ Without Just:
 ./scripts/shell/reviewer.sh report --feature your-feature-name
 ```
 
-The default report includes complete Codex responses but hides Claude handoffs.
-Pass `--full` to either platform command, or run
-`just report your-feature-name --full`, to include those handoffs. Reports are
-available only while the bridge server is running and are discarded on
-shutdown. Changing modes does not reset them.
+The default report shows a subject derived from the first meaningful line of
+the initial request and includes complete Codex responses, but hides the rest
+of that request and the Claude handoffs. Pass `--full` to either platform
+command, or run `just report your-feature-name --full`, to include the complete
+initial request and those handoffs. Checkpoint history is available only while
+the bridge server is running and is discarded on shutdown. Changing modes does
+not reset it; the initial request remains the paired workstream context.
 
 ### Off
 

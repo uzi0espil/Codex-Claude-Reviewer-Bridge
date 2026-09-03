@@ -661,7 +661,12 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     return send(res, 200, {
       feature,
       startedAt: sessionReports.startedAt,
-      report: sessionReports.render(feature, pair.displayName, body.full === true)
+      report: sessionReports.render(
+        feature,
+        pair.displayName,
+        body.full === true,
+        pair.workstreamContext ?? pair.initialPrompt
+      )
     });
   }
   if (req.url === "/auto-decision" && req.method === "POST") {

@@ -180,9 +180,10 @@ server session, regardless of mode, without invoking either model:
 just report api-retry
 ```
 
-Codex responses are included by default. Add `--full` to include the Claude
-handoff captured for every checkpoint. The in-memory report is discarded when
-the bridge server stops.
+The initial prompt's first meaningful line appears as the report subject, and
+Codex responses are included by default. Add `--full` to include the complete
+initial request and the Claude handoff captured for every checkpoint. The
+in-memory checkpoint history is discarded when the bridge server stops.
 
 While the bridge is off, it retains only Claude's latest completed assistant
 handoff. Use `$bridge-pull-review` for a one-off Codex opinion that stays between
