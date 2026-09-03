@@ -27,6 +27,9 @@ cache never stores application policy, credentials, sessions, or bridge state.
 - **Codex MCP server** exposes status, mode, publish, cancel, off-mode handoff
   pulling, recovery, and one path-fixed application-policy writer to the
   interactive reviewer.
+- **Application review-tools MCP server** exposes scanner evidence and a
+  path-fixed, prompt-gated manifest writer before onboarding. After approval, a
+  fresh session also exposes one dynamic tool per approved recipe.
 - **Codex terminal** connects remotely to the broker-managed proxy so hook turns
   and user conversation share one visible thread and notification stream.
 - **Reviewer CLI** owns cross-platform instance creation, setup, updates, process
@@ -156,6 +159,38 @@ for research. Interactive write access is a separate explicit permission profile
 each later injected turn reselects `bridge-review`, so interactive implementation
 work does not weaken checkpoint reviews.
 
+Setup scans the bound repository for language manifests, package scripts, common
+task runners, Compose configuration, CI, and validation-like scripts. It extracts
+GitHub Actions run steps into a non-executable structured inventory, classifying
+validation gates separately from setup and support evidence. The ignored
+`review-tools.detected.json` output is evidence only and is never loaded as an
+executable manifest. `$bridge-init-tools` checks repository instructions and CI,
+asks runner authorization separately from readiness, maps every requirement to
+tools or an explicitly accepted gap, and preflights the complete proposal before
+preview. The fixed writer validates its schema, detection revision, coverage,
+runner policy, and immutable project binding, requires the previously observed
+SHA-256, supplies the actual approval timestamp, and atomically replaces only
+ignored `review-tools.local.json`. Version-1 manifests remain readable; all new
+writes use version 2. Its MCP approval mode is `prompt`; all other tool
+server capabilities are harmless until the approved manifest exists.
+
+Approved runners use fixed argv execution with `shell: false`, bounded typed
+inputs, repository-path validation, output caps, timeouts, and one active command
+at a time. Host, Compose, existing-service execution, and staged-service
+execution are language-neutral. Staged execution copies only an approved source
+subtree to a unique container scratch directory, retrieves only declared
+artifacts into ignored reviewer runtime storage, and attempts cleanup. Manifest
+approval is standing authorization for those exact capabilities, not for an
+arbitrary shell or implementation changes.
+
+The manifest records runner authorization independently from readiness. Static mode performs no runtime command
+and is the backward-compatible default. Trusted mode records the user's explicit
+acceptance of runtime prerequisites after structural validation. Per-tool probe
+mode executes only a fixed approved host or Compose runner and caches its result
+under ignored reviewer runtime state for the approved duration. Doctor output
+preserves the evidence basis, and no readiness mode can override an invalid
+binding, missing path, Compose file, or host executable.
+
 On native Windows, generated reviewer configuration selects the `unelevated`
 sandbox implementation. This avoids making administrator-approved elevated
 sandbox setup a hidden prerequisite for automatic reviews while retaining
@@ -184,3 +219,9 @@ application-specific `review-policy.local.md` is ignored and merged after it.
 The policy writer accepts no path, uses an expected SHA-256 to reject stale
 updates, and is configured to prompt for user approval. It never writes the
 application repository.
+
+Scanner recommendations in `review-tools.detected.json` and approved recipes in
+`review-tools.local.json` are also ignored and application-bound. Validation
+artifacts are kept below ignored `runtime/review-tools/`. No manifest contains
+credentials; approved runners inherit the reviewer's runtime environment when a
+tool legitimately needs existing developer authentication.

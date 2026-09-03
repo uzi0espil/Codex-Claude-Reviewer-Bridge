@@ -10,6 +10,10 @@ host-level write access.
 
 - For review, explanation, diagnosis, and assessment, do not edit files, commit,
   publish, or approve external actions.
+- Review may execute exact commands exposed by the user-approved
+  `review-tools.local.json` manifest. That standing approval covers only the
+  fixed runner and bounded inputs; it does not authorize implementation edits,
+  arbitrary commands, or capabilities absent from the manifest.
 - A bridge-injected checkpoint, Claude question advisory, or pulled review-only
   advisory is always read-only, even if an earlier interactive turn used write
   permissions.
@@ -45,3 +49,8 @@ host-level write access.
 The tracked generic policy is in `review-policy.md`. Application-specific
 additions are generated in the ignored `review-policy.local.md`; use
 `$bridge-init-policy` to create or refresh them.
+
+Application validation capabilities are generated from repository evidence and
+stored only after approval in ignored `review-tools.local.json`; use
+`$bridge-init-tools` to scan, curate, preview, and approve them. Scanner output
+in `review-tools.detected.json` is advisory and never executable by itself.

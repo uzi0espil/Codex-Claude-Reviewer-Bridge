@@ -36,6 +36,8 @@
 /claude-bridge.settings.json
 /config.toml
 /review-policy.local.md
+/review-tools.detected.json
+/review-tools.local.json
 
 # Local editor and OS files
 /.idea/

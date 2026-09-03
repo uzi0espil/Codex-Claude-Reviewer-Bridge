@@ -133,7 +133,50 @@ about one transient feature in the policy.
 If the workflow is skipped, `start-pair` warns and reviews with the generic
 tracked policy until initialization is completed.
 
-## 3. Start and use a pair
+## 3. Curate application validation tools
+
+Setup scans the bound repository without executing discovered commands and
+writes recommendations to ignored `review-tools.detected.json`. The factory then
+starts the tool workflow after policy initialization. Resume or refresh it with:
+
+```powershell
+.\scripts\powershell\reviewer.ps1 tools
+```
+
+```bash
+./scripts/shell/reviewer.sh tools
+```
+
+`$bridge-init-tools` combines scanner evidence with repository instructions, CI,
+manifests, documented workflows, Compose services, and scripts. It supports
+mixed-language repositories and does not assume a particular framework. It
+builds a structured validation inventory, extracts GitHub Actions run steps as
+validation or support evidence, and requires every validation item to map to
+tools or a user-accepted gap. It asks
+separately which host, observational Compose, existing-service, and staged-service
+runners are permitted, then asks how readiness should behave. Readiness may remain
+static, explicitly trust runtime prerequisites, or use fixed approved probes for
+selected tools. The safe default is static.
+
+Before approval, a non-executing preflight binds the proposal to the current
+detection revision and checks coverage, runner policy, paths, host executables,
+Compose files and services, typed inputs, command previews, and pending gaps.
+Sharing a container does not make lint, tests, migrations, and backup validation
+equivalent; duplicate execution routes are removed only after semantic coverage
+is complete.
+
+Approval writes only ignored `review-tools.local.json` through a path-fixed MCP
+tool with schema, project-binding, detection-revision, coverage, runner-policy,
+preflight, size, and optimistic-hash checks. The writer records the actual
+approval time. Scanner
+output never becomes executable by itself. Start a fresh Codex session after
+creating or changing the manifest so the approved dynamic tools are published.
+Use `review_tools_catalog` and `review_tools_doctor` there to verify what is
+available before relying on it. When probes were approved, use
+`review_tools_probe` to execute them and call the doctor again. Its output
+distinguishes static, user-trusted, and runtime-probed readiness.
+
+## 4. Start and use a pair
 
 From the generated instance:
 
@@ -179,7 +222,7 @@ Claude `AskUserQuestion` calls are mirrored as read-only Codex advisories. Discu
 the recommendation in Codex, then answer personally in Claude. Advisories are
 not publishable checkpoints.
 
-## 4. Validate a new instance
+## 5. Validate a new instance
 
 Exercise these cases before relying on it:
 
@@ -187,6 +230,14 @@ Exercise these cases before relying on it:
   unique instance ID.
 - Confirm `review-policy.local.md` appears only in the sibling reviewer and is
   ignored by Git.
+- Confirm setup reports detected technology surfaces without executing any
+  candidate, and that `review-tools.detected.json` is ignored.
+- Approve a small manifest, start a fresh session, and confirm its tools appear
+  in `review_tools_catalog` and pass `review_tools_doctor` or report an exact
+  runtime prerequisite.
+- Exercise one trusted tool and one fixed readiness probe. Confirm structural
+  errors remain missing, probe results expire as configured, and the doctor
+  reports the correct readiness basis.
 - Attempt setup with a second repository and confirm immutable binding rejects it.
 - Wait more than six minutes before publishing and confirm the Stop remains held.
 - Publish an edited subset and confirm Claude receives composed findings rather
@@ -201,7 +252,7 @@ Exercise these cases before relying on it:
 
 Use `runtime/bridge.log` and `$bridge-status` when routing is unclear.
 
-## 5. Update without mixing state
+## 6. Update without mixing state
 
 Run:
 
@@ -225,13 +276,14 @@ Pass `-Ref <remote-ref>` in PowerShell or `--ref <remote-ref>` in Bash only when
 the current branch has no configured upstream or you deliberately need another
 remote ref.
 
-## 6. Optional Just commands
+## 7. Optional Just commands
 
 Run `just` to list every recipe. The common workflow is:
 
 ```text
 just create /path/to/MyApp
 just policy
+just tools
 just pair my-feature
 just report my-feature
 just server
@@ -253,12 +305,13 @@ Use `just reviewer -- <command> ...` as an escape hatch for any command exposed
 by `scripts/reviewer.mjs`. The PowerShell and Bash entrypoints remain fully
 supported and do not require Just.
 
-## 7. Distribution boundaries
+## 8. Distribution boundaries
 
 - Keep application names and policy out of the public template runtime.
 - Keep generated integration files, auth, state databases, runtime, and the local
   policy ignored.
-- Add application-specific MCP servers only to that application's setup flow.
+- Keep scanner output advisory and require explicit approval before an
+  application-specific command becomes an MCP tool.
 - Keep protocol tools under `review_bridge_*`; use separate namespaces for
 application tools.
 - Keep platform-specific wrappers thin; orchestration belongs in

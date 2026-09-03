@@ -25,6 +25,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "discover:review-tools": "npm run build && node dist/review-tools-discover.js",
     "test": "npm run build && node --test dist/test/*.test.js scripts/test/*.test.mjs && npm run test:package",
     "test:just": "node scripts/ci/just-smoke.mjs",
     "test:package": "node scripts/ci/package-smoke.mjs",
@@ -36,6 +37,7 @@
     "@modelcontextprotocol/server": "2.0.0",
     "@playwright/mcp": "0.0.79",
     "ws": "8.21.3",
+    "yaml": "2.9.0",
     "zod": "4.4.3"
   },
   "devDependencies": {

@@ -150,7 +150,8 @@ export function createReviewer(options) {
     "scripts/reviewer.mjs",
     "scripts/shell/reviewer.sh",
     "scripts/powershell/reviewer.ps1",
-    "skills/bridge-init-policy/SKILL.md"
+    "skills/bridge-init-policy/SKILL.md",
+    "skills/bridge-init-tools/SKILL.md"
   ];
   const missing = required.filter((entry) => !fs.existsSync(path.join(destination, entry)));
   if (missing.length) throw new Error(`The cloned template is incompatible with the isolated-instance workflow and is missing: ${missing.join(", ")}.`);
@@ -164,6 +165,8 @@ export function createReviewer(options) {
   run(process.execPath, loginArgs, { cwd: destination });
   console.log("Starting the Codex-guided review policy workflow.");
   run(process.execPath, [targetCli, "policy"], { cwd: destination });
+  console.log("Starting the Codex-guided review-tool workflow.");
+  run(process.execPath, [targetCli, "tools"], { cwd: destination });
 }
 
 export function main(argv = process.argv.slice(2)) {

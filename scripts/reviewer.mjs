@@ -53,6 +53,7 @@ export function validateCommandArguments(command, options, passthrough) {
     setup: ["project-root", "project-name", "skip-playwright"],
     login: ["device-auth"],
     policy: ["project-root"],
+    tools: ["project-root"],
     "start-pair": ["feature", "profile", "project-root", "terminal"],
     "start-coder": ["feature", "project-root"],
     "start-reviewer": ["prompt", "feature", "profile", "resume", "last", "session", "project-root"],
@@ -62,7 +63,7 @@ export function validateCommandArguments(command, options, passthrough) {
   for (const name of Object.keys(options)) {
     if (!allowed[command].includes(name)) throw new Error(`--${name} is not valid for ${command}.`);
   }
-  if (passthrough.length && !["policy", "start-pair", "start-coder", "start-reviewer"].includes(command)) {
+  if (passthrough.length && !["policy", "tools", "start-pair", "start-coder", "start-reviewer"].includes(command)) {
     throw new Error(`${command} does not accept trailing tool arguments.`);
   }
 }
@@ -448,6 +449,13 @@ export function codexConfig(projectRoot, skipPlaywright) {
     lines.push("", `[mcp_servers.review_bridge.tools.review_bridge_${tool}]`, 'approval_mode = "approve"');
   }
   lines.push("", "[mcp_servers.review_bridge.tools.review_bridge_write_policy]", 'approval_mode = "prompt"');
+  lines.push(
+    "", "[mcp_servers.review_tools]", 'command = "node"',
+    `args = [${tomlLiteral(path.join(reviewerRoot, "dist", "review-tools-mcp.js"))}]`,
+    `cwd = ${tomlLiteral(projectRoot)}`, "enabled = true", "startup_timeout_sec = 10", "tool_timeout_sec = 7200",
+    'default_tools_approval_mode = "approve"',
+    "", "[mcp_servers.review_tools.tools.review_tools_write_manifest]", 'approval_mode = "prompt"'
+  );
   if (!skipPlaywright) {
     const playwright = path.join(reviewerRoot, "node_modules", "@playwright", "mcp", "cli.js");
     if (!fs.existsSync(playwright)) throw new Error("Playwright MCP was not installed.");
@@ -486,10 +494,13 @@ async function setup(options) {
   run("npm", ["test"], { cwd: reviewerRoot });
   const config = projectSettings(projectRoot, projectName, Boolean(options["skip-playwright"]), existing);
   writeJson(localConfigPath, config);
+  const discoveryScript = path.join(reviewerRoot, "dist", "review-tools-discover.js");
+  if (!fs.existsSync(discoveryScript)) throw new Error("Review-tool discovery was not built.");
+  run(process.execPath, [discoveryScript], { cwd: reviewerRoot });
   writeJson(path.join(reviewerRoot, "claude-bridge.settings.json"), claudeSettings(projectRoot, config.playwrightEnabled));
   fs.writeFileSync(path.join(reviewerRoot, "config.toml"), codexConfig(projectRoot, !config.playwrightEnabled), "utf8");
   console.log(`Review bridge installed for '${projectName}' at ${projectRoot}`);
-  console.log(`Next: run '${platformExample("login")}', then '${platformExample("policy")}'.`);
+  console.log(`Next: run '${platformExample("login")}', then '${platformExample("policy")}' and '${platformExample("tools")}'.`);
 }
 
 async function login(options) {
@@ -502,9 +513,30 @@ async function login(options) {
   run("codex", options["device-auth"] ? ["login", "--device-auth"] : ["login"], { env: environment });
 }
 
+export function policyCodexArguments(projectRoot, passthrough = []) {
+  const prompt = "Use $bridge-init-policy to inspect this application and create or refresh its private review policy and protocol.";
+  return [
+    "-C", projectRoot,
+    "--profile", "bridge-review",
+    ...passthrough,
+    "-c", "mcp_servers.review_tools.enabled=false",
+    prompt
+  ];
+}
+
 async function policy(options, passthrough) {
   const projectRoot = resolveProjectRoot(options["project-root"]);
-  const prompt = "Use $bridge-init-policy to inspect this application and create or refresh its private review policy and protocol.";
+  run("codex", policyCodexArguments(projectRoot, passthrough), {
+    cwd: projectRoot, env: { ...process.env, CODEX_HOME: reviewerRoot }
+  });
+}
+
+async function tools(options, passthrough) {
+  const projectRoot = resolveProjectRoot(options["project-root"]);
+  const discoveryScript = path.join(reviewerRoot, "dist", "review-tools-discover.js");
+  if (!fs.existsSync(discoveryScript)) throw new Error(`Review-tool discovery is missing; run '${platformExample("setup")}'.`);
+  run(process.execPath, [discoveryScript], { cwd: reviewerRoot });
+  const prompt = "Use $bridge-init-tools to inspect this application, build the complete validation inventory, map every requirement to approved tools or explicit gaps, choose runner policy separately from readiness behavior, preflight the complete proposal, and preview it for explicit approval.";
   run("codex", ["-C", projectRoot, "--profile", "bridge-review", ...passthrough, prompt], {
     cwd: projectRoot, env: { ...process.env, CODEX_HOME: reviewerRoot }
   });
@@ -724,7 +756,7 @@ async function create(options) {
   }
   console.log(`Creating isolated reviewer instance at ${destination}`);
   run("git", ["clone", "--", String(repository), destination]);
-  const required = ["scripts/reviewer.mjs", "scripts/shell/reviewer.sh", "scripts/powershell/reviewer.ps1", "skills/bridge-init-policy/SKILL.md"];
+  const required = ["scripts/reviewer.mjs", "scripts/shell/reviewer.sh", "scripts/powershell/reviewer.ps1", "skills/bridge-init-policy/SKILL.md", "skills/bridge-init-tools/SKILL.md"];
   const missing = required.filter((entry) => !fs.existsSync(path.join(destination, entry)));
   if (missing.length) throw new Error(`The cloned template is incompatible with the isolated-instance workflow and is missing: ${missing.join(", ")}.`);
   const targetCli = path.join(destination, "scripts", "reviewer.mjs");
@@ -736,10 +768,12 @@ async function create(options) {
   run(process.execPath, loginArgs, { cwd: destination });
   console.log("Starting the Codex-guided review policy workflow.");
   run(process.execPath, [targetCli, "policy"], { cwd: destination });
+  console.log("Starting the Codex-guided review-tool workflow.");
+  run(process.execPath, [targetCli, "tools"], { cwd: destination });
 }
 
 function usage() {
-  console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, and bind this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  start-pair      Open paired Claude and Codex terminals\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the latest persisted automatic review report\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
+  console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  start-pair      Open paired Claude and Codex terminals\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the latest persisted automatic review report\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -752,6 +786,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === "setup") return setup(options);
   if (command === "login") return login(options);
   if (command === "policy") return policy(options, passthrough);
+  if (command === "tools") return tools(options, passthrough);
   if (command === "start-pair") return startPair(options, passthrough);
   if (command === "start-coder") return startCoder(options, passthrough);
   if (command === "start-reviewer") return startReviewer(options, passthrough);

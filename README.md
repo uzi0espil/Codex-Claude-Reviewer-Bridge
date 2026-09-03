@@ -40,8 +40,10 @@ The bridge gives you:
   Codex reviews the choices and advises you; only you answer Claude.
 - **Project isolation.** Every application has a sibling reviewer with its own
   Codex home, policy, credentials, state, memories, and sessions.
-- **Evidence-driven checks.** Reviews can use live web research and optional
-  Playwright MCP browser inspection while the application remains read-only.
+- **Evidence-driven checks.** Reviews can use live web research, optional
+  Playwright browser inspection, and user-approved validation tools discovered
+  from the application's actual languages, manifests, CI, scripts, and Compose
+  configuration.
 
 ## How it works
 
@@ -122,9 +124,17 @@ dev/
 
 The npx command is only a bootstrapper. It clones the matching published release
 into the sibling reviewer, binds and tests it, authenticates its dedicated Codex
-home, and opens a guided workflow to create a private application review policy.
-No reviewer state remains in the npm cache. Keep the reviewer beside the
-application, never inside it.
+home, and opens guided workflows for a private application review policy and a
+curated validation-tool manifest. Detection is advisory; no discovered command
+becomes executable until you approve the complete manifest. No reviewer state
+remains in the npm cache. Keep the reviewer beside the application, never inside
+it.
+
+During tool initialization, you also choose how readiness is established. The
+safe default performs static checks and leaves container commands marked as
+needing a runtime probe. You may explicitly trust runtime prerequisites globally
+or approve fixed, bounded probes for selected tools. Readiness reports preserve
+whether each result came from static evidence, user trust, or an executed probe.
 
 ### 2. Start a workstream
 
@@ -192,6 +202,12 @@ automatic-cycle controls, question advisories, reporting, and recovery.
   token stored in ignored runtime state.
 - The application-specific policy stays in the ignored reviewer file
   `review-policy.local.md`; it is not added to the application or public factory.
+- Scanner recommendations and approved application tools stay in ignored
+  reviewer files. The fixed manifest writer is prompt-gated and approved tools
+  use argv execution without shell interpolation.
+- Readiness policy is user-approved in the same manifest. Trusted readiness
+  cannot suppress structural failures, and runtime probes are fixed capabilities
+  rather than arbitrary shell access.
 - Interactive implementation access is a separate, explicit permission profile
   and does not weaken injected reviews.
 

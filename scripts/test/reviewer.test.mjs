@@ -12,6 +12,7 @@ import {
   codexConfig,
   parseArguments,
   pairedCodexArguments,
+  policyCodexArguments,
   powershellQuote,
   readLatestAutoReport,
   shellQuote,
@@ -36,6 +37,7 @@ test("rejects unknown CLI options", () => {
   assert.throws(() => parseArguments(["--unknown"]), /Unknown option/);
   assert.throws(() => validateCommandArguments("stop", { feature: "x" }, []), /not valid for stop/);
   assert.throws(() => validateCommandArguments("setup", {}, ["--model", "x"]), /does not accept/);
+  assert.doesNotThrow(() => validateCommandArguments("tools", { "project-root": "/tmp/app" }, ["--model", "x"]));
 });
 
 test("reads the latest automatic report outside model history and rejects escaped paths", () => {
@@ -180,6 +182,36 @@ test("paired Codex sessions preserve injected review turns in terminal scrollbac
   ).filter((value) => value === "--no-alt-screen").length, 1);
 });
 
+test("policy initialization cannot access review-tool curation", () => {
+  const args = policyCodexArguments("C:\\project", [
+    "--model", "gpt-test",
+    "-c", "mcp_servers.review_tools.enabled=true"
+  ]);
+  assert.deepEqual(args.slice(0, 6), [
+    "-C", "C:\\project", "--profile", "bridge-review", "--model", "gpt-test"
+  ]);
+  assert.deepEqual(args.slice(-3, -1), [
+    "-c", "mcp_servers.review_tools.enabled=false"
+  ]);
+  assert.match(args.at(-1), /\$bridge-init-policy/);
+
+  const skill = fs.readFileSync(
+    fileURLToPath(new URL("../../skills/bridge-init-policy/SKILL.md", import.meta.url)),
+    "utf8"
+  );
+  assert.match(skill, /never refresh tool detection/);
+  assert.match(skill, /do not switch to\s+`\$bridge-init-tools`/);
+  assert.match(skill, /Report point-in-time manifest coverage only in the surrounding session response/);
+  assert.match(skill, /Never copy the current tool inventory/);
+  assert.match(skill, /not in the proposed\s+policy text/);
+  assert.match(skill, /exact bytes using strict\s+UTF-8 decoding/);
+  assert.match(skill, /Before claiming that stored text is\s+corrupted/);
+  assert.match(skill, /Do not normalize them to ASCII/);
+  assert.match(skill, /If they are identical, or the proposed diff is\s+otherwise empty/);
+  assert.match(skill, /Do not ask for approval, call the policy writer, or\s+re-save an unchanged file/);
+  assert.match(skill, /explicit approval only when the proposed file content changes/);
+});
+
 test("generates portable Claude hooks and Codex configuration", () => {
   const settings = claudeSettings("/tmp/project");
   assert.equal(settings.hooks.PreToolUse[0].matcher, "AskUserQuestion");
@@ -189,6 +221,8 @@ test("generates portable Claude hooks and Codex configuration", () => {
   assert.match(config, /\[windows\]\nsandbox = "unelevated"/);
   assert.match(config, /\[permissions\.bridge-review\]/);
   assert.match(config, /review_bridge_record_auto_decision/);
+  assert.match(config, /\[mcp_servers\.review_tools\]/);
+  assert.match(config, /review_tools_write_manifest\]\napproval_mode = "prompt"/);
   assert.doesNotMatch(config, /mcp_servers\.playwright/);
 });
 
@@ -214,7 +248,7 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     const commands = path.join(temporary, "commands");
     const firstProject = path.join(temporary, "first project");
     const secondProject = path.join(temporary, "second project");
-    for (const directory of [scripts, commands, path.join(firstProject, ".git"), path.join(secondProject, ".git")]) {
+    for (const directory of [scripts, commands, path.join(instance, "dist"), path.join(firstProject, ".git"), path.join(secondProject, ".git")]) {
       fs.mkdirSync(directory, { recursive: true });
     }
     fs.copyFileSync(fileURLToPath(new URL("../reviewer.mjs", import.meta.url)), path.join(scripts, "reviewer.mjs"));
@@ -222,6 +256,7 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     fs.mkdirSync(path.join(scripts, "powershell", "internal"), { recursive: true });
     fs.copyFileSync(fileURLToPath(new URL("../powershell/internal/Run-External.ps1", import.meta.url)), path.join(scripts, "powershell", "internal", "Run-External.ps1"));
     fs.writeFileSync(path.join(instance, "package.json"), '{"version":"test-version"}\n');
+    fs.writeFileSync(path.join(instance, "dist", "review-tools-discover.js"), "const fs=require('node:fs');const path=require('node:path');const root=JSON.parse(fs.readFileSync(path.join(__dirname,'..','bridge.local.json'),'utf8')).projectRoot;fs.writeFileSync(path.join(__dirname,'..','review-tools.detected.json'),JSON.stringify({schemaVersion:2,projectRoot:root,generatedAt:new Date().toISOString(),technologies:[],requirements:[],candidates:[],questions:[]})+'\\n');\n");
 
     const mockNames = ["npm", "codex", "claude"];
     if (process.platform === "win32") {
@@ -247,6 +282,8 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     const generatedConfig = fs.readFileSync(path.join(instance, "config.toml"), "utf8");
     assert.match(generatedConfig, /\[permissions\.bridge-write\]/);
     assert.match(generatedConfig, /review_bridge_record_auto_decision/);
+    assert.match(generatedConfig, /\[mcp_servers\.review_tools\]/);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "review-tools.detected.json"), "utf8")).projectRoot, fs.realpathSync(firstProject));
 
     const rebound = spawnSync(process.execPath, [cli, "setup", "--project-root", secondProject, "--skip-playwright"], {
       cwd: instance, env: environment, encoding: "utf8"
@@ -290,6 +327,8 @@ test("update fast-forwards an instance and reruns the updated setup", () => {
     git(["push", "-u", "origin", "main"], seed);
     git(["symbolic-ref", "HEAD", "refs/heads/main"], origin);
     git(["clone", origin, instance], temporary);
+    fs.mkdirSync(path.join(instance, "dist"), { recursive: true });
+    fs.writeFileSync(path.join(instance, "dist", "review-tools-discover.js"), "const fs=require('node:fs');const path=require('node:path');const root=JSON.parse(fs.readFileSync(path.join(__dirname,'..','bridge.local.json'),'utf8')).projectRoot;fs.writeFileSync(path.join(__dirname,'..','review-tools.detected.json'),JSON.stringify({schemaVersion:2,projectRoot:root,generatedAt:new Date().toISOString(),technologies:[],requirements:[],candidates:[],questions:[]})+'\\n');\n");
 
     fs.writeFileSync(path.join(seed, "package.json"), '{"version":"0.3.0"}\n');
     git(["add", "package.json"], seed);

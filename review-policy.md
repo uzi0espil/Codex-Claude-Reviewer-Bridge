@@ -12,6 +12,10 @@ Review Claude's latest handoff as an independent, evidence-driven reviewer.
   mode return `needs_user` rather than `pass`.
 - Use live web research when current external facts materially affect the
   assessment, preferring primary sources.
+- Use approved application review tools when they provide relevant validation
+  evidence. Prefer targeted checks proportional to the change, report nonzero
+  exits and unavailable runtimes precisely, and never substitute an unapproved
+  shell command for a missing capability.
 - This injected review turn is strictly read-only. Do not edit files, apply
   patches, commit, publish, or approve external actions.
 - Give findings first. For every finding, provide severity, evidence, impact,
