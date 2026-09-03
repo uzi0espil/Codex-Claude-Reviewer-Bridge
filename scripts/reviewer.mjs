@@ -19,7 +19,7 @@ const optionNames = new Set([
   "project-root", "project-name", "destination", "template-repository", "feature",
   "profile", "prompt", "session", "ref", "terminal"
 ]);
-const booleanNames = new Set(["skip-playwright", "device-auth", "resume", "last"]);
+const booleanNames = new Set(["skip-playwright", "device-auth", "resume", "last", "full"]);
 
 export function parseArguments(values) {
   const options = {};
@@ -57,7 +57,7 @@ export function validateCommandArguments(command, options, passthrough) {
     "start-pair": ["feature", "profile", "project-root", "terminal"],
     "start-coder": ["feature", "project-root"],
     "start-reviewer": ["prompt", "feature", "profile", "resume", "last", "session", "project-root"],
-    ensure: [], stop: [], update: ["ref"], report: ["feature"]
+    ensure: [], stop: [], update: ["ref"], report: ["feature", "full"]
   };
   if (!Object.hasOwn(allowed, command)) throw new Error(`Unknown command: ${command}`);
   for (const name of Object.keys(options)) {
@@ -72,12 +72,6 @@ function requireOption(options, name) {
   const value = options[name];
   if (!value) throw new Error(`--${name} is required.`);
   return String(value);
-}
-
-function normalizeFeature(value) {
-  const key = String(value).trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-  if (!key) throw new Error("Feature name must contain at least one letter or number.");
-  return key;
 }
 
 function canonical(value, mustExist = true) {
@@ -230,105 +224,17 @@ async function bridgeRequest(route, body = {}) {
   return result;
 }
 
-export function readLatestAutoReport(feature, root = reviewerRoot) {
-  const runtimeState = path.join(root, "runtime", "state.json");
-  if (!fs.existsSync(runtimeState)) throw new Error("Bridge state is missing; start a paired session first.");
-  const state = readJson(runtimeState);
-  const pair = state.pairs?.[normalizeFeature(feature)];
-  if (!pair) throw new Error(`Unknown feature '${feature}'.`);
-  const relativeReport = pair.lastAutoCycle?.reportPath;
-  if (!relativeReport) throw new Error(`No persisted automatic review report exists for '${feature}'.`);
-  const reportsRoot = path.resolve(root, "reviews");
-  const reportPath = path.resolve(root, String(relativeReport));
-  const relative = path.relative(reportsRoot, reportPath);
-  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error("Stored automatic review report path is invalid.");
-  }
-  if (!fs.existsSync(reportPath)) throw new Error(`Stored automatic review report is missing: ${relativeReport}`);
-  const latestContent = fs.readFileSync(reportPath, "utf8");
-  const latest = parseAutoRoundReport(latestContent);
-  if (!latest) return latestContent;
-
-  const candidates = fs.readdirSync(path.dirname(reportPath), { withFileTypes: true })
-    .filter((entry) => entry.isFile() && /^checkpoint-.+\.md$/i.test(entry.name))
-    .map((entry) => parseAutoRoundReport(fs.readFileSync(path.join(path.dirname(reportPath), entry.name), "utf8")))
-    .filter(Boolean)
-    .filter((candidate) => candidate.checkpointSequence <= latest.checkpointSequence)
-    .sort((left, right) => right.checkpointSequence - left.checkpointSequence);
-
-  const rounds = [];
-  for (const candidate of candidates) {
-    if (candidate.checkpointSequence !== latest.checkpointSequence && candidate.outcome === "passed") break;
-    rounds.unshift(candidate);
-  }
-  if (!rounds.length) return latestContent;
-  return formatAutoCycleReport(pair.displayName ?? feature, rounds);
+export async function readSessionReport(feature, full = false, request = bridgeRequest) {
+  const result = await request("/report", { feature, full });
+  if (typeof result.report !== "string") throw new Error("Bridge returned an invalid session report.");
+  return result.report;
 }
 
-function parseAutoRoundReport(content) {
-  const round = Number(content.match(/^- Review round: (\d+)\s*$/m)?.[1]);
-  const checkpointSequence = Number(content.match(/^- Checkpoint: #(\d+)\b/m)?.[1]);
-  const decision = content.match(/^- Decision: (.+)\s*$/m)?.[1]?.trim();
-  const outcome = content.match(/^- Outcome: (.+)\s*$/m)?.[1]?.trim();
-  const startedAt = content.match(/^- Started: (.+)\s*$/m)?.[1]?.trim();
-  const completedAt = content.match(/^- Completed: (.+)\s*$/m)?.[1]?.trim();
-  const durationSeconds = Number(content.match(/^- Duration: ([\d.]+) seconds\s*$/m)?.[1]);
-  const reportHeading = /^## Codex report\s*$/m.exec(content);
-  const body = reportHeading
-    ? content.slice(reportHeading.index + reportHeading[0].length).replace(/^\r?\n/, "").trim()
-    : undefined;
-  if (!Number.isInteger(round) || round < 1 || !Number.isInteger(checkpointSequence) || !decision || !outcome || !body) {
-    return undefined;
+async function report(options) {
+  if (!await endpointHealth()) {
+    throw new Error("The review bridge is not running; session reports are available only while the server is running.");
   }
-  return {
-    round,
-    checkpointSequence,
-    decision,
-    outcome,
-    startedAt,
-    completedAt,
-    durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : 0,
-    body
-  };
-}
-
-function formatAutoCycleReport(displayName, rounds) {
-  const first = rounds[0];
-  const last = rounds.at(-1);
-  const totalDuration = rounds.reduce((total, round) => total + round.durationSeconds, 0);
-  const checkpointRange = first.checkpointSequence === last.checkpointSequence
-    ? `#${first.checkpointSequence}`
-    : `#${first.checkpointSequence} -> #${last.checkpointSequence}`;
-  const sections = rounds.flatMap((round, index) => [
-    `## Cycle round ${index + 1} - ${round.decision}`,
-    "",
-    `- Checkpoint: #${round.checkpointSequence}`,
-    `- Unattended round: ${round.round}`,
-    `- Outcome: ${round.outcome}`,
-    `- Duration: ${round.durationSeconds.toFixed(1)} seconds`,
-    "",
-    "### Codex report",
-    "",
-    round.body,
-    ""
-  ]);
-  return [
-    `# Automatic review cycle report - ${displayName}`,
-    "",
-    `- Rounds: ${rounds.length}`,
-    `- Checkpoints: ${checkpointRange}`,
-    `- Final decision: ${last.decision}`,
-    `- Final outcome: ${last.outcome}`,
-    first.startedAt ? `- Started: ${first.startedAt}` : undefined,
-    last.completedAt ? `- Completed: ${last.completedAt}` : undefined,
-    `- Total review time: ${totalDuration.toFixed(1)} seconds`,
-    "",
-    ...sections
-  ].filter((line) => line !== undefined).join("\n");
-}
-
-function report(options) {
-  process.stdout.write(readLatestAutoReport(requireOption(options, "feature")));
+  process.stdout.write(await readSessionReport(requireOption(options, "feature"), options.full === true));
 }
 
 export function acquireStartupLock(lockPath = startupLockPath, now = Date.now()) {
@@ -773,7 +679,7 @@ async function create(options) {
 }
 
 function usage() {
-  console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  start-pair      Open paired Claude and Codex terminals\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the latest persisted automatic review report\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
+  console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  start-pair      Open paired Claude and Codex terminals\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
 }
 
 export async function main(argv = process.argv.slice(2)) {

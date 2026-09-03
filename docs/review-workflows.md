@@ -64,7 +64,7 @@ sequenceDiagram
         R->>R: Inspect the handoff and current worktree
         R-->>U: Show the Markdown review
         R->>B: Record the checkpoint decision
-        B->>B: Persist the round report
+        B->>B: Update the live session report
 
         alt pass
             B-->>C: Allow Stop with a fixed success status
@@ -93,9 +93,17 @@ use continuation to create authorization or broaden the task. A final pass or a
 human publish or cancel decision resets the unattended counter without
 disarming automatic mode.
 
-Automatic responses remain ordinary Markdown in the Codex terminal. Each round
-is also saved under ignored `reviews/` so the complete latest cycle can be
-assembled without adding another model turn:
+### Live checkpoint report
+
+Reviewer responses remain ordinary Markdown in the Codex terminal. The broker
+also keeps an in-memory, per-feature report of every checkpoint created during
+its current process, across manual, once, and automatic mode. Pending entries
+are updated in place when they complete, are published or cancelled, are
+superseded, fail, or are released by switching the bridge off. Question
+advisories, pulled review-only advisories, and off-mode captures are not
+checkpoints and do not appear.
+
+Print the report without adding another model turn:
 
 ```text
 just report your-feature-name
@@ -110,6 +118,14 @@ Without Just:
 ```bash
 ./scripts/shell/reviewer.sh report --feature your-feature-name
 ```
+
+The default report shows a subject derived from the first meaningful line of
+the initial request and includes complete Codex responses, but hides the rest
+of that request and the Claude handoffs. Pass `--full` to either platform
+command, or run `just report your-feature-name --full`, to include the complete
+initial request and those handoffs. Checkpoint history is available only while
+the bridge server is running and is discarded on shutdown. Changing modes does
+not reset it; the initial request remains the paired workstream context.
 
 ### Off
 

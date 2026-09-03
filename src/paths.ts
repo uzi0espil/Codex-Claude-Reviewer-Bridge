@@ -7,7 +7,6 @@ export const runtimeDirectory = path.join(reviewerRoot, "runtime");
 export const statePath = path.join(runtimeDirectory, "state.json");
 export const endpointPath = path.join(runtimeDirectory, "endpoint.json");
 export const logPath = path.join(runtimeDirectory, "bridge.log");
-export const reportsDirectory = path.join(reviewerRoot, "reviews");
 export const reviewPolicyPath = path.join(reviewerRoot, "review-policy.md");
 export const localReviewPolicyPath = path.join(reviewerRoot, "review-policy.local.md");
 

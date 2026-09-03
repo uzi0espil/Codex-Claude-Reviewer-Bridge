@@ -22,6 +22,9 @@ export class StateStore {
       // Legacy state hashed only the policy. Dropping that marker forces one
       // seed of the combined protocol and policy into the existing thread.
       delete (pair as FeaturePair & { reviewPolicySha256?: string }).reviewPolicySha256;
+      // Reports are broker-lifetime data now. Discard legacy pointers so a
+      // restarted broker cannot advertise or reconstruct an older session.
+      delete (pair as FeaturePair & { lastAutoCycle?: unknown }).lastAutoCycle;
       if (!pair.workstreamContext && pair.initialPrompt) pair.workstreamContext = pair.initialPrompt;
       if (pair.pmSeeded && pair.codexThreadId && !pair.workstreamContextThreadId) {
         pair.workstreamContextThreadId = pair.codexThreadId;

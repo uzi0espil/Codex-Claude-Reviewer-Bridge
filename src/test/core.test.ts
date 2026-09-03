@@ -29,8 +29,6 @@ import {
   autoDecisionError,
   buildAutoContinuation,
   buildAutoCycleStatus,
-  createAutoCycleReceipt,
-  formatAutoCycleReport,
   resolveAutoReview
 } from "../auto-review.js";
 import { captureClaudeMessage, createPulledReview, pullQueueError, pullReviewError } from "../pulled-message.js";
@@ -103,7 +101,7 @@ test("state persists immutable routing and mutable mode", () => {
         autoDecision: "needs_user",
         createdAt: new Date(1).toISOString()
       };
-      current.lastAutoCycle = {
+      (current as FeaturePair & { lastAutoCycle?: unknown }).lastAutoCycle = {
         feature: "feature-one",
         checkpointId: "checkpoint-persisted",
         checkpointSequence: 1,
@@ -131,7 +129,7 @@ test("state persists immutable routing and mutable mode", () => {
     assert.equal(reloaded?.mode, "once");
     assert.equal(reloaded?.autoRoundLimit, 2);
     assert.equal(reloaded?.pending?.autoDecision, "needs_user");
-    assert.equal(reloaded?.lastAutoCycle?.reportPath, "reviews/feature-one/checkpoint-1.md");
+    assert.equal(reloaded && "lastAutoCycle" in reloaded, false);
     assert.equal(reloaded?.capturedClaudeMessage?.message, "Captured handoff");
     assert.throws(() => store.ensure("Feature One", path.dirname(directory)));
   } finally {
@@ -575,25 +573,11 @@ test("automatic review resolutions preserve readable prose and enforce configura
     reason: "round-limit"
   });
 
-  current.pending!.autoDecision = "pass";
-  current.autoRound = 2;
-  const receipt = createAutoCycleReceipt(
-    current,
-    "turn-auto",
-    "passed",
-    "All findings are resolved.\n\nValidated locally.",
-    new Date(5_002).toISOString()
-  );
-  receipt.reportPath = "reviews/checkout-retry/checkpoint-2.md";
-  const status = buildAutoCycleStatus(receipt);
+  const status = buildAutoCycleStatus(current.feature);
   assert.match(status, /Automatic review passed/i);
   assert.match(status, /just report checkout-retry/);
   assert.doesNotMatch(status, /All findings are resolved/);
   assert.equal(status.split("\n").length, 1);
-  const report = formatAutoCycleReport(current.displayName, receipt, "All findings are resolved.");
-  assert.match(report, /Codex turn: turn-auto/);
-  assert.match(report, /Duration: 5\.0 seconds/);
-  assert.equal(buildAutoCycleStatus({ ...receipt, reportPath: undefined }), "Automatic review passed. The out-of-band report could not be saved; details remain in Codex.");
 });
 
 test("AskUserQuestion hook input becomes a generic read-only advisory", () => {

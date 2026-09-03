@@ -125,15 +125,15 @@ endpoint file, and exits.
 
 On `pass`, the Stop hook allows Claude to finish and supplies only a fixed
 one-line `systemMessage`; it never places the Codex report or response headline
-in Claude's hook output. Every automatic turn writes its complete round report
-atomically beneath ignored `reviews/` and stores only the latest receipt metadata
-in pair state. Codex is explicitly told not to generate an additional cycle
-recap. `reviewer report` walks backward from that receipt to the previous final
-pass and assembles every completed response in the latest workflow cycle. A
-human decision may reset the unattended safety counter without splitting this
-user-visible cycle. The scan tolerates gaps from superseded checkpoints and does
-not start a model turn. This remains a deterministic
-fallback because Codex's remote app-server protocol is experimental. The proxy
+in Claude's hook output. The broker keeps a per-feature checkpoint ledger in
+memory for its complete process lifetime. Every manual, once, or automatic
+checkpoint enters the ledger immediately and its entry is updated through
+review, delivery, cancellation, supersession, mode-off release, or failure.
+`reviewer report` requests a Markdown rendering through the authenticated local
+broker API and does not start a model turn. The default rendering omits the full
+initial request and Claude handoffs but shows a subject derived from the first
+meaningful line of the initial request; `--full` includes the complete request
+and handoffs. The proxy
 intercepts the terminal's duplicate initialization, remaps bidirectional
 JSON-RPC request IDs, and forwards upstream notifications to the terminal while
 the broker consumes the same events. The report is never used as Stop feedback,
@@ -200,11 +200,11 @@ the stronger elevated sandbox after completing its one-time system setup.
 ## Persistence and privacy
 
 Ignored `runtime/state.json` contains pair identifiers, pending checkpoints,
-the latest automatic-cycle receipt, question-advisory routing metadata, the
-latest off-mode assistant handoff and its pull state, and queued feedback.
-Ignored `reviews/` contains out-of-band automatic review
-reports. `runtime/endpoint.json`
-contains the ephemeral loopback URL,
+question-advisory routing metadata, the latest off-mode assistant handoff and
+its pull state, and queued feedback. Session reports, including their Claude
+handoffs and Codex responses, exist only in broker memory and are discarded on
+shutdown; legacy files under ignored `reviews/` are not read or deleted.
+`runtime/endpoint.json` contains the ephemeral loopback URL,
 bearer token, reviewer proxy URL, and broker PID. Both app-server sockets bind
 only to loopback. The bridge never reads or stores Claude's full transcript
 path. Pulling cannot recover handoffs that occurred before a bridge version with

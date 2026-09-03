@@ -43,8 +43,8 @@ try {
     ["start-reviewer", "--feature", "raw feature", "--", "--model", "o3"],
   );
   assert.deepEqual(
-    invoke(["report", "feature name"]),
-    ["report", "--feature", "feature name"],
+    invoke(["report", "feature name", "--full"]),
+    ["report", "--feature", "feature name", "--full"],
   );
   console.log("Just recipe argument forwarding passed.");
 } finally {
