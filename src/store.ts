@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { BridgeState, FeaturePair } from "./types.js";
+import { BridgeState, DefaultBridgeMode, FeaturePair } from "./types.js";
 import { featureKey, runtimeDirectory, statePath } from "./paths.js";
 
 const emptyState = (): BridgeState => ({ version: 1, pairs: {} });
@@ -45,7 +45,7 @@ export class StateStore {
     return this.state.pairs[featureKey(feature)];
   }
 
-  ensure(feature: string, projectRoot: string): FeaturePair {
+  ensure(feature: string, projectRoot: string, defaultMode: DefaultBridgeMode = "manual"): FeaturePair {
     const key = featureKey(feature);
     let pair = this.state.pairs[key];
     if (!pair) {
@@ -53,7 +53,7 @@ export class StateStore {
         feature: key,
         displayName: feature.trim(),
         projectRoot: path.resolve(projectRoot),
-        mode: "manual",
+        mode: defaultMode,
         status: "idle",
         autoRound: 0,
         autoRoundLimit: null,

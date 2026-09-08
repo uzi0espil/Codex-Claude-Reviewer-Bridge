@@ -106,6 +106,7 @@ test("the npx bootstrapper clones a pinned template and preserves its update ups
     assert.equal(git(["branch", "--show-current"], destination), "reviewer-v0.3.2");
     assert.equal(git(["rev-parse", "--abbrev-ref", "@{upstream}"], destination), "origin/main");
     assert.equal(JSON.parse(fs.readFileSync(path.join(destination, "bridge.local.json"), "utf8")).templateVersion, "0.3.2");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(destination, "bridge.local.json"), "utf8")).defaultMode, "manual");
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

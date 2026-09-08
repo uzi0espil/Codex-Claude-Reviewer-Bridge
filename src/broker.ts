@@ -28,6 +28,7 @@ import { planAutoDelivery } from "./auto-delivery.js";
 import { CodexThreadBusyError, isCodexThreadBusyError } from "./codex-turn-policy.js";
 import { captureClaudeMessage, createPulledReview, pullQueueError, pullReviewError } from "./pulled-message.js";
 import { SessionReportLedger } from "./session-report.js";
+import { readInstanceDefaultMode } from "./instance-config.js";
 
 type Release = StopHookResult;
 type Waiter = { resolve: (release: Release) => void; response: ServerResponse; onClose: () => void };
@@ -631,7 +632,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   }
 
   if (req.url === "/pair/claude" && req.method === "POST") {
-    let pair = store.ensure(String(body.feature), String(body.projectRoot));
+    let pair = store.ensure(String(body.feature), String(body.projectRoot), readInstanceDefaultMode());
     pair = store.update(pair.feature, (value) => {
       migrateClaudeSessionLifecycle(value);
       value.claudeSessionId = String(body.sessionId || value.claudeSessionId || randomUUID());
@@ -639,7 +640,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     return send(res, 200, publicPair(pair));
   }
   if (req.url === "/pair/codex" && req.method === "POST") {
-    let pair = store.ensure(String(body.feature), String(body.projectRoot));
+    let pair = store.ensure(String(body.feature), String(body.projectRoot), readInstanceDefaultMode());
     pair = await ensureCodexThread(pair);
     send(res, 200, { ...publicPair(pair), appServerUrl });
     if (pair.pulledReview) schedulePulledReview(pair.feature);

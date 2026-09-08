@@ -20,8 +20,14 @@ tests, and diffs.
 
 ### Manual
 
-`$bridge-manual` is the default. Every Claude Stop starts a review and remains
-held until you make a decision:
+Fresh installations default new workstreams to manual mode. An instance can
+instead persist `manual`, `auto`, or `off` with `reviewer default-mode <mode>`
+or by editing `defaultMode` in `bridge.local.json`. This affects only previously
+unseen feature names; existing workstreams keep their stored modes. Default
+automatic mode is unlimited.
+
+In manual mode, every Claude Stop starts a review and remains held until you
+make a decision:
 
 - `$bridge-publish` sends the completed review, or your edited selection, to
   Claude.
