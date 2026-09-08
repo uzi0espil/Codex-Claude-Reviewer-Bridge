@@ -1,4 +1,5 @@
 export type BridgeMode = "off" | "manual" | "once" | "auto";
+export type DefaultBridgeMode = Exclude<BridgeMode, "once">;
 export type PairStatus =
   | "idle"
   | "reviewing"

@@ -54,6 +54,7 @@ export function validateCommandArguments(command, options, passthrough) {
     login: ["device-auth"],
     policy: ["project-root"],
     tools: ["project-root"],
+    "default-mode": [],
     "start-pair": ["feature", "profile", "project-root", "terminal"],
     "start-coder": ["feature", "project-root"],
     "start-reviewer": ["prompt", "feature", "profile", "resume", "last", "session", "project-root"],
@@ -315,11 +316,31 @@ function projectSettings(projectRoot, projectName, skipPlaywright, existingConfi
     instanceId: existingConfig?.instanceId ?? randomUUID(),
     projectName,
     projectRoot,
+    defaultMode: validatedDefaultMode(existingConfig?.defaultMode),
     templateVersion: packageJson.version,
     playwrightEnabled: !skipPlaywright,
     configuredAt: existingConfig?.configuredAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
+}
+
+function validatedDefaultMode(value) {
+  const mode = value ?? "manual";
+  if (!["off", "manual", "auto"].includes(mode)) {
+    throw new Error("Default mode must be off, manual, or auto.");
+  }
+  return mode;
+}
+
+function setDefaultMode(positionals) {
+  if (positionals.length !== 1) throw new Error("Usage: reviewer default-mode <off|manual|auto>");
+  const mode = validatedDefaultMode(positionals[0]);
+  const config = loadConfig();
+  config.defaultMode = mode;
+  config.updatedAt = new Date().toISOString();
+  writeJson(localConfigPath, config);
+  const detail = mode === "auto" ? " with unlimited unattended rounds" : "";
+  console.log(`Default review mode for new workstreams is now '${mode}'${detail}. Existing workstreams are unchanged.`);
 }
 
 export function claudeSettings(projectRoot, playwrightEnabled = true) {
@@ -679,15 +700,16 @@ async function create(options) {
 }
 
 function usage() {
-  console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  start-pair      Open paired Claude and Codex terminals\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
+  console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  default-mode    Set the mode inherited by new workstreams\n  start-pair      Open paired Claude and Codex terminals\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
 }
 
 export async function main(argv = process.argv.slice(2)) {
   const command = argv[0];
   if (!command || command === "help" || command === "--help") return usage();
   const { options, positionals, passthrough } = parseArguments(argv.slice(1));
-  if (positionals.length) throw new Error(`Unexpected argument: ${positionals[0]}`);
   validateCommandArguments(command, options, passthrough);
+  if (command === "default-mode") return setDefaultMode(positionals);
+  if (positionals.length) throw new Error(`Unexpected argument: ${positionals[0]}`);
   if (command === "create") return create(options);
   if (command === "setup") return setup(options);
   if (command === "login") return login(options);

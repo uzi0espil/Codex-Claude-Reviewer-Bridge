@@ -215,6 +215,21 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     assert.equal(local.projectName, "Fixture");
     assert.equal(local.templateVersion, "test-version");
     assert.equal(local.playwrightEnabled, false);
+    assert.equal(local.defaultMode, "manual");
+
+    const setDefault = spawnSync(process.execPath, [cli, "default-mode", "auto"], {
+      cwd: instance, env: environment, encoding: "utf8"
+    });
+    assert.equal(setDefault.status, 0, setDefault.stderr || setDefault.stdout);
+    assert.match(setDefault.stdout, /new workstreams.*auto.*unlimited.*existing workstreams are unchanged/i);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).defaultMode, "auto");
+
+    const invalidDefault = spawnSync(process.execPath, [cli, "default-mode", "once"], {
+      cwd: instance, env: environment, encoding: "utf8"
+    });
+    assert.notEqual(invalidDefault.status, 0);
+    assert.match(invalidDefault.stderr, /must be off, manual, or auto/i);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).defaultMode, "auto");
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "claude-bridge.settings.json"), "utf8")).hooks.Stop[0].hooks[0].command, "node");
     const generatedConfig = fs.readFileSync(path.join(instance, "config.toml"), "utf8");
     assert.match(generatedConfig, /\[permissions\.bridge-write\]/);
@@ -274,7 +289,7 @@ test("update fast-forwards an instance and reruns the updated setup", () => {
 
     fs.writeFileSync(path.join(instance, "bridge.local.json"), `${JSON.stringify({
       instanceId: "fixture", projectName: "Fixture", projectRoot: project,
-      templateVersion: "0.2.1", playwrightEnabled: false,
+      defaultMode: "auto", templateVersion: "0.2.1", playwrightEnabled: false,
       configuredAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString()
     }, null, 2)}\n`);
     const mockNames = ["npm", "codex", "claude"];
@@ -294,6 +309,7 @@ test("update fast-forwards an instance and reruns the updated setup", () => {
     assert.match(updated.stdout, /Bridge package version: 0\.2\.1 -> 0\.3\.0/);
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "package.json"), "utf8")).version, "0.3.0");
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).templateVersion, "0.3.0");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).defaultMode, "auto");
 
     fs.writeFileSync(path.join(instance, "package.json"), '{"version":"locally-modified"}\n');
     const dirty = spawnSync(process.execPath, [cli, "update"], { cwd: instance, env: environment, encoding: "utf8" });

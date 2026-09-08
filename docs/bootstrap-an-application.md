@@ -202,6 +202,13 @@ Use one stable feature name for one task. It selects immutable Claude and Codex
 session UUIDs; matching terminal titles do not route messages. Use a new feature
 name for unrelated work inside the same application.
 
+New feature names initially use the instance's `defaultMode`, which starts as
+`manual`. Set it deterministically with `reviewer default-mode <manual|auto|off>`
+through the platform wrapper, or edit `defaultMode` in `bridge.local.json`.
+Changes apply to future feature names only. Default `auto` mode allows unlimited
+unattended rounds; use the paired `$bridge-auto <rounds>` command when a specific
+workstream needs a finite bound.
+
 The normal loop is:
 
 1. Submit the product or task brief in Claude.
@@ -226,8 +233,8 @@ not publishable checkpoints.
 
 Exercise these cases before relying on it:
 
-- Confirm `bridge.local.json` contains the intended canonical project root and a
-  unique instance ID.
+- Confirm `bridge.local.json` contains the intended canonical project root, a
+  unique instance ID, and the intended `defaultMode`.
 - Confirm `review-policy.local.md` appears only in the sibling reviewer and is
   ignored by Git.
 - Confirm setup reports detected technology surfaces without executing any

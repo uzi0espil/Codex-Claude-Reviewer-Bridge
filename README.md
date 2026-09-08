@@ -163,7 +163,22 @@ recovery, terminal fallbacks, validation, and updates.
 
 ## Choose a review mode
 
-Manual review stays armed by default. Change modes from the paired Codex thread:
+New workstreams use the reviewer instance's default mode, which is `manual` on
+new and upgraded installations. Change that default without invoking either
+agent:
+
+```bash
+./scripts/shell/reviewer.sh default-mode auto
+```
+
+On Windows, use `.\scripts\powershell\reviewer.ps1 default-mode auto`. The
+accepted defaults are `manual`, `auto`, and `off`; default `auto` uses unlimited
+unattended rounds. The setting is stored as `defaultMode` in
+`bridge.local.json`, so it can also be edited directly. It applies only when a
+previously unseen feature name is first paired; existing workstreams keep their
+current mode.
+
+Change the current workstream's mode from its paired Codex thread:
 
 | Mode | Command | Behavior |
 | --- | --- | --- |

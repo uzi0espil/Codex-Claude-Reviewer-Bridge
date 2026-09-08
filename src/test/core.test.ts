@@ -32,6 +32,7 @@ import {
   resolveAutoReview
 } from "../auto-review.js";
 import { captureClaudeMessage, createPulledReview, pullQueueError, pullReviewError } from "../pulled-message.js";
+import { readInstanceDefaultMode } from "../instance-config.js";
 
 function pair(overrides: Partial<FeaturePair> = {}): FeaturePair {
   return {
@@ -578,6 +579,42 @@ test("automatic review resolutions preserve readable prose and enforce configura
   assert.match(status, /just report checkout-retry/);
   assert.doesNotMatch(status, /All findings are resolved/);
   assert.equal(status.split("\n").length, 1);
+});
+
+test("new pairs inherit the instance default without changing existing pairs", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-bridge-default-mode-"));
+  try {
+    const store = new StateStore(path.join(directory, "state.json"));
+    const automatic = store.ensure("Automatic Feature", directory, "auto");
+    assert.equal(automatic.mode, "auto");
+    assert.equal(automatic.autoRound, 0);
+    assert.equal(automatic.autoRoundLimit, null);
+
+    const existing = store.ensure("Automatic Feature", directory, "off");
+    assert.equal(existing.mode, "auto");
+    assert.equal(store.ensure("Disabled Feature", directory, "off").mode, "off");
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("instance default mode is backward compatible and rejects invalid configuration", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-bridge-instance-config-"));
+  const filename = path.join(directory, "bridge.local.json");
+  try {
+    fs.writeFileSync(filename, '{"projectRoot":"/tmp/project"}\n', "utf8");
+    assert.equal(readInstanceDefaultMode(filename), "manual");
+    for (const mode of ["off", "manual", "auto"] as const) {
+      fs.writeFileSync(filename, `${JSON.stringify({ defaultMode: mode })}\n`, "utf8");
+      assert.equal(readInstanceDefaultMode(filename), mode);
+    }
+    fs.writeFileSync(filename, '{"defaultMode":"once"}\n', "utf8");
+    assert.throws(() => readInstanceDefaultMode(filename), /must be off, manual, or auto/i);
+    fs.writeFileSync(filename, "not json\n", "utf8");
+    assert.throws(() => readInstanceDefaultMode(filename), /JSON/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("AskUserQuestion hook input becomes a generic read-only advisory", () => {

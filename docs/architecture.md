@@ -123,6 +123,12 @@ endpoint file, and exits.
   released, and the latest bypassed assistant handoff remains available for
   explicit pulling.
 
+The ignored per-instance `bridge.local.json` stores `defaultMode` as `manual`,
+`auto`, or `off`; a missing value is treated as `manual`. The broker reads it
+when either participant first pairs a previously unseen feature, so direct
+configuration edits take effect without a broker restart. The selected value is
+then persisted on the feature pair and later default changes do not rewrite it.
+
 On `pass`, the Stop hook allows Claude to finish and supplies only a fixed
 one-line `systemMessage`; it never places the Codex report or response headline
 in Claude's hook output. The broker keeps a per-feature checkpoint ledger in

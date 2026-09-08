@@ -39,6 +39,8 @@ function runNpm(script) {
       return runReviewer(["policy", ...args]);
     case "tools":
       return runReviewer(["tools", ...args]);
+    case "default-mode":
+      return runReviewer(["default-mode", args[0]]);
     case "pair":
       return runReviewer(["start-pair", "--feature", args[0], ...args.slice(1)]);
     case "server":
@@ -86,6 +88,11 @@ policy *codex_args:
 # Detect and curate private application review tools.
 [script("node")]
 tools *codex_args:
+    {{ runner }}
+
+# Set the review mode inherited by new workstreams.
+[script("node")]
+default-mode mode:
     {{ runner }}
 
 # Open the paired Claude and Codex terminals for a feature.
