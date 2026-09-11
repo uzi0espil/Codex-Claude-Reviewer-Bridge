@@ -48,6 +48,16 @@ checkpoints contain only checkpoint-specific control data, a short read-only
 reminder, and Claude's latest assistant message; Codex reads the current worktree
 for authoritative state.
 
+On Claude Code 2.1.145 and newer, Stop input also includes structured
+`background_tasks`. The broker normalizes a bounded snapshot and marks a
+checkpoint interim when at least one task remains. Codex still reviews work
+already completed in parallel, but may call the checkpoint-bound
+`review_bridge_defer_checkpoint` control tool when there is no actionable
+feedback. A completed deferral releases the Stop without feedback, preserves
+the armed mode, leaves once mode unconsumed, and does not change the unattended
+round counter. Missing metadata degrades to the ordinary checkpoint path;
+`session_crons` are deliberately ignored.
+
 Even in off mode, the Stop hook receives the completed assistant handoff before
 it immediately allows Claude to finish. The broker retains only the latest such
 handoff. A pull-review starts a non-publishable advisory turn, while a pull-queue
@@ -123,6 +133,14 @@ endpoint file, and exits.
   released, and the latest bypassed assistant handoff remains available for
   explicit pulling.
 
+App-server `turn/completed` status distinguishes user interruption from
+failure. An interrupted active review follows checkpoint cancellation semantics:
+partial output is not published, the Stop is released, the automatic counter is
+reset, persistent modes stay armed, and once turns off. Failed or empty turns
+retain the fail-open safety behavior and switch the mode off. Broker-initiated
+interruptions of superseded turns do not match the current checkpoint and are
+ignored.
+
 The ignored per-instance `bridge.local.json` stores `defaultMode` as `manual`,
 `auto`, or `off`; a missing value is treated as `manual`. The broker reads it
 when either participant first pairs a previously unseen feature, so direct
@@ -134,7 +152,8 @@ one-line `systemMessage`; it never places the Codex report or response headline
 in Claude's hook output. The broker keeps a per-feature checkpoint ledger in
 memory for its complete process lifetime. Every manual, once, or automatic
 checkpoint enters the ledger immediately and its entry is updated through
-review, delivery, cancellation, supersession, mode-off release, or failure.
+review, delivery, cancellation, deferral, interruption, supersession, mode-off
+release, or failure.
 `reviewer report` requests a Markdown rendering through the authenticated local
 broker API and does not start a model turn. The default rendering omits the full
 initial request and Claude handoffs but shows a subject derived from the first

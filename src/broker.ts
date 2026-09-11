@@ -10,7 +10,7 @@ import { endpointPath, featureKey, logPath, reviewerRoot, runtimeDirectory } fro
 import { StateStore } from "./store.js";
 import { AutoReviewDecision, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
 import { buildPulledReviewPrompt, buildReviewContextSeed, buildReviewPrompt, reviewContextSnapshot } from "./review-prompt.js";
-import { autoRoundLimitError, autoRoundLimitForMode, modeAfterUserDecision } from "./mode-policy.js";
+import { autoRoundLimitError, autoRoundLimitForMode, modeAfterUserDecision, reviewTurnCompletion } from "./mode-policy.js";
 import { buildPublishedFeedback } from "./published-feedback.js";
 import { checkpointDecisionError, createCheckpoint, forcePublishError } from "./checkpoint-policy.js";
 import {
@@ -29,6 +29,7 @@ import { CodexThreadBusyError, isCodexThreadBusyError } from "./codex-turn-polic
 import { captureClaudeMessage, createPulledReview, pullQueueError, pullReviewError } from "./pulled-message.js";
 import { SessionReportLedger } from "./session-report.js";
 import { readInstanceDefaultMode } from "./instance-config.js";
+import { checkpointDeferralError, normalizeBackgroundTasks } from "./interim-review.js";
 
 type Release = StopHookResult;
 type Waiter = { resolve: (release: Release) => void; response: ServerResponse; onClose: () => void };
@@ -399,7 +400,31 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
   const pair = store.all().find((candidate) => candidate.pending?.codexTurnId === turn.turnId);
   if (!pair?.pending) return;
   const pendingId = pair.pending.id;
-  if (turn.status !== "completed" || !turn.text) {
+  const completion = reviewTurnCompletion(turn.status, turn.text);
+  if (completion === "interrupted") {
+    sessionReports.complete(pair.feature, pendingId, turn.text, {
+      codexTurnId: turn.turnId,
+      status: "interrupted",
+      autoRound: undefined,
+      resolvedAt: new Date().toISOString(),
+      note: "Codex review was interrupted; the checkpoint was released without feedback."
+    });
+    store.update(pair.feature, (value) => {
+      if (value.pending?.source === "pull-queue"
+        && value.capturedClaudeMessage?.queueCheckpointId === pendingId) {
+        value.capturedClaudeMessage.queueRequestedAt = undefined;
+        value.capturedClaudeMessage.queueCheckpointId = undefined;
+      }
+      value.mode = modeAfterUserDecision(pair.mode);
+      value.autoRound = 0;
+      value.status = "idle";
+      value.pending = undefined;
+    });
+    release(pendingId, { kind: "allow" });
+    log(`Released interrupted review ${pendingId} for ${pair.feature}; mode is ${modeAfterUserDecision(pair.mode)}.`);
+    return;
+  }
+  if (completion === "failed") {
     sessionReports.complete(pair.feature, pendingId, turn.text, {
       codexTurnId: turn.turnId,
       status: "failed",
@@ -417,6 +442,24 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
       value.pending = undefined;
     });
     release(pendingId, { kind: "allow" });
+    return;
+  }
+
+  if (pair.pending.deferDecision) {
+    const report = sessionReports.complete(pair.feature, pendingId, turn.text, {
+      codexTurnId: turn.turnId,
+      status: "deferred",
+      autoRound: undefined,
+      resolvedAt: new Date().toISOString(),
+      note: "Background work remains in flight; no feedback was sent to Claude."
+    });
+    store.update(pair.feature, (value) => {
+      value.status = "waiting-claude";
+      value.lastCodexResponse = turn.text;
+      value.pending = undefined;
+    });
+    release(pendingId, { kind: "allow" });
+    log(`Deferred interim checkpoint ${pendingId} for ${pair.feature} in ${report?.durationMs ?? 0}ms.`);
     return;
   }
 
@@ -614,7 +657,10 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
       ...pair.pending,
       claudeMessage: "[held by bridge]",
       codexResponse: pair.pending.codexResponse ? "[held by bridge]" : undefined,
-      autoContinuation: pair.pending.autoContinuation ? "[held by bridge]" : undefined
+      autoContinuation: pair.pending.autoContinuation ? "[held by bridge]" : undefined,
+      backgroundTasks: undefined,
+      interim: Boolean(pair.pending.interim),
+      backgroundTaskCount: pair.pending.backgroundTasks?.length ?? 0
     } : undefined
   };
 }
@@ -694,6 +740,26 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       decision: body.decision,
       continuationRecorded: body.decision === "pass_continue",
       message: "Decision recorded. Finish with the normal Markdown review; the bridge will act when the turn completes."
+    });
+  }
+  if (req.url === "/defer" && req.method === "POST") {
+    if (!feature) return send(res, 400, { error: "feature required" });
+    const existing = store.get(feature);
+    if (!existing) return send(res, 404, { error: "unknown feature" });
+    const deferralError = checkpointDeferralError(existing, body.checkpointId);
+    if (deferralError) return send(res, 409, { error: deferralError });
+    store.update(feature, (value) => {
+      if (value.pending) value.pending.deferDecision = true;
+    });
+    sessionReports.update(feature, String(body.checkpointId), {
+      note: "Codex requested silent deferral while background work remains in flight."
+    });
+    return send(res, 200, {
+      recorded: true,
+      feature,
+      checkpointId: body.checkpointId,
+      disposition: "defer",
+      message: "Deferral recorded. Finish with concise Markdown; the bridge will release this Stop without feedback when the turn completes."
     });
   }
   if (req.url === "/mode" && req.method === "POST") {
@@ -933,7 +999,15 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const superseded = pair.pending;
     const supersededQueuedFeedback = Boolean(pair.queuedClaudeContext);
     const pendingId = store.newPendingId();
-    const checkpoint = createCheckpoint(pair, pendingId, input.last_assistant_message);
+    const backgroundTasks = normalizeBackgroundTasks(input.background_tasks);
+    const checkpoint = createCheckpoint(
+      pair,
+      pendingId,
+      input.last_assistant_message,
+      new Date().toISOString(),
+      "stop",
+      backgroundTasks
+    );
     if (superseded) {
       sessionReports.update(pair.feature, superseded.id, {
         status: "superseded",

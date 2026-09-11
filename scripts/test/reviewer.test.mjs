@@ -158,6 +158,7 @@ test("generates portable Claude hooks and Codex configuration", () => {
   assert.match(config, /\[windows\]\nsandbox = "unelevated"/);
   assert.match(config, /\[permissions\.bridge-review\]/);
   assert.match(config, /review_bridge_record_auto_decision/);
+  assert.match(config, /review_bridge_defer_checkpoint/);
   assert.match(config, /\[mcp_servers\.review_tools\]/);
   assert.match(config, /review_tools_write_manifest\]\napproval_mode = "prompt"/);
   assert.doesNotMatch(config, /mcp_servers\.playwright/);
@@ -234,6 +235,7 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     const generatedConfig = fs.readFileSync(path.join(instance, "config.toml"), "utf8");
     assert.match(generatedConfig, /\[permissions\.bridge-write\]/);
     assert.match(generatedConfig, /review_bridge_record_auto_decision/);
+    assert.match(generatedConfig, /review_bridge_defer_checkpoint/);
     assert.match(generatedConfig, /\[mcp_servers\.review_tools\]/);
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "review-tools.detected.json"), "utf8")).projectRoot, fs.realpathSync(firstProject));
 

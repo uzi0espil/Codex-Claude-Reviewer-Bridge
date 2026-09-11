@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { localReviewPolicyPath, reviewPolicyPath } from "./paths.js";
 import { FeaturePair, PendingReview, PulledReview } from "./types.js";
+import { formatBackgroundTasks } from "./interim-review.js";
 
 const fallbackPolicy = [
   "Review the latest handoff as an independent, evidence-driven reviewer.",
@@ -26,9 +27,10 @@ const bridgeProtocol = [
   "For every bridge-injected checkpoint:",
   "- Act as an independent, evidence-driven reviewer. Treat the current worktree as authoritative and Claude's handoff as a claim to verify against repository guidance, architecture and specification artifacts, code, tests, and diffs. Use live web research when current external facts materially affect the assessment.",
   "- The turn is strictly read-only: do not edit files, apply patches, commit, publish, or approve external actions.",
-  "- In manual or once mode, return concise findings-first Markdown. The user decides whether and what to publish to Claude.",
-  "- In auto mode, call `review_bridge_record_auto_decision` exactly once after the assessment, using the exact feature and checkpoint supplied by the current checkpoint prompt. Choose `pass` only when the reviewed work and the user's authorized workflow are complete. Choose `pass_continue` only when this gate is clean and Claude has a concrete next action already authorized by the user; put only that action in `continuation`. Never create authorization, broaden scope, or infer permission for an external mutation. Choose `revise` only for actionable material defects. Choose `needs_user` for a user choice, unavailable required validation, unclear authorization, unresolved ambiguity, or an exhausted unattended limit.",
-  "- After the auto decision call, return concise normal Markdown, never JSON. For `revise`, return the complete feedback Claude should receive. For `needs_user`, explain the decision required. For `pass` or `pass_continue`, report only the current gate's outcome, validation, residual risks, and—when continuing—the next gate. Do not generate a cycle recap: the bridge maintains the live session report out of band. The bridge sends Claude only revision feedback or the separate continuation, never the Codex report.",
+  "- A checkpoint marked interim has background work in flight. Review any completed parallel work that is already assessable. If it has actionable material defects, report them through the normal mode-specific flow; if a user decision is required, use the normal needs-user flow. Otherwise call `review_bridge_defer_checkpoint` exactly once and do not send Claude advice merely to keep waiting. Deferral preserves the armed mode for a later Stop.",
+  "- In manual or once mode, return concise findings-first Markdown. The user decides whether and what to publish to Claude, except that a clean interim checkpoint should be deferred automatically.",
+  "- In auto mode, call `review_bridge_record_auto_decision` exactly once after the assessment, unless you defer an interim checkpoint instead. Choose `pass` only when the reviewed work and the user's authorized workflow are complete. Choose `pass_continue` only when this gate is clean and Claude has a concrete next action already authorized by the user; put only that action in `continuation`. Never create authorization, broaden scope, or infer permission for an external mutation. Choose `revise` only for actionable material defects. Choose `needs_user` for a user choice, unavailable required validation, unclear authorization, unresolved ambiguity, or an exhausted unattended limit. For an interim checkpoint, only revise, needs_user, or deferral is valid.",
+  "- After an automatic-decision or deferral control call, return concise normal Markdown, never JSON. For `revise`, return the complete feedback Claude should receive. For `needs_user`, explain the decision required. For `pass` or `pass_continue`, report only the current gate's outcome, validation, residual risks, and—when continuing—the next gate. For deferral, state briefly why no feedback should be sent. Do not generate a cycle recap: the bridge maintains the live session report out of band. The bridge sends Claude only revision feedback or the separate continuation, never the Codex report.",
   "",
   "For a Claude question advisory, inspect the evidence and explain material tradeoffs, assumptions, uncertainty, and a recommendation when supported. Do not publish or answer Claude automatically; the user personally submits the final answer in Claude.",
   "For a pulled review-only advisory, give the user a concise findings-first assessment. Do not record an automatic decision, create publishable feedback, or deliver anything to Claude."
@@ -71,12 +73,27 @@ export function composeReviewPolicy(baseline: string, local: string): string {
 
 export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint?: PendingReview): string {
   const autoRoundLimit = pair.autoRoundLimit === null ? "unlimited" : String(pair.autoRoundLimit);
+  const interim = Boolean(checkpoint?.interim && checkpoint.backgroundTasks?.length);
   const autoContract = pair.mode === "auto"
+    ? interim
+      ? [
+        `Interim automatic control: call exactly one control tool for feature \`${pair.feature}\` and checkpoint \`${checkpoint?.id ?? "unknown"}\`: \`review_bridge_record_auto_decision\` with revise or needs_user when warranted, or \`review_bridge_defer_checkpoint\` when there is no actionable feedback to send. Then return concise Markdown.`,
+        "Do not choose pass or pass_continue while background work remains in flight. Never send Claude feedback whose only instruction is to wait."
+      ].join("\n")
+      : [
+        `Automatic control: after reviewing, call \`review_bridge_record_auto_decision\` exactly once for feature \`${pair.feature}\` and checkpoint \`${checkpoint?.id ?? "unknown"}\`; then return concise Markdown.`,
+        "Decision boundary: pass = authorized workflow complete; pass_continue = clean gate plus exactly one already-authorized next action; revise = material defect; needs_user = choice, unavailable validation, ambiguity, or uncertain authorization. Never broaden authorization."
+      ].join("\n")
+    : interim
+      ? `Interim control: return actionable material findings for the user's publish decision, or call \`review_bridge_defer_checkpoint\` exactly once for feature \`${pair.feature}\` and checkpoint \`${checkpoint?.id ?? "unknown"}\` when no feedback should be sent to Claude.`
+      : "Return concise findings-first Markdown; the user controls publication.";
+  const backgroundWork = interim
     ? [
-      `Automatic control: after reviewing, call \`review_bridge_record_auto_decision\` exactly once for feature \`${pair.feature}\` and checkpoint \`${checkpoint?.id ?? "unknown"}\`; then return concise Markdown.`,
-      "Decision boundary: pass = authorized workflow complete; pass_continue = clean gate plus exactly one already-authorized next action; revise = material defect; needs_user = choice, unavailable validation, ambiguity, or uncertain authorization. Never broaden authorization."
+      "",
+      "Background work still in flight:",
+      formatBackgroundTasks(checkpoint!.backgroundTasks!)
     ].join("\n")
-    : "Return concise findings-first Markdown; the user controls publication.";
+    : undefined;
   return [
     `[Review bridge checkpoint: ${pair.displayName}]`,
     checkpoint ? `Checkpoint: #${checkpoint.sequence ?? "?"} (${checkpoint.id})` : undefined,
@@ -88,6 +105,7 @@ export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint
     "Follow the bridge protocol and review policy established in this thread. This injected turn remains strictly read-only.",
     compactedPolicyReminder(pair),
     autoContract,
+    backgroundWork,
     "",
     "Latest Claude message:",
     message

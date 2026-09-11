@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { checkpointDecisionError, createCheckpoint, forcePublishError } from "../checkpoint-policy.js";
 import { stopHookOutput } from "../claude-hook-output.js";
-import { autoRoundLimitError, autoRoundLimitForMode, modeAfterUserDecision } from "../mode-policy.js";
+import { autoRoundLimitError, autoRoundLimitForMode, modeAfterUserDecision, reviewTurnCompletion } from "../mode-policy.js";
 import { featureKey, reviewerRoot } from "../paths.js";
 import { maxReviewPolicyBytes, readPolicyFile, writePolicyFile } from "../policy-store.js";
 import { buildPublishedFeedback } from "../published-feedback.js";
@@ -33,6 +33,7 @@ import {
 } from "../auto-review.js";
 import { captureClaudeMessage, createPulledReview, pullQueueError, pullReviewError } from "../pulled-message.js";
 import { readInstanceDefaultMode } from "../instance-config.js";
+import { checkpointDeferralError, formatBackgroundTasks, normalizeBackgroundTasks } from "../interim-review.js";
 
 function pair(overrides: Partial<FeaturePair> = {}): FeaturePair {
   return {
@@ -200,6 +201,7 @@ test("the stable bridge protocol and review policy are versioned once as thread 
   assert.match(seed, new RegExp(context.sha256));
   assert.match(seed, /Application-only requirement/);
   assert.match(seed, /review_bridge_record_auto_decision/);
+  assert.match(seed, /review_bridge_defer_checkpoint/);
   assert.match(seed, /never JSON/i);
   assert.match(seed, /Do not generate a cycle recap/i);
   assert.match(seed, /every subsequent bridge-injected checkpoint/i);
@@ -224,6 +226,55 @@ test("automatic review prompts request a control tool and human-readable respons
   assert.match(prompt, /0\/unlimited/i);
   assert.doesNotMatch(prompt, /cycle report/i);
   assert.ok(prompt.length < 1_000);
+});
+
+test("interim review prompts expose bounded background work and allow findings or silent deferral", () => {
+  const tasks = normalizeBackgroundTasks([
+    { id: "agent-1", type: "subagent", status: "running", description: "Inspect reconnect handling", agent_type: "Explore" },
+    { id: "shell-1", type: "shell", status: "running", command: "npm test" },
+    null,
+    { id: "missing-status", type: "shell" }
+  ]);
+  assert.equal(tasks.length, 2);
+  assert.match(formatBackgroundTasks(tasks), /subagent agent-1 \(running\).*Inspect reconnect handling.*agent: Explore/);
+  assert.match(formatBackgroundTasks(tasks), /shell shell-1 \(running\).*command: npm test/);
+  assert.equal(normalizeBackgroundTasks(Array.from({ length: 12 }, (_, index) => ({
+    id: `task-${index}`,
+    type: "shell",
+    status: "running"
+  }))).length, 10);
+
+  const current = pair({ mode: "auto", status: "reviewing" });
+  current.pending = createCheckpoint(
+    current,
+    "checkpoint-interim",
+    "I completed the parser and am waiting for the test agent.",
+    new Date(1).toISOString(),
+    "stop",
+    tasks
+  );
+  const prompt = buildReviewPrompt(current, current.pending.claudeMessage, current.pending);
+  assert.equal(current.pending.interim, true);
+  assert.match(prompt, /Background work still in flight/);
+  assert.match(prompt, /exactly one control tool/);
+  assert.match(prompt, /review_bridge_defer_checkpoint/);
+  assert.match(prompt, /Do not choose pass or pass_continue/);
+  assert.match(autoDecisionError(current, current.pending.id, "pass") ?? "", /cannot pass or continue/i);
+  assert.equal(autoDecisionError(current, current.pending.id, "revise"), undefined);
+});
+
+test("checkpoint deferral is limited to the active undecided interim review", () => {
+  const tasks = normalizeBackgroundTasks([{ id: "agent-1", type: "subagent", status: "running" }]);
+  const current = pair({ mode: "manual", status: "reviewing" });
+  current.pending = createCheckpoint(current, "checkpoint-interim", "Waiting.", new Date(1).toISOString(), "stop", tasks);
+  assert.equal(checkpointDeferralError(current, "checkpoint-interim"), undefined);
+  assert.match(checkpointDeferralError(current, "stale") ?? "", /not the active checkpoint/i);
+  current.pending.deferDecision = true;
+  assert.match(checkpointDeferralError(current, "checkpoint-interim") ?? "", /already recorded/i);
+  assert.match(autoDecisionError({ ...current, mode: "auto" }, "checkpoint-interim", "revise") ?? "", /deferral is already recorded/i);
+
+  current.pending = createCheckpoint(current, "checkpoint-final", "Done.");
+  assert.match(checkpointDeferralError(current, "checkpoint-final") ?? "", /background work in flight/i);
 });
 
 test("pulled review prompts are user-only and never request automatic control", () => {
@@ -430,6 +481,16 @@ test("persistent modes remain armed until explicitly disabled", () => {
   assert.equal(modeAfterUserDecision("once"), "off");
   assert.equal(modeAfterUserDecision("auto"), "auto");
   assert.equal(modeAfterUserDecision("off"), "off");
+});
+
+test("review turn completion distinguishes user interruption from genuine failure", () => {
+  assert.equal(reviewTurnCompletion("completed", "Review body"), "completed");
+  assert.equal(reviewTurnCompletion("interrupted", "Partial review"), "interrupted");
+  assert.equal(reviewTurnCompletion("failed", "Failure details"), "failed");
+  assert.equal(reviewTurnCompletion("completed", "  "), "failed");
+  assert.equal(modeAfterUserDecision("auto"), "auto");
+  assert.equal(modeAfterUserDecision("manual"), "manual");
+  assert.equal(modeAfterUserDecision("once"), "off");
 });
 
 test("automatic round limits accept unlimited or a positive per-cycle bound", () => {

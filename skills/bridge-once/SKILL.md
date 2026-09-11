@@ -8,4 +8,6 @@ feature name from bridge metadata. If it is unclear, ask rather than guessing.
 
 Report that Claude's next Stop will wait for this Codex thread and that
 `$bridge-publish` or `$bridge-cancel` releases it. After that decision, once mode
-returns to `off`.
+returns to `off`. If that Stop is interim because background work remains in
+flight and Codex finds no actionable feedback, it may defer silently; deferral
+does not consume once mode, so the later substantive Stop is still reviewed.

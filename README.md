@@ -182,10 +182,23 @@ Change the current workstream's mode from its paired Codex thread:
 
 | Mode | Command | Behavior |
 | --- | --- | --- |
-| Manual | `$bridge-manual` | Review every Claude Stop and wait for your publish or cancel decision. |
-| Once | `$bridge-once` | Review the next Stop, then turn interception off after your decision. |
+| Manual | `$bridge-manual` | Review every Claude Stop; final handoffs wait for your publish or cancel decision. |
+| Once | `$bridge-once` | Review the next substantive Stop, then turn interception off after your decision. |
 | Automatic | `$bridge-auto [rounds]` | Allow automatic review, revision, or already-authorized continuation rounds, optionally bounded per cycle. |
 | Off | `$bridge-off` | Disable Stop interception and question advice. |
+
+When Claude stops while a background command or subagent is still running,
+the bridge marks the checkpoint as interim. Codex can report an actionable
+problem in work that is already complete, but otherwise defers the checkpoint
+silently: Claude receives no redundant instruction to keep waiting, the mode
+stays armed, and no automatic round is consumed. This uses structured Stop-hook
+metadata available in Claude Code 2.1.145 and newer; older clients retain the
+normal review-every-Stop behavior.
+
+Interrupting an active Codex checkpoint releases Claude without publishing the
+partial review. Manual and automatic modes remain armed; once mode is consumed
+as it would be by an explicit cancellation. Unexpected reviewer failures still
+fail open and switch interception off.
 
 Use `$bridge-status` to inspect routing and checkpoint state. The live report
 contains every checkpoint created for the feature during the current bridge

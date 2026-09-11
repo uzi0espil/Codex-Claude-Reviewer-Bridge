@@ -6,6 +6,8 @@ description: Keep every completed Claude response in the current paired workstre
 Call `review_bridge_set_mode` with the paired feature and mode `manual`.
 Use the feature name from bridge metadata in the current conversation.
 
-Confirm that each subsequent Claude Stop will be reviewed read-only and held for
-the user's `$bridge-publish` or `$bridge-cancel` decision. Explain that both
-actions preserve manual mode; only `$bridge-off` disables it.
+Confirm that each subsequent Claude Stop will be reviewed read-only. Final
+handoffs are held for the user's `$bridge-publish` or `$bridge-cancel` decision;
+an interim Stop with background work still in flight may be silently deferred
+when Codex finds no actionable feedback. Explain that publish, cancel, and
+deferral preserve manual mode; only `$bridge-off` disables it.
