@@ -56,6 +56,11 @@ server.registerTool("review_bridge_record_auto_decision", {
   continuation
 })));
 
+server.registerTool("review_bridge_defer_checkpoint", {
+  description: "Defer the exact active interim checkpoint when background work remains in flight and there is no actionable feedback to send Claude. This releases the current Stop without feedback, preserves the armed review mode, and consumes no automatic round.",
+  inputSchema: z.object({ feature: z.string(), checkpointId: z.string() })
+}, async ({ feature, checkpointId }) => result(await bridgeRequest("/defer", { feature, checkpointId })));
+
 server.registerTool("review_bridge_publish", {
   description: "Publish a completed Codex review for the exact latest checkpoint; reports whether it released a held Stop hook or queued delivery for Claude's next prompt.",
   inputSchema: z.object({ feature: z.string(), checkpointId: z.string(), feedback: z.string().optional() })

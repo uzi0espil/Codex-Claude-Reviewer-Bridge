@@ -54,19 +54,30 @@ test("session reports retain checkpoints across modes and update entries in plac
     resolvedAt: "2026-01-01T00:00:09.000Z"
   }, "2026-01-01T00:00:08.000Z");
 
+  const third = checkpoint("checkpoint-3", 3, "Claude interim handoff");
+  ledger.start(automatic, third);
+  ledger.complete(automatic.feature, third.id, "Deferred while tests finish.", {
+    codexTurnId: "turn-3",
+    status: "deferred",
+    autoRound: undefined,
+    resolvedAt: "2026-01-01T00:00:12.000Z"
+  }, "2026-01-01T00:00:11.000Z");
+
   const workstreamContext = "Implement checkout retries\n\nKeep the private rollout details intact.";
   const report = ledger.render("feature-one", "Feature One", false, workstreamContext);
   assert.match(report, /Review session report - Feature One/);
   assert.match(report, /Subject: Implement checkout retries/);
   assert.doesNotMatch(report, /private rollout details/);
-  assert.match(report, /Checkpoints: 2/);
+  assert.match(report, /Checkpoints: 3/);
   assert.match(report, /Checkpoint #1 - published/);
   assert.match(report, /Mode: manual/);
   assert.match(report, /Checkpoint #2 - revision-queued/);
+  assert.match(report, /Checkpoint #3 - deferred/);
+  assert.equal(report.match(/Unattended round:/g)?.length, 1);
   assert.match(report, /Mode: auto/);
   assert.match(report, /Source: pull-queue/);
   assert.match(report, /Unattended round: 2/);
-  assert.match(report, /Total review time: 11\.0 seconds/);
+  assert.match(report, /Total review time: 19\.0 seconds/);
   assert.ok(report.indexOf("Manual review body") < report.indexOf("Automatic review body"));
   assert.doesNotMatch(report, /Claude manual handoff|Claude automatic handoff/);
   assert.match(report, /--full/);

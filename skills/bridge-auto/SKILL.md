@@ -24,6 +24,13 @@ authorized by the user; supply only that action as the continuation. Never use
 it to infer permission, expand scope, or authorize an external mutation. Use
 `needs_user` when authorization is unclear.
 
+When a checkpoint is marked interim because Claude still has background work
+in flight, review any completed parallel work that is already assessable. Use
+`revise` for actionable material findings or `needs_user` for a required
+decision. Otherwise call `review_bridge_defer_checkpoint`; do not send Claude a
+message whose only instruction is to keep waiting. Deferral leaves auto armed
+and does not consume or reset the unattended counter.
+
 `pass_continue` sends Claude only the scoped continuation and consumes one
 unattended round. The user-facing cycle report is not sent as Claude feedback or
 added as a second Codex history item. `needs_user`, a missing control field, or

@@ -96,11 +96,10 @@ test("builds visible Windows Terminal launches with encoded child arguments", ()
   assert.deepEqual(JSON.parse(Buffer.from(spec.args[13], "base64").toString("utf8")), childArgs);
 });
 
-test("paired Codex sessions preserve injected review turns in terminal scrollback", () => {
+test("paired Codex sessions resume remotely without permission overrides", () => {
   const args = pairedCodexArguments(
     { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-1" },
     "C:\\project",
-    "auto",
     ["--model", "gpt-test"]
   );
   assert.deepEqual(args, [
@@ -108,13 +107,12 @@ test("paired Codex sessions preserve injected review turns in terminal scrollbac
     "--no-alt-screen",
     "resume", "thread-1",
     "-C", "C:\\project",
-    "--profile", "bridge-auto",
     "--model", "gpt-test"
   ]);
+  assert.equal(args.includes("--profile"), false);
   assert.equal(pairedCodexArguments(
     { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-1" },
     "C:\\project",
-    "manual",
     ["--no-alt-screen"]
   ).filter((value) => value === "--no-alt-screen").length, 1);
 });
@@ -158,6 +156,7 @@ test("generates portable Claude hooks and Codex configuration", () => {
   assert.match(config, /\[windows\]\nsandbox = "unelevated"/);
   assert.match(config, /\[permissions\.bridge-review\]/);
   assert.match(config, /review_bridge_record_auto_decision/);
+  assert.match(config, /review_bridge_defer_checkpoint/);
   assert.match(config, /\[mcp_servers\.review_tools\]/);
   assert.match(config, /review_tools_write_manifest\]\napproval_mode = "prompt"/);
   assert.doesNotMatch(config, /mcp_servers\.playwright/);
@@ -234,6 +233,7 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     const generatedConfig = fs.readFileSync(path.join(instance, "config.toml"), "utf8");
     assert.match(generatedConfig, /\[permissions\.bridge-write\]/);
     assert.match(generatedConfig, /review_bridge_record_auto_decision/);
+    assert.match(generatedConfig, /review_bridge_defer_checkpoint/);
     assert.match(generatedConfig, /\[mcp_servers\.review_tools\]/);
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "review-tools.detected.json"), "utf8")).projectRoot, fs.realpathSync(firstProject));
 

@@ -26,7 +26,11 @@ export function autoDecisionError(
   if (decision !== "pass" && decision !== "pass_continue" && decision !== "revise" && decision !== "needs_user") {
     return "invalid automatic decision";
   }
+  if (pair.pending.deferDecision) return "checkpoint deferral is already recorded";
   if (pair.pending.autoDecision) return `automatic decision already recorded as ${pair.pending.autoDecision}`;
+  if (pair.pending.interim && (decision === "pass" || decision === "pass_continue")) {
+    return "an interim checkpoint with background work in flight cannot pass or continue";
+  }
   const nextAction = typeof continuation === "string" ? continuation.trim() : "";
   if (decision === "pass_continue" && !nextAction) {
     return "pass_continue requires the concrete, already-authorized next action";

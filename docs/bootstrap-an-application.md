@@ -250,6 +250,11 @@ Exercise these cases before relying on it:
 - Publish an edited subset and confirm Claude receives composed findings rather
   than editing instructions.
 - Let Claude finish again during a pending review and confirm the latest checkpoint wins.
+- Let Claude stop with a background command or subagent still running. Confirm
+  Codex can report an actionable issue, but otherwise defers without sending a
+  wait instruction or consuming the selected mode or automatic round.
+- Interrupt an active Codex review and confirm Claude is released without
+  feedback, auto/manual remains armed, and once turns off.
 - Restart after a disconnected Stop and confirm next-prompt recovery.
 - Trigger `AskUserQuestion` while Codex is idle and busy; confirm Claude still
   waits for the user's own answer.

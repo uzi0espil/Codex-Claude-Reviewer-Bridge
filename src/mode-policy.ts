@@ -16,3 +16,8 @@ export function autoRoundLimitForMode(mode: BridgeMode, roundLimit: number | und
 export function modeAfterUserDecision(mode: BridgeMode): BridgeMode {
   return mode === "once" ? "off" : mode;
 }
+
+export function reviewTurnCompletion(status: string, response: string): "completed" | "interrupted" | "failed" {
+  if (status === "interrupted") return "interrupted";
+  return status === "completed" && Boolean(response.trim()) ? "completed" : "failed";
+}
