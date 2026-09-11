@@ -96,11 +96,10 @@ test("builds visible Windows Terminal launches with encoded child arguments", ()
   assert.deepEqual(JSON.parse(Buffer.from(spec.args[13], "base64").toString("utf8")), childArgs);
 });
 
-test("paired Codex sessions preserve injected review turns in terminal scrollback", () => {
+test("paired Codex sessions resume remotely without permission overrides", () => {
   const args = pairedCodexArguments(
     { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-1" },
     "C:\\project",
-    "auto",
     ["--model", "gpt-test"]
   );
   assert.deepEqual(args, [
@@ -108,13 +107,12 @@ test("paired Codex sessions preserve injected review turns in terminal scrollbac
     "--no-alt-screen",
     "resume", "thread-1",
     "-C", "C:\\project",
-    "--profile", "bridge-auto",
     "--model", "gpt-test"
   ]);
+  assert.equal(args.includes("--profile"), false);
   assert.equal(pairedCodexArguments(
     { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-1" },
     "C:\\project",
-    "manual",
     ["--no-alt-screen"]
   ).filter((value) => value === "--no-alt-screen").length, 1);
 });
