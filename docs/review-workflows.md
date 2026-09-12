@@ -36,6 +36,24 @@ until you make a decision:
 Both decisions leave manual mode armed. A held Stop can remain open while you
 read or discuss the review; the hook response streams without polling.
 
+When a manual or once review becomes ready for that decision, the bridge sends
+a desktop notification. Automatic passes and successful unattended revision or
+continuation rounds remain quiet; automatic mode notifies when it pauses for a
+decision, cannot deliver a continuation, or queues feedback that requires your
+next Claude prompt. Completed Claude-question advice and explicitly pulled
+reviews also notify. Silent interim deferrals do not.
+
+Notifications are enabled by default. Use `reviewer notifications off|on`
+through the PowerShell or Bash wrapper, `just notifications off|on`, or set the
+boolean `desktopNotifications` field in `bridge.local.json`. The broker reads
+the setting for each notification, so changing it does not require a restart.
+Toast text includes only the workstream name and a generic action. Delivery is
+best-effort via Windows notifications, macOS `osascript`, or Linux
+`notify-send`; WSL uses Windows PowerShell interop. Missing notification tools,
+desktop-session restrictions, and OS-level notification settings are logged but
+never affect review delivery. Clicking a notification does not focus either
+terminal.
+
 ### Once
 
 `$bridge-once` arms only the next review. After you publish or cancel that

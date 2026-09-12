@@ -55,6 +55,7 @@ export function validateCommandArguments(command, options, passthrough) {
     policy: ["project-root"],
     tools: ["project-root"],
     "default-mode": [],
+    notifications: [],
     "start-pair": ["feature", "profile", "project-root", "terminal"],
     "start-coder": ["feature", "project-root"],
     "start-reviewer": ["prompt", "feature", "profile", "resume", "last", "session", "project-root"],
@@ -317,6 +318,7 @@ function projectSettings(projectRoot, projectName, skipPlaywright, existingConfi
     projectName,
     projectRoot,
     defaultMode: validatedDefaultMode(existingConfig?.defaultMode),
+    desktopNotifications: validatedDesktopNotifications(existingConfig?.desktopNotifications),
     templateVersion: packageJson.version,
     playwrightEnabled: !skipPlaywright,
     configuredAt: existingConfig?.configuredAt ?? new Date().toISOString(),
@@ -332,6 +334,14 @@ function validatedDefaultMode(value) {
   return mode;
 }
 
+function validatedDesktopNotifications(value) {
+  if (value === undefined) return true;
+  if (typeof value !== "boolean") {
+    throw new Error("Desktop notifications must be true or false.");
+  }
+  return value;
+}
+
 function setDefaultMode(positionals) {
   if (positionals.length !== 1) throw new Error("Usage: reviewer default-mode <off|manual|auto>");
   const mode = validatedDefaultMode(positionals[0]);
@@ -341,6 +351,18 @@ function setDefaultMode(positionals) {
   writeJson(localConfigPath, config);
   const detail = mode === "auto" ? " with unlimited unattended rounds" : "";
   console.log(`Default review mode for new workstreams is now '${mode}'${detail}. Existing workstreams are unchanged.`);
+}
+
+function setNotifications(positionals) {
+  if (positionals.length !== 1 || !["on", "off"].includes(positionals[0])) {
+    throw new Error("Usage: reviewer notifications <on|off>");
+  }
+  const enabled = positionals[0] === "on";
+  const config = loadConfig();
+  config.desktopNotifications = enabled;
+  config.updatedAt = new Date().toISOString();
+  writeJson(localConfigPath, config);
+  console.log(`Desktop notifications are now ${enabled ? "enabled" : "disabled"}.`);
 }
 
 export function claudeSettings(projectRoot, playwrightEnabled = true) {
@@ -698,7 +720,7 @@ async function create(options) {
 }
 
 function usage() {
-  console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  default-mode    Set the mode inherited by new workstreams\n  start-pair      Open paired Claude and Codex terminals\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
+  console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  default-mode    Set the mode inherited by new workstreams\n  notifications   Enable or disable desktop notifications\n  start-pair      Open paired Claude and Codex terminals\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -707,6 +729,7 @@ export async function main(argv = process.argv.slice(2)) {
   const { options, positionals, passthrough } = parseArguments(argv.slice(1));
   validateCommandArguments(command, options, passthrough);
   if (command === "default-mode") return setDefaultMode(positionals);
+  if (command === "notifications") return setNotifications(positionals);
   if (positionals.length) throw new Error(`Unexpected argument: ${positionals[0]}`);
   if (command === "create") return create(options);
   if (command === "setup") return setup(options);

@@ -41,6 +41,8 @@ function runNpm(script) {
       return runReviewer(["tools", ...args]);
     case "default-mode":
       return runReviewer(["default-mode", args[0]]);
+    case "notifications":
+      return runReviewer(["notifications", args[0]]);
     case "pair":
       return runReviewer(["start-pair", "--feature", args[0], ...args.slice(1)]);
     case "server":
@@ -93,6 +95,11 @@ tools *codex_args:
 # Set the review mode inherited by new workstreams.
 [script("node")]
 default-mode mode:
+    {{ runner }}
+
+# Enable or disable desktop notifications for user-attention events.
+[script("node")]
+notifications state:
     {{ runner }}
 
 # Open the paired Claude and Codex terminals for a feature.

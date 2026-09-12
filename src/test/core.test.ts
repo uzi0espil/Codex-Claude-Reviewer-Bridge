@@ -32,7 +32,7 @@ import {
   resolveAutoReview
 } from "../auto-review.js";
 import { captureClaudeMessage, createPulledReview, pullQueueError, pullReviewError } from "../pulled-message.js";
-import { readInstanceDefaultMode } from "../instance-config.js";
+import { readDesktopNotificationsEnabled, readInstanceDefaultMode } from "../instance-config.js";
 import { checkpointDeferralError, formatBackgroundTasks, normalizeBackgroundTasks } from "../interim-review.js";
 
 function pair(overrides: Partial<FeaturePair> = {}): FeaturePair {
@@ -673,6 +673,23 @@ test("instance default mode is backward compatible and rejects invalid configura
     assert.throws(() => readInstanceDefaultMode(filename), /must be off, manual, or auto/i);
     fs.writeFileSync(filename, "not json\n", "utf8");
     assert.throws(() => readInstanceDefaultMode(filename), /JSON/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("desktop notifications default on and accept an explicit boolean setting", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-bridge-notifications-"));
+  const filename = path.join(directory, "bridge.local.json");
+  try {
+    fs.writeFileSync(filename, '{}\n', "utf8");
+    assert.equal(readDesktopNotificationsEnabled(filename), true);
+    fs.writeFileSync(filename, '{"desktopNotifications":false}\n', "utf8");
+    assert.equal(readDesktopNotificationsEnabled(filename), false);
+    fs.writeFileSync(filename, '{"desktopNotifications":true}\n', "utf8");
+    assert.equal(readDesktopNotificationsEnabled(filename), true);
+    fs.writeFileSync(filename, '{"desktopNotifications":"off"}\n', "utf8");
+    assert.throws(() => readDesktopNotificationsEnabled(filename), /must be true or false/i);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

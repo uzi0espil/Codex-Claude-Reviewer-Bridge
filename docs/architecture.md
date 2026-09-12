@@ -146,6 +146,11 @@ The ignored per-instance `bridge.local.json` stores `defaultMode` as `manual`,
 when either participant first pairs a previously unseen feature, so direct
 configuration edits take effect without a broker restart. The selected value is
 then persisted on the feature pair and later default changes do not rewrite it.
+The same file stores the `desktopNotifications` boolean, defaulting to enabled
+when absent. It is read at every attention boundary so live configuration
+changes take effect immediately. Native notification subprocesses are bounded,
+receive no review text, and cannot affect state transitions when unavailable or
+failing.
 
 On `pass`, the Stop hook allows Claude to finish and supplies only a fixed
 one-line `systemMessage`; it never places the Codex report or response headline

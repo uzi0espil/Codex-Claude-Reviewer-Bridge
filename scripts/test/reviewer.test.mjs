@@ -215,6 +215,7 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     assert.equal(local.templateVersion, "test-version");
     assert.equal(local.playwrightEnabled, false);
     assert.equal(local.defaultMode, "manual");
+    assert.equal(local.desktopNotifications, true);
 
     const setDefault = spawnSync(process.execPath, [cli, "default-mode", "auto"], {
       cwd: instance, env: environment, encoding: "utf8"
@@ -222,6 +223,20 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     assert.equal(setDefault.status, 0, setDefault.stderr || setDefault.stdout);
     assert.match(setDefault.stdout, /new workstreams.*auto.*unlimited.*existing workstreams are unchanged/i);
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).defaultMode, "auto");
+
+    const disableNotifications = spawnSync(process.execPath, [cli, "notifications", "off"], {
+      cwd: instance, env: environment, encoding: "utf8"
+    });
+    assert.equal(disableNotifications.status, 0, disableNotifications.stderr || disableNotifications.stdout);
+    assert.match(disableNotifications.stdout, /desktop notifications.*disabled/i);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).desktopNotifications, false);
+
+    const invalidNotifications = spawnSync(process.execPath, [cli, "notifications", "sometimes"], {
+      cwd: instance, env: environment, encoding: "utf8"
+    });
+    assert.notEqual(invalidNotifications.status, 0);
+    assert.match(invalidNotifications.stderr, /notifications <on\|off>/i);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).desktopNotifications, false);
 
     const invalidDefault = spawnSync(process.execPath, [cli, "default-mode", "once"], {
       cwd: instance, env: environment, encoding: "utf8"
@@ -290,6 +305,7 @@ test("update fast-forwards an instance and reruns the updated setup", () => {
     fs.writeFileSync(path.join(instance, "bridge.local.json"), `${JSON.stringify({
       instanceId: "fixture", projectName: "Fixture", projectRoot: project,
       defaultMode: "auto", templateVersion: "0.2.1", playwrightEnabled: false,
+      desktopNotifications: false,
       configuredAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString()
     }, null, 2)}\n`);
     const mockNames = ["npm", "codex", "claude"];
@@ -310,6 +326,7 @@ test("update fast-forwards an instance and reruns the updated setup", () => {
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "package.json"), "utf8")).version, "0.3.0");
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).templateVersion, "0.3.0");
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).defaultMode, "auto");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).desktopNotifications, false);
 
     fs.writeFileSync(path.join(instance, "package.json"), '{"version":"locally-modified"}\n');
     const dirty = spawnSync(process.execPath, [cli, "update"], { cwd: instance, env: environment, encoding: "utf8" });
