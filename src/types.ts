@@ -1,4 +1,5 @@
 export type BridgeMode = "off" | "manual" | "once" | "auto";
+export type DefaultBridgeMode = Exclude<BridgeMode, "once">;
 export type PairStatus =
   | "idle"
   | "reviewing"
@@ -19,9 +20,24 @@ export interface PendingReview {
   codexResponse?: string;
   autoDecision?: AutoReviewDecision;
   autoContinuation?: string;
+  interim?: boolean;
+  backgroundTasks?: ClaudeBackgroundTask[];
+  deferDecision?: boolean;
   deliveryKind?: "feedback" | "continuation";
   source?: "stop" | "pull-queue";
   createdAt: string;
+}
+
+export interface ClaudeBackgroundTask {
+  id: string;
+  type: string;
+  status: string;
+  description?: string;
+  command?: string;
+  agentType?: string;
+  server?: string;
+  tool?: string;
+  name?: string;
 }
 
 export interface CapturedClaudeMessage {
@@ -119,6 +135,7 @@ export interface ClaudeHookInput {
   prompt?: string;
   last_assistant_message?: string;
   stop_hook_active?: boolean;
+  background_tasks?: unknown;
   tool_name?: string;
   tool_input?: {
     questions?: unknown;

@@ -10,6 +10,8 @@ export type CheckpointReportStatus =
   | "revision-queued"
   | "published"
   | "cancelled"
+  | "deferred"
+  | "interrupted"
   | "superseded"
   | "released-mode-off"
   | "failed";
