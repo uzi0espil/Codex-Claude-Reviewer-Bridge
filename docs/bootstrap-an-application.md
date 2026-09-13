@@ -202,6 +202,19 @@ Use one stable feature name for one task. It selects immutable Claude and Codex
 session UUIDs; matching terminal titles do not route messages. Use a new feature
 name for unrelated work inside the same application.
 
+New feature names initially use the instance's `defaultMode`, which starts as
+`manual`. Set it deterministically with `reviewer default-mode <manual|auto|off>`
+through the platform wrapper, or edit `defaultMode` in `bridge.local.json`.
+
+Desktop notifications for user-attention events start enabled. Use
+`reviewer notifications <on|off>` through the platform wrapper, or set
+`desktopNotifications` in `bridge.local.json`. Linux desktop sessions need
+`notify-send`; WSL uses Windows PowerShell interop. Notification failures are
+written to the bridge log and do not affect reviews.
+Changes apply to future feature names only. Default `auto` mode allows unlimited
+unattended rounds; use the paired `$bridge-auto <rounds>` command when a specific
+workstream needs a finite bound.
+
 The normal loop is:
 
 1. Submit the product or task brief in Claude.
@@ -226,8 +239,8 @@ not publishable checkpoints.
 
 Exercise these cases before relying on it:
 
-- Confirm `bridge.local.json` contains the intended canonical project root and a
-  unique instance ID.
+- Confirm `bridge.local.json` contains the intended canonical project root, a
+  unique instance ID, and the intended `defaultMode`.
 - Confirm `review-policy.local.md` appears only in the sibling reviewer and is
   ignored by Git.
 - Confirm setup reports detected technology surfaces without executing any
@@ -243,6 +256,11 @@ Exercise these cases before relying on it:
 - Publish an edited subset and confirm Claude receives composed findings rather
   than editing instructions.
 - Let Claude finish again during a pending review and confirm the latest checkpoint wins.
+- Let Claude stop with a background command or subagent still running. Confirm
+  Codex can report an actionable issue, but otherwise defers without sending a
+  wait instruction or consuming the selected mode or automatic round.
+- Interrupt an active Codex review and confirm Claude is released without
+  feedback, auto/manual remains armed, and once turns off.
 - Restart after a disconnected Stop and confirm next-prompt recovery.
 - Trigger `AskUserQuestion` while Codex is idle and busy; confirm Claude still
   waits for the user's own answer.

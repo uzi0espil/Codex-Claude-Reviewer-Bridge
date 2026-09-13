@@ -163,14 +163,55 @@ recovery, terminal fallbacks, validation, and updates.
 
 ## Choose a review mode
 
-Manual review stays armed by default. Change modes from the paired Codex thread:
+New workstreams use the reviewer instance's default mode, which is `manual` on
+new and upgraded installations. Change that default without invoking either
+agent:
+
+```bash
+./scripts/shell/reviewer.sh default-mode auto
+```
+
+On Windows, use `.\scripts\powershell\reviewer.ps1 default-mode auto`. The
+accepted defaults are `manual`, `auto`, and `off`; default `auto` uses unlimited
+unattended rounds. The setting is stored as `defaultMode` in
+`bridge.local.json`, so it can also be edited directly. It applies only when a
+previously unseen feature name is first paired; existing workstreams keep their
+current mode.
+
+Desktop notifications are enabled by default for completed reviews and other
+events that need your attention. Disable or re-enable them with
+`reviewer notifications off|on` through either platform wrapper, or with
+`just notifications off|on`. Notifications show the workstream name and a
+generic next action, never review findings, prompts, or Claude's question text.
+They use Windows notifications, macOS `osascript`, or `notify-send` on Linux;
+WSL uses Windows notifications when PowerShell interop is available. Delivery is
+best-effort and never blocks the bridge. Notification clicks do not focus a
+terminal because there is no portable native activation path.
+
+Change the current workstream's mode from its paired Codex thread:
 
 | Mode | Command | Behavior |
 | --- | --- | --- |
-| Manual | `$bridge-manual` | Review every Claude Stop and wait for your publish or cancel decision. |
-| Once | `$bridge-once` | Review the next Stop, then turn interception off after your decision. |
+| Manual | `$bridge-manual` | Review every Claude Stop; final handoffs wait for your publish or cancel decision. |
+| Once | `$bridge-once` | Review the next substantive Stop, then turn interception off after your decision. |
 | Automatic | `$bridge-auto [rounds]` | Allow automatic review, revision, or already-authorized continuation rounds, optionally bounded per cycle. |
 | Off | `$bridge-off` | Disable Stop interception and question advice. |
+
+When Claude stops while a background command or subagent is still running,
+the bridge marks the checkpoint as interim. Codex can report an actionable
+problem in work that is already complete, but otherwise defers the checkpoint
+silently: Claude receives no redundant instruction to keep waiting, the mode
+stays armed, and no automatic round is consumed. This uses structured Stop-hook
+metadata available in Claude Code 2.1.145 and newer; older clients retain the
+normal review-every-Stop behavior.
+
+Interrupting an active Codex checkpoint releases Claude without publishing the
+partial review. Manual and automatic modes remain armed; once mode is consumed
+as it would be by an explicit cancellation. Unexpected reviewer failures still
+fail open and switch interception off. Those failures generate a notification,
+as do completed question advisories, pull reviews, manual or once decisions,
+and automatic reviews that pause or require a user prompt. Unattended automatic
+progress and silently deferred interim reviews do not notify.
 
 Use `$bridge-status` to inspect routing and checkpoint state. The live report
 contains every checkpoint created for the feature during the current bridge

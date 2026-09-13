@@ -10,7 +10,7 @@ import { endpointPath, featureKey, logPath, reviewerRoot, runtimeDirectory } fro
 import { StateStore } from "./store.js";
 import { AutoReviewDecision, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
 import { buildPulledReviewPrompt, buildReviewContextSeed, buildReviewPrompt, reviewContextSnapshot } from "./review-prompt.js";
-import { autoRoundLimitError, autoRoundLimitForMode, modeAfterUserDecision } from "./mode-policy.js";
+import { autoRoundLimitError, autoRoundLimitForMode, modeAfterUserDecision, reviewTurnCompletion } from "./mode-policy.js";
 import { buildPublishedFeedback } from "./published-feedback.js";
 import { checkpointDecisionError, createCheckpoint, forcePublishError } from "./checkpoint-policy.js";
 import {
@@ -28,6 +28,9 @@ import { planAutoDelivery } from "./auto-delivery.js";
 import { CodexThreadBusyError, isCodexThreadBusyError } from "./codex-turn-policy.js";
 import { captureClaudeMessage, createPulledReview, pullQueueError, pullReviewError } from "./pulled-message.js";
 import { SessionReportLedger } from "./session-report.js";
+import { readDesktopNotificationsEnabled, readInstanceDefaultMode } from "./instance-config.js";
+import { checkpointDeferralError, normalizeBackgroundTasks } from "./interim-review.js";
+import { AttentionEventKind, sendDesktopNotification } from "./desktop-notifications.js";
 
 type Release = StopHookResult;
 type Waiter = { resolve: (release: Release) => void; response: ServerResponse; onClose: () => void };
@@ -50,6 +53,20 @@ let shutdownBroker: () => void = () => undefined;
 function log(message: string): void {
   fs.mkdirSync(runtimeDirectory, { recursive: true });
   fs.appendFileSync(logPath, `${new Date().toISOString()} ${message}\n`);
+}
+
+function notifyUser(kind: AttentionEventKind, displayName: string): void {
+  let enabled: boolean;
+  try {
+    enabled = readDesktopNotificationsEnabled();
+  } catch (error) {
+    log(`Desktop notification configuration is invalid: ${String(error)}`);
+    return;
+  }
+  sendDesktopNotification({ kind, displayName }, {
+    enabled,
+    onError: (message) => log(`Desktop notification '${kind}' failed: ${message}`)
+  });
 }
 
 async function freePort(): Promise<number> {
@@ -311,6 +328,7 @@ function schedulePulledReview(feature: string): void {
           value.pulledReview = undefined;
         });
         log(`Pulled review ${pulled.id} failed to start for ${feature}: ${String(error)}`);
+        notifyUser("pull-review-failed", current.displayName);
       }
     });
   pulledReviewTransitions.set(feature, transition);
@@ -377,6 +395,7 @@ function scheduleReview(pair: FeaturePair, pendingId: string, supersededTurnId?:
         });
         release(pendingId, { kind: "allow" });
         log(`Fail-open release for ${pair.feature}`);
+        notifyUser("review-failed", pair.displayName);
       }
     });
   reviewTransitions.set(pair.feature, transition);
@@ -398,7 +417,31 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
   const pair = store.all().find((candidate) => candidate.pending?.codexTurnId === turn.turnId);
   if (!pair?.pending) return;
   const pendingId = pair.pending.id;
-  if (turn.status !== "completed" || !turn.text) {
+  const completion = reviewTurnCompletion(turn.status, turn.text);
+  if (completion === "interrupted") {
+    sessionReports.complete(pair.feature, pendingId, turn.text, {
+      codexTurnId: turn.turnId,
+      status: "interrupted",
+      autoRound: undefined,
+      resolvedAt: new Date().toISOString(),
+      note: "Codex review was interrupted; the checkpoint was released without feedback."
+    });
+    store.update(pair.feature, (value) => {
+      if (value.pending?.source === "pull-queue"
+        && value.capturedClaudeMessage?.queueCheckpointId === pendingId) {
+        value.capturedClaudeMessage.queueRequestedAt = undefined;
+        value.capturedClaudeMessage.queueCheckpointId = undefined;
+      }
+      value.mode = modeAfterUserDecision(pair.mode);
+      value.autoRound = 0;
+      value.status = "idle";
+      value.pending = undefined;
+    });
+    release(pendingId, { kind: "allow" });
+    log(`Released interrupted review ${pendingId} for ${pair.feature}; mode is ${modeAfterUserDecision(pair.mode)}.`);
+    return;
+  }
+  if (completion === "failed") {
     sessionReports.complete(pair.feature, pendingId, turn.text, {
       codexTurnId: turn.turnId,
       status: "failed",
@@ -416,6 +459,25 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
       value.pending = undefined;
     });
     release(pendingId, { kind: "allow" });
+    notifyUser("review-failed", pair.displayName);
+    return;
+  }
+
+  if (pair.pending.deferDecision) {
+    const report = sessionReports.complete(pair.feature, pendingId, turn.text, {
+      codexTurnId: turn.turnId,
+      status: "deferred",
+      autoRound: undefined,
+      resolvedAt: new Date().toISOString(),
+      note: "Background work remains in flight; no feedback was sent to Claude."
+    });
+    store.update(pair.feature, (value) => {
+      value.status = "waiting-claude";
+      value.lastCodexResponse = turn.text;
+      value.pending = undefined;
+    });
+    release(pendingId, { kind: "allow" });
+    log(`Deferred interim checkpoint ${pendingId} for ${pair.feature} in ${report?.durationMs ?? 0}ms.`);
     return;
   }
 
@@ -429,6 +491,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
       value.lastCodexResponse = turn.text;
       if (value.pending) value.pending.codexResponse = turn.text;
     });
+    notifyUser(pair.mode === "once" ? "review-ready-once" : "review-ready-manual", pair.displayName);
     return;
   }
 
@@ -473,6 +536,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
     });
     log(`Completed ${pair.feature} checkpoint ${pendingId} as pass_continue (${delivery.outcome}) in ${report?.durationMs ?? 0}ms.`);
     if (delivery.clearPending) release(pendingId, { kind: "continue", text: continuation });
+    else notifyUser("auto-continuation-awaiting-user", pair.displayName);
     return;
   }
   if (resolution.kind === "revise") {
@@ -494,6 +558,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
     });
     log(`Completed ${pair.feature} checkpoint ${pendingId} as revise (${delivery.outcome}) in ${report?.durationMs ?? 0}ms.`);
     if (!delivery.queueForNextPrompt) release(pendingId, { kind: "feedback", text: feedback });
+    else notifyUser("auto-revision-queued", pair.displayName);
     return;
   }
   log(`Auto response requires user review: ${resolution.reason}.`);
@@ -509,6 +574,12 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
     if (value.pending) value.pending.codexResponse = resolution.response;
   });
   log(`Completed ${pair.feature} checkpoint ${pendingId} awaiting user in ${report?.durationMs ?? 0}ms.`);
+  const notificationKind: AttentionEventKind = resolution.reason === "needs-user"
+    ? "auto-needs-user"
+    : resolution.reason === "round-limit"
+      ? "auto-round-limit"
+      : "auto-control-error";
+  notifyUser(notificationKind, pair.displayName);
 }
 
 function finishQuestionAdvisory(turn: CompletedTurn): void {
@@ -517,6 +588,9 @@ function finishQuestionAdvisory(turn: CompletedTurn): void {
   const advisoryId = pair.activeQuestionAdvisory.id;
   store.update(pair.feature, (value) => { value.activeQuestionAdvisory = undefined; });
   log(`Question advisory ${advisoryId} for ${pair.feature} finished with status ${turn.status}.`);
+  notifyUser(turn.status === "completed" && Boolean(turn.text.trim())
+    ? "question-advice-ready"
+    : "question-advice-unavailable", pair.displayName);
 }
 
 function finishPulledReview(turn: CompletedTurn): void {
@@ -535,6 +609,9 @@ function finishPulledReview(turn: CompletedTurn): void {
     value.pulledReview = undefined;
   });
   log(`Pulled review ${pulled.id} for ${pair.feature} finished with status ${turn.status}.`);
+  notifyUser(turn.status === "completed" && Boolean(turn.text.trim())
+    ? "pull-review-ready"
+    : "pull-review-failed", pair.displayName);
 }
 
 async function handleTurnCompleted(turn: CompletedTurn): Promise<void> {
@@ -613,7 +690,10 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
       ...pair.pending,
       claudeMessage: "[held by bridge]",
       codexResponse: pair.pending.codexResponse ? "[held by bridge]" : undefined,
-      autoContinuation: pair.pending.autoContinuation ? "[held by bridge]" : undefined
+      autoContinuation: pair.pending.autoContinuation ? "[held by bridge]" : undefined,
+      backgroundTasks: undefined,
+      interim: Boolean(pair.pending.interim),
+      backgroundTaskCount: pair.pending.backgroundTasks?.length ?? 0
     } : undefined
   };
 }
@@ -631,7 +711,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   }
 
   if (req.url === "/pair/claude" && req.method === "POST") {
-    let pair = store.ensure(String(body.feature), String(body.projectRoot));
+    let pair = store.ensure(String(body.feature), String(body.projectRoot), readInstanceDefaultMode());
     pair = store.update(pair.feature, (value) => {
       migrateClaudeSessionLifecycle(value);
       value.claudeSessionId = String(body.sessionId || value.claudeSessionId || randomUUID());
@@ -639,7 +719,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     return send(res, 200, publicPair(pair));
   }
   if (req.url === "/pair/codex" && req.method === "POST") {
-    let pair = store.ensure(String(body.feature), String(body.projectRoot));
+    let pair = store.ensure(String(body.feature), String(body.projectRoot), readInstanceDefaultMode());
     pair = await ensureCodexThread(pair);
     send(res, 200, { ...publicPair(pair), appServerUrl });
     if (pair.pulledReview) schedulePulledReview(pair.feature);
@@ -693,6 +773,26 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       decision: body.decision,
       continuationRecorded: body.decision === "pass_continue",
       message: "Decision recorded. Finish with the normal Markdown review; the bridge will act when the turn completes."
+    });
+  }
+  if (req.url === "/defer" && req.method === "POST") {
+    if (!feature) return send(res, 400, { error: "feature required" });
+    const existing = store.get(feature);
+    if (!existing) return send(res, 404, { error: "unknown feature" });
+    const deferralError = checkpointDeferralError(existing, body.checkpointId);
+    if (deferralError) return send(res, 409, { error: deferralError });
+    store.update(feature, (value) => {
+      if (value.pending) value.pending.deferDecision = true;
+    });
+    sessionReports.update(feature, String(body.checkpointId), {
+      note: "Codex requested silent deferral while background work remains in flight."
+    });
+    return send(res, 200, {
+      recorded: true,
+      feature,
+      checkpointId: body.checkpointId,
+      disposition: "defer",
+      message: "Deferral recorded. Finish with concise Markdown; the bridge will release this Stop without feedback when the turn completes."
     });
   }
   if (req.url === "/mode" && req.method === "POST") {
@@ -932,7 +1032,15 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const superseded = pair.pending;
     const supersededQueuedFeedback = Boolean(pair.queuedClaudeContext);
     const pendingId = store.newPendingId();
-    const checkpoint = createCheckpoint(pair, pendingId, input.last_assistant_message);
+    const backgroundTasks = normalizeBackgroundTasks(input.background_tasks);
+    const checkpoint = createCheckpoint(
+      pair,
+      pendingId,
+      input.last_assistant_message,
+      new Date().toISOString(),
+      "stop",
+      backgroundTasks
+    );
     if (superseded) {
       sessionReports.update(pair.feature, superseded.id, {
         status: "superseded",

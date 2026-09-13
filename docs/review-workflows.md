@@ -20,8 +20,14 @@ tests, and diffs.
 
 ### Manual
 
-`$bridge-manual` is the default. Every Claude Stop starts a review and remains
-held until you make a decision:
+Fresh installations default new workstreams to manual mode. An instance can
+instead persist `manual`, `auto`, or `off` with `reviewer default-mode <mode>`
+or by editing `defaultMode` in `bridge.local.json`. This affects only previously
+unseen feature names; existing workstreams keep their stored modes. Default
+automatic mode is unlimited.
+
+In manual mode, every Claude Stop starts a review. Final handoffs remain held
+until you make a decision:
 
 - `$bridge-publish` sends the completed review, or your edited selection, to
   Claude.
@@ -29,6 +35,24 @@ held until you make a decision:
 
 Both decisions leave manual mode armed. A held Stop can remain open while you
 read or discuss the review; the hook response streams without polling.
+
+When a manual or once review becomes ready for that decision, the bridge sends
+a desktop notification. Automatic passes and successful unattended revision or
+continuation rounds remain quiet; automatic mode notifies when it pauses for a
+decision, cannot deliver a continuation, or queues feedback that requires your
+next Claude prompt. Completed Claude-question advice and explicitly pulled
+reviews also notify. Silent interim deferrals do not.
+
+Notifications are enabled by default. Use `reviewer notifications off|on`
+through the PowerShell or Bash wrapper, `just notifications off|on`, or set the
+boolean `desktopNotifications` field in `bridge.local.json`. The broker reads
+the setting for each notification, so changing it does not require a restart.
+Toast text includes only the workstream name and a generic action. Delivery is
+best-effort via Windows notifications, macOS `osascript`, or Linux
+`notify-send`; WSL uses Windows PowerShell interop. Missing notification tools,
+desktop-session restrictions, and OS-level notification settings are logged but
+never affect review delivery. Clicking a notification does not focus either
+terminal.
 
 ### Once
 
@@ -93,13 +117,32 @@ use continuation to create authorization or broaden the task. A final pass or a
 human publish or cancel decision resets the unattended counter without
 disarming automatic mode.
 
+### Background work and interim Stops
+
+Claude Code 2.1.145 and newer includes its in-flight background commands,
+subagents, monitors, workflows, teammates, cloud sessions, and MCP tasks in the
+Stop-hook input. The bridge marks such a Stop as interim and asks Codex to
+inspect any completed parallel work that is already reviewable:
+
+- actionable material findings follow the normal manual, once, or automatic
+  delivery flow;
+- a required choice follows the normal needs-user flow;
+- otherwise Codex records a silent deferral, and Claude receives no feedback
+  whose only purpose is to tell it to keep waiting.
+
+Deferral keeps the selected mode armed, does not consume once mode, and neither
+increments nor resets the automatic round counter. Scheduled cron wakeups are
+not treated as background work because recurring schedules must not suppress a
+final review indefinitely. If an older Claude Code version omits the structured
+background-task field, the bridge preserves the normal review behavior.
+
 ### Live checkpoint report
 
 Reviewer responses remain ordinary Markdown in the Codex terminal. The broker
 also keeps an in-memory, per-feature report of every checkpoint created during
 its current process, across manual, once, and automatic mode. Pending entries
-are updated in place when they complete, are published or cancelled, are
-superseded, fail, or are released by switching the bridge off. Question
+are updated in place when they complete, are published, cancelled, deferred,
+interrupted, superseded, fail, or are released by switching the bridge off. Question
 advisories, pulled review-only advisories, and off-mode captures are not
 checkpoints and do not appear.
 
@@ -199,6 +242,11 @@ Run `$bridge-status` when a review does not appear, Claude remains held, or
 routing is unclear. It reports the feature's mode, immutable session and thread
 IDs, pending checkpoint, captured off-mode handoff availability, queued question
 advice, and queued next-prompt feedback.
+
+Interrupting the active Codex review cancels only that checkpoint and releases
+Claude without publishing partial output. It resets the current automatic
+round cycle while leaving manual or automatic mode armed; once mode turns off.
+A genuine failed or empty reviewer turn still fails open and disarms the bridge.
 
 Normal publication uses `$bridge-publish`. Reserve `$bridge-force-publish` for
 recovery after a restart, cancelled checkpoint, disconnected Stop hook, or a

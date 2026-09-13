@@ -46,6 +46,14 @@ try {
     invoke(["report", "feature name", "--full"]),
     ["report", "--feature", "feature name", "--full"],
   );
+  assert.deepEqual(
+    invoke(["default-mode", "auto"]),
+    ["default-mode", "auto"],
+  );
+  assert.deepEqual(
+    invoke(["notifications", "off"]),
+    ["notifications", "off"],
+  );
   console.log("Just recipe argument forwarding passed.");
 } finally {
   fs.rmSync(fixture, { recursive: true, force: true });

@@ -96,11 +96,10 @@ test("builds visible Windows Terminal launches with encoded child arguments", ()
   assert.deepEqual(JSON.parse(Buffer.from(spec.args[13], "base64").toString("utf8")), childArgs);
 });
 
-test("paired Codex sessions preserve injected review turns in terminal scrollback", () => {
+test("paired Codex sessions resume remotely without permission overrides", () => {
   const args = pairedCodexArguments(
     { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-1" },
     "C:\\project",
-    "auto",
     ["--model", "gpt-test"]
   );
   assert.deepEqual(args, [
@@ -108,13 +107,12 @@ test("paired Codex sessions preserve injected review turns in terminal scrollbac
     "--no-alt-screen",
     "resume", "thread-1",
     "-C", "C:\\project",
-    "--profile", "bridge-auto",
     "--model", "gpt-test"
   ]);
+  assert.equal(args.includes("--profile"), false);
   assert.equal(pairedCodexArguments(
     { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-1" },
     "C:\\project",
-    "manual",
     ["--no-alt-screen"]
   ).filter((value) => value === "--no-alt-screen").length, 1);
 });
@@ -158,6 +156,7 @@ test("generates portable Claude hooks and Codex configuration", () => {
   assert.match(config, /\[windows\]\nsandbox = "unelevated"/);
   assert.match(config, /\[permissions\.bridge-review\]/);
   assert.match(config, /review_bridge_record_auto_decision/);
+  assert.match(config, /review_bridge_defer_checkpoint/);
   assert.match(config, /\[mcp_servers\.review_tools\]/);
   assert.match(config, /review_tools_write_manifest\]\napproval_mode = "prompt"/);
   assert.doesNotMatch(config, /mcp_servers\.playwright/);
@@ -215,10 +214,41 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     assert.equal(local.projectName, "Fixture");
     assert.equal(local.templateVersion, "test-version");
     assert.equal(local.playwrightEnabled, false);
+    assert.equal(local.defaultMode, "manual");
+    assert.equal(local.desktopNotifications, true);
+
+    const setDefault = spawnSync(process.execPath, [cli, "default-mode", "auto"], {
+      cwd: instance, env: environment, encoding: "utf8"
+    });
+    assert.equal(setDefault.status, 0, setDefault.stderr || setDefault.stdout);
+    assert.match(setDefault.stdout, /new workstreams.*auto.*unlimited.*existing workstreams are unchanged/i);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).defaultMode, "auto");
+
+    const disableNotifications = spawnSync(process.execPath, [cli, "notifications", "off"], {
+      cwd: instance, env: environment, encoding: "utf8"
+    });
+    assert.equal(disableNotifications.status, 0, disableNotifications.stderr || disableNotifications.stdout);
+    assert.match(disableNotifications.stdout, /desktop notifications.*disabled/i);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).desktopNotifications, false);
+
+    const invalidNotifications = spawnSync(process.execPath, [cli, "notifications", "sometimes"], {
+      cwd: instance, env: environment, encoding: "utf8"
+    });
+    assert.notEqual(invalidNotifications.status, 0);
+    assert.match(invalidNotifications.stderr, /notifications <on\|off>/i);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).desktopNotifications, false);
+
+    const invalidDefault = spawnSync(process.execPath, [cli, "default-mode", "once"], {
+      cwd: instance, env: environment, encoding: "utf8"
+    });
+    assert.notEqual(invalidDefault.status, 0);
+    assert.match(invalidDefault.stderr, /must be off, manual, or auto/i);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).defaultMode, "auto");
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "claude-bridge.settings.json"), "utf8")).hooks.Stop[0].hooks[0].command, "node");
     const generatedConfig = fs.readFileSync(path.join(instance, "config.toml"), "utf8");
     assert.match(generatedConfig, /\[permissions\.bridge-write\]/);
     assert.match(generatedConfig, /review_bridge_record_auto_decision/);
+    assert.match(generatedConfig, /review_bridge_defer_checkpoint/);
     assert.match(generatedConfig, /\[mcp_servers\.review_tools\]/);
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "review-tools.detected.json"), "utf8")).projectRoot, fs.realpathSync(firstProject));
 
@@ -274,7 +304,8 @@ test("update fast-forwards an instance and reruns the updated setup", () => {
 
     fs.writeFileSync(path.join(instance, "bridge.local.json"), `${JSON.stringify({
       instanceId: "fixture", projectName: "Fixture", projectRoot: project,
-      templateVersion: "0.2.1", playwrightEnabled: false,
+      defaultMode: "auto", templateVersion: "0.2.1", playwrightEnabled: false,
+      desktopNotifications: false,
       configuredAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString()
     }, null, 2)}\n`);
     const mockNames = ["npm", "codex", "claude"];
@@ -294,6 +325,8 @@ test("update fast-forwards an instance and reruns the updated setup", () => {
     assert.match(updated.stdout, /Bridge package version: 0\.2\.1 -> 0\.3\.0/);
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "package.json"), "utf8")).version, "0.3.0");
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).templateVersion, "0.3.0");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).defaultMode, "auto");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).desktopNotifications, false);
 
     fs.writeFileSync(path.join(instance, "package.json"), '{"version":"locally-modified"}\n');
     const dirty = spawnSync(process.execPath, [cli, "update"], { cwd: instance, env: environment, encoding: "utf8" });

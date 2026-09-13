@@ -54,6 +54,8 @@ export function validateCommandArguments(command, options, passthrough) {
     login: ["device-auth"],
     policy: ["project-root"],
     tools: ["project-root"],
+    "default-mode": [],
+    notifications: [],
     "start-pair": ["feature", "profile", "project-root", "terminal"],
     "start-coder": ["feature", "project-root"],
     "start-reviewer": ["prompt", "feature", "profile", "resume", "last", "session", "project-root"],
@@ -315,11 +317,52 @@ function projectSettings(projectRoot, projectName, skipPlaywright, existingConfi
     instanceId: existingConfig?.instanceId ?? randomUUID(),
     projectName,
     projectRoot,
+    defaultMode: validatedDefaultMode(existingConfig?.defaultMode),
+    desktopNotifications: validatedDesktopNotifications(existingConfig?.desktopNotifications),
     templateVersion: packageJson.version,
     playwrightEnabled: !skipPlaywright,
     configuredAt: existingConfig?.configuredAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
+}
+
+function validatedDefaultMode(value) {
+  const mode = value ?? "manual";
+  if (!["off", "manual", "auto"].includes(mode)) {
+    throw new Error("Default mode must be off, manual, or auto.");
+  }
+  return mode;
+}
+
+function validatedDesktopNotifications(value) {
+  if (value === undefined) return true;
+  if (typeof value !== "boolean") {
+    throw new Error("Desktop notifications must be true or false.");
+  }
+  return value;
+}
+
+function setDefaultMode(positionals) {
+  if (positionals.length !== 1) throw new Error("Usage: reviewer default-mode <off|manual|auto>");
+  const mode = validatedDefaultMode(positionals[0]);
+  const config = loadConfig();
+  config.defaultMode = mode;
+  config.updatedAt = new Date().toISOString();
+  writeJson(localConfigPath, config);
+  const detail = mode === "auto" ? " with unlimited unattended rounds" : "";
+  console.log(`Default review mode for new workstreams is now '${mode}'${detail}. Existing workstreams are unchanged.`);
+}
+
+function setNotifications(positionals) {
+  if (positionals.length !== 1 || !["on", "off"].includes(positionals[0])) {
+    throw new Error("Usage: reviewer notifications <on|off>");
+  }
+  const enabled = positionals[0] === "on";
+  const config = loadConfig();
+  config.desktopNotifications = enabled;
+  config.updatedAt = new Date().toISOString();
+  writeJson(localConfigPath, config);
+  console.log(`Desktop notifications are now ${enabled ? "enabled" : "disabled"}.`);
 }
 
 export function claudeSettings(projectRoot, playwrightEnabled = true) {
@@ -351,7 +394,7 @@ export function codexConfig(projectRoot, skipPlaywright) {
     `args = [${tomlLiteral(path.join(reviewerRoot, "dist", "mcp-server.js"))}]`, "enabled = true",
     "startup_timeout_sec = 10", "tool_timeout_sec = 2592000"
   ];
-  for (const tool of ["set_mode", "record_auto_decision", "publish", "force_publish", "status", "cancel"]) {
+  for (const tool of ["set_mode", "record_auto_decision", "defer_checkpoint", "publish", "force_publish", "status", "cancel"]) {
     lines.push("", `[mcp_servers.review_bridge.tools.review_bridge_${tool}]`, 'approval_mode = "approve"');
   }
   lines.push("", "[mcp_servers.review_bridge.tools.review_bridge_write_policy]", 'approval_mode = "prompt"');
@@ -475,9 +518,8 @@ async function startReviewer(options, passthrough) {
   if (options.feature) {
     await ensureBridge();
     let pair = await bridgeRequest("/pair/codex", { feature: options.feature, projectRoot });
-    const profile = options.profile ?? pair.mode;
     if (options.profile) pair = await bridgeRequest("/mode", { feature: pair.feature, mode: options.profile });
-    args.push(...pairedCodexArguments(pair, projectRoot, profile, passthrough));
+    args.push(...pairedCodexArguments(pair, projectRoot, passthrough));
   } else if (options.session) args.push("resume", String(options.session), "-C", projectRoot);
   else if (options.last) args.push("resume", "--last", "-C", projectRoot);
   else if (options.resume) args.push("resume", "-C", projectRoot);
@@ -487,14 +529,13 @@ async function startReviewer(options, passthrough) {
   run("codex", args, { cwd: projectRoot, env: { ...process.env, CODEX_HOME: reviewerRoot } });
 }
 
-export function pairedCodexArguments(pair, projectRoot, profile, passthrough = []) {
+export function pairedCodexArguments(pair, projectRoot, passthrough = []) {
   const remainingArguments = passthrough.filter((value) => value !== "--no-alt-screen");
   return [
     "--remote", pair.appServerUrl,
     "--no-alt-screen",
     "resume", pair.codexThreadId,
     "-C", projectRoot,
-    "--profile", `bridge-${profile}`,
     ...remainingArguments
   ];
 }
@@ -679,15 +720,17 @@ async function create(options) {
 }
 
 function usage() {
-  console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  start-pair      Open paired Claude and Codex terminals\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
+  console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  default-mode    Set the mode inherited by new workstreams\n  notifications   Enable or disable desktop notifications\n  start-pair      Open paired Claude and Codex terminals\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
 }
 
 export async function main(argv = process.argv.slice(2)) {
   const command = argv[0];
   if (!command || command === "help" || command === "--help") return usage();
   const { options, positionals, passthrough } = parseArguments(argv.slice(1));
-  if (positionals.length) throw new Error(`Unexpected argument: ${positionals[0]}`);
   validateCommandArguments(command, options, passthrough);
+  if (command === "default-mode") return setDefaultMode(positionals);
+  if (command === "notifications") return setNotifications(positionals);
+  if (positionals.length) throw new Error(`Unexpected argument: ${positionals[0]}`);
   if (command === "create") return create(options);
   if (command === "setup") return setup(options);
   if (command === "login") return login(options);
