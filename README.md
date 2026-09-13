@@ -188,6 +188,15 @@ WSL uses Windows notifications when PowerShell interop is available. Delivery is
 best-effort and never blocks the bridge. Notification clicks do not focus a
 terminal because there is no portable native activation path.
 
+When a review also needs a related repository or folder, add its path to the
+`additionalWorkspaceRoots` array in `bridge.local.json`, then rerun `setup` with
+the bound `--project-root` through the platform wrapper. Setup and updates
+preserve the array and generate matching `workspace_roots` entries for both the
+read-only `bridge-review` and explicit-write `bridge-write` permission profiles.
+This setting does not mark the related project as trusted. Configure its
+`projects.<path>.trust_level` separately only when its project-local Codex
+configuration, hooks, and rules should be trusted.
+
 Change the current workstream's mode from its paired Codex thread:
 
 | Mode | Command | Behavior |
