@@ -151,15 +151,25 @@ test("generates portable Claude hooks and Codex configuration", () => {
   const settings = claudeSettings("/tmp/project");
   assert.equal(settings.hooks.PreToolUse[0].matcher, "AskUserQuestion");
   assert.equal(settings.hooks.Stop[0].hooks[0].command, "node");
-  const config = codexConfig("/tmp/project with spaces", true);
+  const config = codexConfig("/tmp/project with spaces", true, ["/tmp/related project", "/tmp/team's project"]);
   assert.match(config, /web_search = "live"/);
   assert.match(config, /\[windows\]\nsandbox = "unelevated"/);
   assert.match(config, /\[permissions\.bridge-review\]/);
+  for (const profile of ["bridge-review", "bridge-write"]) {
+    assert.ok(config.includes(
+      `[permissions.${profile}.workspace_roots]\n"/tmp/related project" = true\n"/tmp/team's project" = true`
+    ));
+  }
   assert.match(config, /review_bridge_record_auto_decision/);
   assert.match(config, /review_bridge_defer_checkpoint/);
   assert.match(config, /\[mcp_servers\.review_tools\]/);
   assert.match(config, /review_tools_write_manifest\]\napproval_mode = "prompt"/);
   assert.doesNotMatch(config, /mcp_servers\.playwright/);
+  assert.doesNotMatch(codexConfig("/tmp/project", true), /workspace_roots/);
+  assert.throws(
+    () => codexConfig("/tmp/project", true, [""]),
+    /Additional workspace roots must be an array of non-empty paths/
+  );
 });
 
 test("startup locking serializes callers and recovers stale owners", () => {
@@ -214,6 +224,7 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     assert.equal(local.projectName, "Fixture");
     assert.equal(local.templateVersion, "test-version");
     assert.equal(local.playwrightEnabled, false);
+    assert.deepEqual(local.additionalWorkspaceRoots, []);
     assert.equal(local.defaultMode, "manual");
     assert.equal(local.desktopNotifications, true);
 
@@ -304,6 +315,7 @@ test("update fast-forwards an instance and reruns the updated setup", () => {
 
     fs.writeFileSync(path.join(instance, "bridge.local.json"), `${JSON.stringify({
       instanceId: "fixture", projectName: "Fixture", projectRoot: project,
+      additionalWorkspaceRoots: [path.join(temporary, "related project")],
       defaultMode: "auto", templateVersion: "0.2.1", playwrightEnabled: false,
       desktopNotifications: false,
       configuredAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString()
@@ -327,6 +339,13 @@ test("update fast-forwards an instance and reruns the updated setup", () => {
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).templateVersion, "0.3.0");
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).defaultMode, "auto");
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).desktopNotifications, false);
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).additionalWorkspaceRoots,
+      [path.join(temporary, "related project")]
+    );
+    const generatedConfig = fs.readFileSync(path.join(instance, "config.toml"), "utf8");
+    assert.equal(generatedConfig.match(/\[permissions\.bridge-(?:review|write)\.workspace_roots\]/g)?.length, 2);
+    assert.equal(generatedConfig.split(`${JSON.stringify(path.join(temporary, "related project"))} = true`).length - 1, 2);
 
     fs.writeFileSync(path.join(instance, "package.json"), '{"version":"locally-modified"}\n');
     const dirty = spawnSync(process.execPath, [cli, "update"], { cwd: instance, env: environment, encoding: "utf8" });
