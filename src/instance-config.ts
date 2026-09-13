@@ -12,3 +12,10 @@ export function readInstanceDefaultMode(filename = localConfigPath): DefaultBrid
   }
   throw new Error("bridge.local.json defaultMode must be off, manual, or auto.");
 }
+
+export function readDesktopNotificationsEnabled(filename = localConfigPath): boolean {
+  const parsed = JSON.parse(fs.readFileSync(filename, "utf8")) as { desktopNotifications?: unknown };
+  if (parsed.desktopNotifications === undefined) return true;
+  if (typeof parsed.desktopNotifications === "boolean") return parsed.desktopNotifications;
+  throw new Error("bridge.local.json desktopNotifications must be true or false.");
+}

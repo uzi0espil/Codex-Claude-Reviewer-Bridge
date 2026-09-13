@@ -28,8 +28,9 @@ import { planAutoDelivery } from "./auto-delivery.js";
 import { CodexThreadBusyError, isCodexThreadBusyError } from "./codex-turn-policy.js";
 import { captureClaudeMessage, createPulledReview, pullQueueError, pullReviewError } from "./pulled-message.js";
 import { SessionReportLedger } from "./session-report.js";
-import { readInstanceDefaultMode } from "./instance-config.js";
+import { readDesktopNotificationsEnabled, readInstanceDefaultMode } from "./instance-config.js";
 import { checkpointDeferralError, normalizeBackgroundTasks } from "./interim-review.js";
+import { AttentionEventKind, sendDesktopNotification } from "./desktop-notifications.js";
 
 type Release = StopHookResult;
 type Waiter = { resolve: (release: Release) => void; response: ServerResponse; onClose: () => void };
@@ -52,6 +53,20 @@ let shutdownBroker: () => void = () => undefined;
 function log(message: string): void {
   fs.mkdirSync(runtimeDirectory, { recursive: true });
   fs.appendFileSync(logPath, `${new Date().toISOString()} ${message}\n`);
+}
+
+function notifyUser(kind: AttentionEventKind, displayName: string): void {
+  let enabled: boolean;
+  try {
+    enabled = readDesktopNotificationsEnabled();
+  } catch (error) {
+    log(`Desktop notification configuration is invalid: ${String(error)}`);
+    return;
+  }
+  sendDesktopNotification({ kind, displayName }, {
+    enabled,
+    onError: (message) => log(`Desktop notification '${kind}' failed: ${message}`)
+  });
 }
 
 async function freePort(): Promise<number> {
@@ -313,6 +328,7 @@ function schedulePulledReview(feature: string): void {
           value.pulledReview = undefined;
         });
         log(`Pulled review ${pulled.id} failed to start for ${feature}: ${String(error)}`);
+        notifyUser("pull-review-failed", current.displayName);
       }
     });
   pulledReviewTransitions.set(feature, transition);
@@ -379,6 +395,7 @@ function scheduleReview(pair: FeaturePair, pendingId: string, supersededTurnId?:
         });
         release(pendingId, { kind: "allow" });
         log(`Fail-open release for ${pair.feature}`);
+        notifyUser("review-failed", pair.displayName);
       }
     });
   reviewTransitions.set(pair.feature, transition);
@@ -442,6 +459,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
       value.pending = undefined;
     });
     release(pendingId, { kind: "allow" });
+    notifyUser("review-failed", pair.displayName);
     return;
   }
 
@@ -473,6 +491,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
       value.lastCodexResponse = turn.text;
       if (value.pending) value.pending.codexResponse = turn.text;
     });
+    notifyUser(pair.mode === "once" ? "review-ready-once" : "review-ready-manual", pair.displayName);
     return;
   }
 
@@ -517,6 +536,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
     });
     log(`Completed ${pair.feature} checkpoint ${pendingId} as pass_continue (${delivery.outcome}) in ${report?.durationMs ?? 0}ms.`);
     if (delivery.clearPending) release(pendingId, { kind: "continue", text: continuation });
+    else notifyUser("auto-continuation-awaiting-user", pair.displayName);
     return;
   }
   if (resolution.kind === "revise") {
@@ -538,6 +558,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
     });
     log(`Completed ${pair.feature} checkpoint ${pendingId} as revise (${delivery.outcome}) in ${report?.durationMs ?? 0}ms.`);
     if (!delivery.queueForNextPrompt) release(pendingId, { kind: "feedback", text: feedback });
+    else notifyUser("auto-revision-queued", pair.displayName);
     return;
   }
   log(`Auto response requires user review: ${resolution.reason}.`);
@@ -553,6 +574,12 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
     if (value.pending) value.pending.codexResponse = resolution.response;
   });
   log(`Completed ${pair.feature} checkpoint ${pendingId} awaiting user in ${report?.durationMs ?? 0}ms.`);
+  const notificationKind: AttentionEventKind = resolution.reason === "needs-user"
+    ? "auto-needs-user"
+    : resolution.reason === "round-limit"
+      ? "auto-round-limit"
+      : "auto-control-error";
+  notifyUser(notificationKind, pair.displayName);
 }
 
 function finishQuestionAdvisory(turn: CompletedTurn): void {
@@ -561,6 +588,9 @@ function finishQuestionAdvisory(turn: CompletedTurn): void {
   const advisoryId = pair.activeQuestionAdvisory.id;
   store.update(pair.feature, (value) => { value.activeQuestionAdvisory = undefined; });
   log(`Question advisory ${advisoryId} for ${pair.feature} finished with status ${turn.status}.`);
+  notifyUser(turn.status === "completed" && Boolean(turn.text.trim())
+    ? "question-advice-ready"
+    : "question-advice-unavailable", pair.displayName);
 }
 
 function finishPulledReview(turn: CompletedTurn): void {
@@ -579,6 +609,9 @@ function finishPulledReview(turn: CompletedTurn): void {
     value.pulledReview = undefined;
   });
   log(`Pulled review ${pulled.id} for ${pair.feature} finished with status ${turn.status}.`);
+  notifyUser(turn.status === "completed" && Boolean(turn.text.trim())
+    ? "pull-review-ready"
+    : "pull-review-failed", pair.displayName);
 }
 
 async function handleTurnCompleted(turn: CompletedTurn): Promise<void> {

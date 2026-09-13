@@ -178,6 +178,16 @@ unattended rounds. The setting is stored as `defaultMode` in
 previously unseen feature name is first paired; existing workstreams keep their
 current mode.
 
+Desktop notifications are enabled by default for completed reviews and other
+events that need your attention. Disable or re-enable them with
+`reviewer notifications off|on` through either platform wrapper, or with
+`just notifications off|on`. Notifications show the workstream name and a
+generic next action, never review findings, prompts, or Claude's question text.
+They use Windows notifications, macOS `osascript`, or `notify-send` on Linux;
+WSL uses Windows notifications when PowerShell interop is available. Delivery is
+best-effort and never blocks the bridge. Notification clicks do not focus a
+terminal because there is no portable native activation path.
+
 Change the current workstream's mode from its paired Codex thread:
 
 | Mode | Command | Behavior |
@@ -198,7 +208,10 @@ normal review-every-Stop behavior.
 Interrupting an active Codex checkpoint releases Claude without publishing the
 partial review. Manual and automatic modes remain armed; once mode is consumed
 as it would be by an explicit cancellation. Unexpected reviewer failures still
-fail open and switch interception off.
+fail open and switch interception off. Those failures generate a notification,
+as do completed question advisories, pull reviews, manual or once decisions,
+and automatic reviews that pause or require a user prompt. Unattended automatic
+progress and silently deferred interim reviews do not notify.
 
 Use `$bridge-status` to inspect routing and checkpoint state. The live report
 contains every checkpoint created for the feature during the current bridge
