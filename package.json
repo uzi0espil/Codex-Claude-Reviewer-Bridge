@@ -35,10 +35,10 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
-    "@playwright/mcp": "0.0.80",
+    "@playwright/mcp": "0.0.81",
     "ws": "8.21.3",
-    "yaml": "2.9.0",
-    "zod": "4.6.2"
+    "yaml": "2.9.1",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@semantic-release/commit-analyzer": "13.0.1",
