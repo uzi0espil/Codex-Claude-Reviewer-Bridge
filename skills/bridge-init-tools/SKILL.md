@@ -11,6 +11,11 @@ because the scanner found them.
 
 The application repository remains read-only. The only authorized write is the
 fixed reviewer-local manifest through `review_tools_write_manifest`.
+For a related folder, use the tool server selected by `reviewer tools --project-root
+<folder>`. Confirm its status `projectRoot` before curation. Its manifest is scoped
+to that folder below ignored `runtime/review-tools/<id>/`; primary-project tools
+and approvals remain separate. Never approve a recipe for one repository as a
+substitute for another repository or worktree.
 
 ## Establish current state
 
@@ -164,8 +169,8 @@ After explicit approval:
    the actual `approvedAt` timestamp. Never resend or reconstruct manifest JSON
    after approval.
 3. Report the returned path, SHA-256, requirement count, accepted-gap count,
-   tool count, approval time, and that a fresh Codex session is required before
-   newly approved dynamic tools appear.
+   tool count, approval time, and that the bridge must be restarted and Codex
+   reconnected before newly approved dynamic tools appear in paired sessions.
 4. In that fresh session, call `review_tools_catalog` and
    `review_tools_doctor`. If the approved manifest contains probes, call
    `review_tools_probe` only when the user selected or requests runtime probing,
