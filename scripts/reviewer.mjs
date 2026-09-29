@@ -362,7 +362,9 @@ function folders(positionals) {
     return;
   }
   if (!["add", "remove"].includes(action) || !paths.length) throw new Error("Usage: reviewer folders <list|add|remove> [path ...]");
-  const roots = paths.map((root) => canonical(root, action === "add"));
+  // Resolve existing aliases (for example macOS /var -> /private/var) on both
+  // add and remove, while still allowing removal after a folder is deleted.
+  const roots = paths.map((root) => canonical(root, action === "add" || fs.existsSync(root)));
   const key = (root) => process.platform === "win32" ? path.resolve(root).toLowerCase() : path.resolve(root);
   const selected = new Set(roots.map(key));
   config.additionalWorkspaceRoots = action === "remove"

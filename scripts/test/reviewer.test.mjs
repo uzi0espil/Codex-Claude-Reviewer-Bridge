@@ -291,6 +291,13 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     assert.match(call("folders", "list").stdout, /Related:/);
     assert.match(call("permissions").stdout, /0 approved tools/);
     assert.equal(call("folders", "add", path.join(temporary, "missing")).status, 1);
+    if (process.platform !== "win32") {
+      const alias = path.join(temporary, "second project alias");
+      fs.symlinkSync(secondProject, alias, "dir");
+      assert.equal(call("folders", "remove", alias).status, 0);
+      assert.deepEqual(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).additionalWorkspaceRoots, []);
+      assert.equal(call("folders", "add", secondProject).status, 0);
+    }
     assert.equal(call("folders", "remove", secondProject).status, 0);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).additionalWorkspaceRoots, []);
 
