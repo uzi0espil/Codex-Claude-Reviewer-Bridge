@@ -375,11 +375,21 @@ const textArtifactExtensions = new Set([".csv", ".json", ".jsonl", ".log", ".md"
 
 export function loadBoundProjectRoot(): string {
   const localConfigPath = path.join(reviewerRoot, "bridge.local.json");
-  const parsed = JSON.parse(fs.readFileSync(localConfigPath, "utf8")) as { projectRoot?: unknown };
+  const parsed = JSON.parse(fs.readFileSync(localConfigPath, "utf8")) as { projectRoot?: unknown; additionalWorkspaceRoots?: string[] };
   if (typeof parsed.projectRoot !== "string" || !path.isAbsolute(parsed.projectRoot)) {
     throw new Error("bridge.local.json does not contain an absolute projectRoot.");
   }
-  const projectRoot = path.resolve(parsed.projectRoot);
+  return resolveReviewToolsProjectRoot(parsed, process.env.REVIEW_TOOLS_PROJECT_ROOT);
+}
+
+export function resolveReviewToolsProjectRoot(parsed: { projectRoot?: unknown; additionalWorkspaceRoots?: string[] }, requested?: string): string {
+  if (typeof parsed.projectRoot !== "string" || !path.isAbsolute(parsed.projectRoot)) {
+    throw new Error("bridge.local.json does not contain an absolute projectRoot.");
+  }
+  if (requested && ![parsed.projectRoot, ...(parsed.additionalWorkspaceRoots ?? [])].some((root) => canonical(root) === canonical(requested))) {
+    throw new Error("Review tools may only bind to a registered reviewer folder.");
+  }
+  const projectRoot = path.resolve(requested ?? parsed.projectRoot);
   if (!fs.statSync(projectRoot).isDirectory()) throw new Error(`Bound project root does not exist: ${projectRoot}`);
   return projectRoot;
 }

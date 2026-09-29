@@ -18,9 +18,24 @@ import {
 } from "./review-tools.js";
 import { reviewerRoot, runtimeDirectory } from "./paths.js";
 
-export const reviewToolsManifestPath = path.join(reviewerRoot, "review-tools.local.json");
-export const reviewToolsDetectionPath = path.join(reviewerRoot, "review-tools.detected.json");
-export const reviewToolsReadinessPath = path.join(runtimeDirectory, "review-tools", "readiness.json");
+function toolStorageDirectory(): string {
+  if (!process.env.REVIEW_TOOLS_PROJECT_ROOT) return reviewerRoot;
+  const root = loadBoundProjectRoot();
+  const config = JSON.parse(fs.readFileSync(path.join(reviewerRoot, "bridge.local.json"), "utf8"));
+  return reviewToolsStorageDirectory(root, config.projectRoot);
+}
+
+export function reviewToolsStorageDirectory(root: string, primary: string, home = reviewerRoot, runtime = runtimeDirectory): string {
+  const normalize = (value: string) => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+  if (normalize(root) === normalize(primary)) return home;
+  const id = crypto.createHash("sha256").update(normalize(root)).digest("hex").slice(0, 16);
+  return path.join(runtime, "review-tools", id);
+}
+
+const toolStorage = toolStorageDirectory();
+export const reviewToolsManifestPath = path.join(toolStorage, "review-tools.local.json");
+export const reviewToolsDetectionPath = path.join(toolStorage, "review-tools.detected.json");
+export const reviewToolsReadinessPath = path.join(toolStorage === reviewerRoot ? path.join(runtimeDirectory, "review-tools") : toolStorage, "readiness.json");
 export const maxReviewToolsManifestBytes = 1_048_576;
 
 export type HashedFile<T> = {

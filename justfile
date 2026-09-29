@@ -39,6 +39,9 @@ function runNpm(script) {
       return runReviewer(["policy", ...args]);
     case "tools":
       return runReviewer(["tools", ...args]);
+    case "folders":
+    case "permissions":
+      return runReviewer([recipe, ...args]);
     case "default-mode":
       return runReviewer(["default-mode", args[0]]);
     case "notifications":
@@ -90,6 +93,16 @@ policy *codex_args:
 # Detect and curate private application review tools.
 [script("node")]
 tools *codex_args:
+    {{ runner }}
+
+# Register, list, or remove related folders and worktrees.
+[script("node")]
+folders *args:
+    {{ runner }}
+
+# Show effective review permissions and approved tool scope per folder.
+[script("node")]
+permissions:
     {{ runner }}
 
 # Set the review mode inherited by new workstreams.
