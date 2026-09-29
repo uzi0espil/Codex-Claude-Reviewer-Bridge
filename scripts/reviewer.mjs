@@ -6,7 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 
 export const reviewerRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const runtimeDirectory = path.join(reviewerRoot, "runtime");
@@ -54,6 +54,7 @@ export function validateCommandArguments(command, options, passthrough) {
     login: ["device-auth"],
     policy: ["project-root"],
     tools: ["project-root"],
+    folders: [], permissions: [],
     "default-mode": [],
     notifications: [],
     "start-pair": ["feature", "profile", "project-root", "terminal"],
@@ -339,6 +340,55 @@ function validatedAdditionalWorkspaceRoots(value) {
   return value;
 }
 
+export function folderToolId(root) {
+  const normalized = path.resolve(root);
+  return createHash("sha256").update(process.platform === "win32" ? normalized.toLowerCase() : normalized).digest("hex").slice(0, 16);
+}
+
+export function syncPermissionConfig(current, generated) {
+  // Replace only bridge-owned tables; preserve model, trust, and other user settings.
+  const owned = (header) => /^\[(?:permissions\.bridge-(?:review|write)(?:\.|\])|mcp_servers\.review_tools(?:_|\.|\]))/.test(header);
+  const tables = (text) => text.split(/(?=^\[)/m);
+  return tables(current).filter((section) => !owned(section)).join("").trimEnd()
+    + "\n\n" + tables(generated).filter((section) => owned(section)).join("").trimEnd() + "\n";
+}
+
+function folders(positionals) {
+  const [action = "list", ...paths] = positionals;
+  const config = loadConfig();
+  const existing = validatedAdditionalWorkspaceRoots(config.additionalWorkspaceRoots);
+  if (action === "list" && !paths.length) {
+    console.log(`Primary: ${config.projectRoot}\n${existing.map((root) => `Related: ${root}`).join("\n")}`);
+    return;
+  }
+  if (!["add", "remove"].includes(action) || !paths.length) throw new Error("Usage: reviewer folders <list|add|remove> [path ...]");
+  const roots = paths.map((root) => canonical(root, action === "add"));
+  const key = (root) => process.platform === "win32" ? path.resolve(root).toLowerCase() : path.resolve(root);
+  const selected = new Set(roots.map(key));
+  config.additionalWorkspaceRoots = action === "remove"
+    ? existing.filter((root) => !selected.has(key(root)))
+    : [...new Map([...existing, ...roots].filter((root) => key(root) !== key(config.projectRoot)).map((root) => [key(root), root])).values()];
+  const filename = path.join(reviewerRoot, "config.toml");
+  const generated = codexConfig(config.projectRoot, !config.playwrightEnabled, config.additionalWorkspaceRoots);
+  const updated = syncPermissionConfig(fs.readFileSync(filename, "utf8"), generated);
+  config.updatedAt = new Date().toISOString();
+  fs.writeFileSync(filename, updated, "utf8");
+  writeJson(localConfigPath, config);
+  console.log("Folders updated. Run tools --project-root <folder> to approve its validation commands. Restart the bridge and reconnect Codex to load the folder's tools.");
+}
+
+function permissions() {
+  const config = loadConfig();
+  console.log("Injected reviews: bridge-review (read-only), approval policy never (no escalation prompts).\nInteractive setup: on-request. Approved MCP validation tools: automatic approval, executed by the host runner.\nFolder access does not grant arbitrary shell/Docker commands or approve another folder's tools.");
+  for (const root of [config.projectRoot, ...validatedAdditionalWorkspaceRoots(config.additionalWorkspaceRoots)]) {
+    const primary = path.resolve(root) === path.resolve(config.projectRoot);
+    const filename = primary ? path.join(reviewerRoot, "review-tools.local.json") : path.join(runtimeDirectory, "review-tools", folderToolId(root), "review-tools.local.json");
+    const manifest = fs.existsSync(filename) ? readJson(filename) : undefined;
+    console.log(`${root}: ${manifest?.tools?.length ?? 0} approved tools; ${filename}`);
+  }
+  console.log("Config/tool changes require a bridge restart and Codex reconnect; existing MCP servers keep their startup inventory.");
+}
+
 function validatedDefaultMode(value) {
   const mode = value ?? "manual";
   if (!["off", "manual", "auto"].includes(mode)) {
@@ -422,6 +472,15 @@ export function codexConfig(projectRoot, skipPlaywright, additionalWorkspaceRoot
     'default_tools_approval_mode = "approve"',
     "", "[mcp_servers.review_tools.tools.review_tools_write_manifest]", 'approval_mode = "prompt"'
   );
+  for (const root of workspaceRoots) {
+    const name = `review_tools_${folderToolId(root)}`;
+    lines.push("", `[mcp_servers.${name}]`, 'command = "node"',
+      `args = [${tomlLiteral(path.join(reviewerRoot, "dist", "review-tools-mcp.js"))}]`,
+      `cwd = ${tomlLiteral(root)}`, "enabled = true", "startup_timeout_sec = 10", "tool_timeout_sec = 7200",
+      'default_tools_approval_mode = "approve"', "", `[mcp_servers.${name}.env]`,
+      `REVIEW_TOOLS_PROJECT_ROOT = ${tomlLiteral(root)}`, "",
+      `[mcp_servers.${name}.tools.review_tools_write_manifest]`, 'approval_mode = "prompt"');
+  }
   if (!skipPlaywright) {
     const playwright = path.join(reviewerRoot, "node_modules", "@playwright", "mcp", "cli.js");
     if (!fs.existsSync(playwright)) throw new Error("Playwright MCP was not installed.");
@@ -491,32 +550,40 @@ async function login(options) {
   run("codex", options["device-auth"] ? ["login", "--device-auth"] : ["login"], { env: environment });
 }
 
-export function policyCodexArguments(projectRoot, passthrough = []) {
+export function policyCodexArguments(projectRoot, passthrough = [], roots = []) {
   const prompt = "Use $bridge-init-policy to inspect this application and create or refresh its private review policy and protocol.";
   return [
     "-C", projectRoot,
     "--profile", "bridge-review",
     ...passthrough,
     "-c", "mcp_servers.review_tools.enabled=false",
+    ...roots.flatMap((root) => ["-c", `mcp_servers.review_tools_${folderToolId(root)}.enabled=false`]),
     prompt
   ];
 }
 
 async function policy(options, passthrough) {
   const projectRoot = resolveProjectRoot(options["project-root"]);
-  run("codex", policyCodexArguments(projectRoot, passthrough), {
+  run("codex", policyCodexArguments(projectRoot, passthrough, loadConfig().additionalWorkspaceRoots), {
     cwd: projectRoot, env: { ...process.env, CODEX_HOME: reviewerRoot }
   });
 }
 
 async function tools(options, passthrough) {
-  const projectRoot = resolveProjectRoot(options["project-root"]);
+  const config = loadConfig();
+  const projectRoot = canonical(options["project-root"] ?? config.projectRoot);
+  if (![config.projectRoot, ...validatedAdditionalWorkspaceRoots(config.additionalWorkspaceRoots)].some((root) => samePath(root, projectRoot))) {
+    throw new Error("Register this folder first with reviewer folders add <path>.");
+  }
+  const environment = { ...process.env, CODEX_HOME: reviewerRoot, REVIEW_TOOLS_PROJECT_ROOT: projectRoot };
   const discoveryScript = path.join(reviewerRoot, "dist", "review-tools-discover.js");
   if (!fs.existsSync(discoveryScript)) throw new Error(`Review-tool discovery is missing; run '${platformExample("setup")}'.`);
-  run(process.execPath, [discoveryScript], { cwd: reviewerRoot });
+  run(process.execPath, [discoveryScript], { cwd: reviewerRoot, env: environment });
   const prompt = "Use $bridge-init-tools to inspect this application, build the complete validation inventory, map every requirement to approved tools or explicit gaps, choose runner policy separately from readiness behavior, preflight the complete proposal, and preview it for explicit approval.";
-  run("codex", ["-C", projectRoot, "--profile", "bridge-review", ...passthrough, prompt], {
-    cwd: projectRoot, env: { ...process.env, CODEX_HOME: reviewerRoot }
+  const overrides = ["-c", `mcp_servers.review_tools.env.REVIEW_TOOLS_PROJECT_ROOT=${JSON.stringify(projectRoot)}`];
+  for (const root of config.additionalWorkspaceRoots ?? []) overrides.push("-c", `mcp_servers.review_tools_${folderToolId(root)}.enabled=false`);
+  run("codex", ["-C", projectRoot, "--profile", "bridge-review", ...passthrough, ...overrides, prompt], {
+    cwd: projectRoot, env: environment
   });
 }
 
@@ -749,6 +816,7 @@ async function create(options) {
 }
 
 function usage() {
+  console.log("Folder/tool access: folders <list|add|remove> [path ...]; tools --project-root <registered folder>; permissions");
   console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  default-mode    Set the mode inherited by new workstreams\n  notifications   Enable or disable desktop notifications\n  start-pair      Open paired Claude and Codex terminals\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
 }
 
@@ -759,6 +827,8 @@ export async function main(argv = process.argv.slice(2)) {
   validateCommandArguments(command, options, passthrough);
   if (command === "default-mode") return setDefaultMode(positionals);
   if (command === "notifications") return setNotifications(positionals);
+  if (command === "folders") return folders(positionals);
+  if (command === "permissions" && !positionals.length) return permissions();
   if (positionals.length) throw new Error(`Unexpected argument: ${positionals[0]}`);
   if (command === "create") return create(options);
   if (command === "setup") return setup(options);

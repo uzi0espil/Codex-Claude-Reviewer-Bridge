@@ -188,14 +188,35 @@ WSL uses Windows notifications when PowerShell interop is available. Delivery is
 best-effort and never blocks the bridge. Notification clicks do not focus a
 terminal because there is no portable native activation path.
 
-When a review also needs a related repository or folder, add its path to the
-`additionalWorkspaceRoots` array in `bridge.local.json`, then rerun `setup` with
-the bound `--project-root` through the platform wrapper. Setup and updates
-preserve the array and generate matching `workspace_roots` entries for both the
-read-only `bridge-review` and explicit-write `bridge-write` permission profiles.
-This setting does not mark the related project as trusted. Configure its
+Manage related repositories and worktrees through the reviewer CLI:
+
+```powershell
+.\scripts\powershell\reviewer.ps1 folders add E:/dev/related E:/dev/related-wt/feature
+.\scripts\powershell\reviewer.ps1 folders list
+.\scripts\powershell\reviewer.ps1 tools --project-root E:/dev/related
+.\scripts\powershell\reviewer.ps1 permissions
+```
+
+`folders remove <path ...>` removes access and its configured tool server without
+deleting stored approvals. Folder changes preserve custom model, trust, and
+Windows settings; setup and updates preserve the folder list. Each folder gets
+its own MCP tool server and separately approved catalog. Run `tools --project-root
+<folder>` to identify and approve that folder's commands, including an explicitly
+registered worktree. The primary repository keeps its existing manifest; related
+folders store manifests and detection below ignored `runtime/review-tools/<id>/`.
+Restart the bridge and reconnect Codex after changing folders or approved tools.
+Adding a folder does not mark the related project as trusted. Configure its
 `projects.<path>.trust_level` separately only when its project-local Codex
 configuration, hooks, and rules should be trusted.
+
+`permissions` shows the effective injected review policy and approved tool counts
+per folder. Interactive setup uses `on-request`; bridge-injected reviews explicitly
+use `never`, meaning no shell escalation prompts. This does not prohibit approved
+MCP validation tools: their fixed Git, Docker, Python, and other recipes execute
+through the host runner outside the read-only shell sandbox. It does not grant
+arbitrary shell commands either. A Docker pipe denial from the shell and a missing
+approved Docker recipe are different failures. Check the matching folder's tool
+catalog and doctor, and update that catalog when required capabilities are absent.
 
 Change the current workstream's mode from its paired Codex thread:
 
