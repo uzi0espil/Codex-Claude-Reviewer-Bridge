@@ -183,6 +183,14 @@ The paired Codex TUI is launched with `--no-alt-screen`. Broker-started app-serv
 turns therefore remain in terminal scrollback even if a later turn redraws the
 interface; this does not inject another model-visible item.
 
+Related folders have separate review-tools MCP servers, selected by a stable path
+hash and a `REVIEW_TOOLS_PROJECT_ROOT` environment value. The server validates
+that the root is registered in `bridge.local.json`. Primary tool storage remains
+backward compatible; related detection, manifests, and readiness caches live in
+`runtime/review-tools/<id>/`. Folder registration alone grants no validation
+recipes. Removing a folder removes its configured server; execution checks the
+current manifest revision so a running server cannot execute stale approvals.
+
 All hook-injected Codex turns use `approvalPolicy: never` and explicitly select
 the read-only `bridge-review` permission profile. Live web search remains enabled
 for research. Interactive write access is a separate explicit permission profile;

@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { reviewToolsManifestProposalSchema } from "../review-tools.js";
+import { reviewToolsManifestProposalSchema, resolveReviewToolsProjectRoot } from "../review-tools.js";
+import { reviewToolsStorageDirectory } from "../review-tools-store.js";
 import {
   acceptReviewToolsProposalGaps,
   readReviewToolsDetection,
@@ -22,6 +23,23 @@ import {
 function fixture(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "review-tools-store-"));
 }
+
+test("related folder tools use separate storage and reject unregistered routing", () => {
+  const primary = fixture();
+  const related = fixture();
+  const other = fixture();
+  try {
+    const config = { projectRoot: primary, additionalWorkspaceRoots: [related] };
+    assert.equal(resolveReviewToolsProjectRoot(config), primary);
+    assert.equal(resolveReviewToolsProjectRoot(config, related), related);
+    assert.throws(() => resolveReviewToolsProjectRoot(config, other), /registered reviewer folder/);
+    assert.equal(reviewToolsStorageDirectory(primary, primary, "home", "runtime"), "home");
+    assert.notEqual(reviewToolsStorageDirectory(related, primary), reviewToolsStorageDirectory(other, primary));
+    assert.match(reviewToolsStorageDirectory(related, primary), /review-tools[\\/][a-f0-9]{16}$/);
+  } finally {
+    for (const root of [primary, related, other]) fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("writes only a validated manifest bound to the selected project with optimistic concurrency", () => {
   const root = fixture();
