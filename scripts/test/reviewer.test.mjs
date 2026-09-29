@@ -10,6 +10,8 @@ import {
   acquireStartupLock,
   claudeSettings,
   codexConfig,
+  folderToolId,
+  syncPermissionConfig,
   parseArguments,
   pairedCodexArguments,
   policyCodexArguments,
@@ -177,6 +179,20 @@ test("generates portable Claude hooks and Codex configuration", () => {
   );
 });
 
+test("folder tool servers have isolated routing and preserve user configuration on refresh", () => {
+  const root = "/tmp/related project";
+  const generated = codexConfig("/tmp/main", true, [root]);
+  const name = `review_tools_${folderToolId(root)}`;
+  assert.ok(generated.includes(`[mcp_servers.${name}.env]\nREVIEW_TOOLS_PROJECT_ROOT = '${root}'`));
+  assert.ok(generated.includes(`[mcp_servers.${name}.tools.review_tools_write_manifest]\napproval_mode = "prompt"`));
+  const userConfig = 'model = "custom"\napproval_policy = "on-request"\n\n[windows]\nsandbox = "elevated"\n\n[projects.custom]\ntrust_level = "trusted"\n';
+  const refreshed = syncPermissionConfig(userConfig + generated.slice(generated.indexOf("[mcp_servers.review_tools]")), codexConfig("/tmp/main", true));
+  assert.ok(refreshed.startsWith(userConfig.trimEnd()));
+  assert.equal(refreshed.includes(name), false);
+  assert.equal(refreshed.match(/\[mcp_servers.review_tools\]/g).length, 1);
+  assert.equal(refreshed.match(/\[permissions.bridge-review\]/g).length, 1);
+});
+
 test("startup locking serializes callers and recovers stale owners", () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "reviewer-lock-"));
   try {
@@ -267,6 +283,23 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     assert.match(generatedConfig, /review_bridge_defer_checkpoint/);
     assert.match(generatedConfig, /\[mcp_servers\.review_tools\]/);
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "review-tools.detected.json"), "utf8")).projectRoot, fs.realpathSync(firstProject));
+
+    const call = (...args) => spawnSync(process.execPath, [cli, ...args], { cwd: instance, env: environment, encoding: "utf8" });
+    const added = call("folders", "add", secondProject, firstProject, secondProject);
+    assert.equal(added.status, 0, added.stderr);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).additionalWorkspaceRoots, [fs.realpathSync(secondProject)]);
+    assert.match(call("folders", "list").stdout, /Related:/);
+    assert.match(call("permissions").stdout, /0 approved tools/);
+    assert.equal(call("folders", "add", path.join(temporary, "missing")).status, 1);
+    if (process.platform !== "win32") {
+      const alias = path.join(temporary, "second project alias");
+      fs.symlinkSync(secondProject, alias, "dir");
+      assert.equal(call("folders", "remove", alias).status, 0);
+      assert.deepEqual(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).additionalWorkspaceRoots, []);
+      assert.equal(call("folders", "add", secondProject).status, 0);
+    }
+    assert.equal(call("folders", "remove", secondProject).status, 0);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).additionalWorkspaceRoots, []);
 
     const rebound = spawnSync(process.execPath, [cli, "setup", "--project-root", secondProject, "--skip-playwright"], {
       cwd: instance, env: environment, encoding: "utf8"

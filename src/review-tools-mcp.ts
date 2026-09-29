@@ -264,6 +264,9 @@ for (const recipe of manifest?.tools ?? []) {
     annotations: recipe.annotations
   }, async (input) => {
     try {
+      if (readReviewToolsManifestFile(undefined, projectRoot)?.sha256 !== loadedManifestSha256) {
+        throw new Error("The approved manifest changed. Restart the bridge and reconnect Codex before executing validation tools.");
+      }
       return result(await executeReviewTool(runner, recipe as ReviewToolRecipe, input as Record<string, unknown>, projectRoot));
     } catch (error) {
       return failure(error);
