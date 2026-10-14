@@ -197,6 +197,9 @@ for research. Interactive write access is a separate explicit permission profile
 each later injected turn reselects `bridge-review`, so interactive implementation
 work does not weaken checkpoint reviews.
 
+The Playwright MCP server auto-approves its complete tool surface. Injected
+reviews can therefore perform browser validation without an interactive prompt.
+
 Setup scans the bound repository for language manifests, package scripts, common
 task runners, Compose configuration, CI, and validation-like scripts. It extracts
 GitHub Actions run steps into a non-executable structured inventory, classifying

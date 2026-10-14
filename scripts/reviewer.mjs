@@ -489,7 +489,8 @@ export function codexConfig(projectRoot, skipPlaywright, additionalWorkspaceRoot
     lines.push(
       "", "[mcp_servers.playwright]", 'command = "node"',
       `args = [${tomlLiteral(playwright)}, '--isolated', '--allow-unrestricted-file-access', '--output-dir', ${tomlLiteral(path.join(runtimeDirectory, "playwright"))}]`,
-      `cwd = ${tomlLiteral(projectRoot)}`, "enabled = true", "startup_timeout_sec = 30", "tool_timeout_sec = 120"
+      `cwd = ${tomlLiteral(projectRoot)}`, "enabled = true", "startup_timeout_sec = 30", "tool_timeout_sec = 120",
+      'default_tools_approval_mode = "approve"'
     );
     for (const tool of ["browser_navigate", "browser_fill_form", "browser_click", "browser_resize", "browser_evaluate", "browser_run_code_unsafe", "browser_press_key"]) {
       lines.push("", `[mcp_servers.playwright.tools.${tool}]`, 'approval_mode = "approve"');

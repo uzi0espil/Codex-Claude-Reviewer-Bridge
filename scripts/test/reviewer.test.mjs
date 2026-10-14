@@ -179,6 +179,15 @@ test("generates portable Claude hooks and Codex configuration", () => {
   );
 });
 
+test("auto-approves the complete Playwright MCP surface", () => {
+  const config = codexConfig("/tmp/project", false);
+  const playwrightSection = config
+    .split("[mcp_servers.playwright]")[1]
+    .split("\n[")[0];
+
+  assert.match(playwrightSection, /default_tools_approval_mode = "approve"/);
+});
+
 test("folder tool servers have isolated routing and preserve user configuration on refresh", () => {
   const root = "/tmp/related project";
   const generated = codexConfig("/tmp/main", true, [root]);

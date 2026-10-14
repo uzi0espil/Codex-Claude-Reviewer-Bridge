@@ -218,6 +218,9 @@ arbitrary shell commands either. A Docker pipe denial from the shell and a missi
 approved Docker recipe are different failures. Check the matching folder's tool
 catalog and doctor, and update that catalog when required capabilities are absent.
 
+The Playwright MCP server auto-approves its complete tool surface. Injected
+reviews can use browser validation without an unavailable interactive prompt.
+
 Change the current workstream's mode from its paired Codex thread:
 
 | Mode | Command | Behavior |
