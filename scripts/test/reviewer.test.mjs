@@ -179,13 +179,22 @@ test("generates portable Claude hooks and Codex configuration", () => {
   );
 });
 
-test("auto-approves the complete Playwright MCP surface", () => {
-  const config = codexConfig("/tmp/project", false);
-  const playwrightSection = config
-    .split("[mcp_servers.playwright]")[1]
-    .split("\n[")[0];
+test("auto-approves the complete tool surface of every managed MCP server", () => {
+  const related = "/tmp/related project";
+  const config = codexConfig("/tmp/project", false, [related]);
+  const serverSections = config
+    .split(/(?=^\[)/m)
+    .filter((section) => /^\[mcp_servers\.[^.\]]+\]\n/.test(section));
 
-  assert.match(playwrightSection, /default_tools_approval_mode = "approve"/);
+  assert.deepEqual(
+    serverSections.map((section) => section.match(/^\[mcp_servers\.([^\]]+)\]/)[1]),
+    ["review_bridge", "review_tools", `review_tools_${folderToolId(related)}`, "playwright"]
+  );
+  for (const section of serverSections) {
+    assert.match(section, /default_tools_approval_mode = "approve"/);
+  }
+  assert.match(config, /review_bridge_write_policy\]\napproval_mode = "prompt"/);
+  assert.equal(config.match(/review_tools_write_manifest\]\napproval_mode = "prompt"/g).length, 2);
 });
 
 test("folder tool servers have isolated routing and preserve user configuration on refresh", () => {
