@@ -7,6 +7,15 @@ function canonical(value: string): string {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
+function sameFile(left: string, right: string): boolean {
+  try {
+    const a = fs.statSync(left);
+    const b = fs.statSync(right);
+    if (a.dev === b.dev && a.ino === b.ino) return true;
+  } catch { /* fall back to canonical path comparison */ }
+  return canonical(left) === canonical(right);
+}
+
 function gitPath(root: string, argument: string): string {
   const result = spawnSync("git", ["-C", root, "rev-parse", argument], {
     encoding: "utf8",
@@ -20,15 +29,15 @@ function gitPath(root: string, argument: string): string {
 }
 
 export function validateManagedWorktree(repositoryRoot: string, candidate: string): string {
-  const repository = canonical(repositoryRoot);
-  const worktree = canonical(candidate);
-  const topLevel = canonical(gitPath(worktree, "--show-toplevel"));
-  if (topLevel !== worktree) throw new Error(`Claude reported '${candidate}', which is not a Git worktree root.`);
-  if (worktree === repository) throw new Error("Claude did not enter the requested new Git worktree.");
+  const repository = fs.realpathSync(path.resolve(repositoryRoot));
+  const worktree = fs.realpathSync(path.resolve(candidate));
+  const topLevel = gitPath(worktree, "--show-toplevel");
+  if (!sameFile(topLevel, worktree)) throw new Error(`Claude reported '${candidate}', which is not a Git worktree root.`);
+  if (sameFile(worktree, repository)) throw new Error("Claude did not enter the requested new Git worktree.");
 
-  const repositoryCommon = canonical(gitPath(repository, "--git-common-dir"));
-  const worktreeCommon = canonical(gitPath(worktree, "--git-common-dir"));
-  if (repositoryCommon !== worktreeCommon) {
+  const repositoryCommon = gitPath(repository, "--git-common-dir");
+  const worktreeCommon = gitPath(worktree, "--git-common-dir");
+  if (!sameFile(repositoryCommon, worktreeCommon)) {
     throw new Error(`Claude's worktree '${candidate}' does not belong to '${repositoryRoot}'.`);
   }
   return fs.realpathSync(path.resolve(candidate));
@@ -36,7 +45,7 @@ export function validateManagedWorktree(repositoryRoot: string, candidate: strin
 
 export function samePath(left: string, right: string): boolean {
   try {
-    return canonical(left) === canonical(right);
+    return sameFile(left, right);
   } catch {
     return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
   }

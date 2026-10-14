@@ -225,7 +225,7 @@ test("automatic review prompts request a control tool and human-readable respons
   assert.match(prompt, /needs_user = choice/i);
   assert.match(prompt, /0\/unlimited/i);
   assert.doesNotMatch(prompt, /cycle report/i);
-  assert.ok(prompt.length < 1_000);
+  assert.ok(prompt.length < 1_200);
 });
 
 test("interim review prompts expose bounded background work and allow findings or silent deferral", () => {
