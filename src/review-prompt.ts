@@ -65,6 +65,10 @@ export function compactedPolicyReminder(pair: FeaturePair): string | undefined {
   return `Context maintenance: Codex compacted this thread. Before reviewing, re-read the baseline policy at ${reviewPolicyPath} and the optional application policy at ${localReviewPolicyPath}; do not assume the compacted summary preserved application-specific rules.`;
 }
 
+export function authoritativeRootInstruction(pair: FeaturePair): string {
+  return `Authoritative project root: ${pair.projectRoot}. Pass this exact path as \`projectRoot\` to every review_tools call that requests it.`;
+}
+
 export function composeReviewPolicy(baseline: string, local: string): string {
   const base = baseline.trim() || fallbackPolicy;
   const overlay = local.trim();
@@ -102,6 +106,7 @@ export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint
       ? `Supersession notice: this checkpoint supersedes unpublished checkpoint #${checkpoint.supersedes.sequence ?? "?"} (${checkpoint.supersedes.id}). Treat the earlier review as obsolete and reassess the latest handoff and current worktree.`
       : undefined,
     `Claude session: ${pair.claudeSessionId ?? "unknown"}`,
+    authoritativeRootInstruction(pair),
     `Bridge mode: ${pair.mode}; unattended feedback/continuation deliveries: ${pair.autoRound}/${autoRoundLimit}.`,
     "Follow the bridge protocol and review policy established in this thread. This injected turn remains strictly read-only.",
     compactedPolicyReminder(pair),
@@ -118,6 +123,7 @@ export function buildPulledReviewPrompt(pair: FeaturePair, review: PulledReview)
     `[Pulled Claude review for user: ${pair.displayName}]`,
     `Captured message: ${review.capturedMessageId}`,
     `Claude session: ${review.claudeSessionId}`,
+    authoritativeRootInstruction(pair),
     `Bridge mode: ${pair.mode}.`,
     "Follow the bridge protocol and review policy established in this thread. This injected turn remains strictly read-only.",
     compactedPolicyReminder(pair),

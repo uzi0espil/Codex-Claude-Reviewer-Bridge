@@ -659,6 +659,22 @@ test("new pairs inherit the instance default without changing existing pairs", (
   }
 });
 
+test("worktree pairing persists one repository and worktree identity", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-bridge-pair-worktree-"));
+  try {
+    const store = new StateStore(path.join(directory, "state.json"));
+    const created = store.ensure("Feature Worktree", directory, "manual", "feature-wt");
+    assert.equal(created.repositoryRoot, path.resolve(directory));
+    assert.equal(created.projectRoot, path.resolve(directory));
+    assert.equal(created.worktreePending, true);
+    assert.equal(store.ensure("Feature Worktree", directory, "manual", "feature-wt").worktreeName, "feature-wt");
+    assert.throws(() => store.ensure("Feature Worktree", directory, "manual"), /already paired with worktree/i);
+    assert.throws(() => store.ensure("Feature Worktree", directory, "manual", "other-wt"), /already paired with worktree/i);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("instance default mode is backward compatible and rejects invalid configuration", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-bridge-instance-config-"));
   const filename = path.join(directory, "bridge.local.json");

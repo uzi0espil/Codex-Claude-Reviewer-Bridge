@@ -31,6 +31,7 @@ import { SessionReportLedger } from "./session-report.js";
 import { readDesktopNotificationsEnabled, readInstanceDefaultMode } from "./instance-config.js";
 import { checkpointDeferralError, normalizeBackgroundTasks } from "./interim-review.js";
 import { AttentionEventKind, sendDesktopNotification } from "./desktop-notifications.js";
+import { samePath, validateManagedWorktree } from "./worktree.js";
 
 type Release = StopHookResult;
 type Waiter = { resolve: (release: Release) => void; response: ServerResponse; onClose: () => void };
@@ -711,15 +712,32 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   }
 
   if (req.url === "/pair/claude" && req.method === "POST") {
-    let pair = store.ensure(String(body.feature), String(body.projectRoot), readInstanceDefaultMode());
+    let pair = store.ensure(String(body.feature), String(body.projectRoot), readInstanceDefaultMode(), body.worktreeName ? String(body.worktreeName) : undefined);
+    if (pair.worktreeName && !pair.worktreePending) {
+      validateManagedWorktree(pair.repositoryRoot ?? pair.projectRoot, pair.projectRoot);
+    }
     pair = store.update(pair.feature, (value) => {
       migrateClaudeSessionLifecycle(value);
       value.claudeSessionId = String(body.sessionId || value.claudeSessionId || randomUUID());
     });
     return send(res, 200, publicPair(pair));
   }
+  if (req.url === "/pair/worktree" && req.method === "POST") {
+    const pair = feature ? store.get(feature) : undefined;
+    if (!pair) return send(res, 200, { state: "missing" });
+    const repositoryRoot = pair.repositoryRoot ?? pair.projectRoot;
+    if (!samePath(repositoryRoot, String(body.projectRoot))) {
+      return send(res, 409, { error: `Feature '${pair.displayName}' belongs to a different repository.` });
+    }
+    if ((pair.worktreeName ?? undefined) !== (body.worktreeName ? String(body.worktreeName) : undefined)) {
+      return send(res, 409, { error: `Feature '${pair.displayName}' has different worktree settings.` });
+    }
+    return send(res, 200, { state: pair.worktreePending ? "pending" : "ready", projectRoot: pair.projectRoot });
+  }
   if (req.url === "/pair/codex" && req.method === "POST") {
-    let pair = store.ensure(String(body.feature), String(body.projectRoot), readInstanceDefaultMode());
+    let pair = store.ensure(String(body.feature), String(body.projectRoot), readInstanceDefaultMode(), body.worktreeName ? String(body.worktreeName) : undefined);
+    if (pair.worktreePending) return send(res, 409, { error: "Claude has not reported the requested worktree yet." });
+    if (pair.worktreeName) validateManagedWorktree(pair.repositoryRoot ?? pair.projectRoot, pair.projectRoot);
     pair = await ensureCodexThread(pair);
     send(res, 200, { ...publicPair(pair), appServerUrl });
     if (pair.pulledReview) schedulePulledReview(pair.feature);
@@ -992,6 +1010,13 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   if (req.url === "/hook/session" && req.method === "POST") {
     const input = body.input as ClaudeHookInput;
     const pair = store.update(String(body.feature), (value) => {
+      if (value.worktreePending) {
+        if (input.session_id !== value.claudeSessionId) throw new Error("Claude worktree session ID does not match the reserved pair session.");
+        value.projectRoot = validateManagedWorktree(value.repositoryRoot ?? value.projectRoot, input.cwd);
+        value.worktreePending = false;
+      } else if (!samePath(value.projectRoot, input.cwd)) {
+        throw new Error(`Claude session cwd '${input.cwd}' does not match paired root '${value.projectRoot}'.`);
+      }
       recordClaudeSession(value, input.session_id, false);
     });
     return send(res, 200, publicPair(pair));

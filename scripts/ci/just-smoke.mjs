@@ -35,6 +35,10 @@ try {
     ["start-pair", "--feature", "feature name", "--", "--model", "opus 4.1", "--append-system-prompt", "Don't flatten this"],
   );
   assert.deepEqual(
+    invoke(["pair", "worktree feature", "--worktree", "feature-wt"]),
+    ["start-pair", "--feature", "worktree feature", "--worktree", "feature-wt"],
+  );
+  assert.deepEqual(
     invoke(["create", "E:\\dev\\App With Spaces", "--", "--destination", "E:\\dev\\App's Reviewer"]),
     ["create", "--project-root", "E:\\dev\\App With Spaces", "--destination", "E:\\dev\\App's Reviewer"],
   );

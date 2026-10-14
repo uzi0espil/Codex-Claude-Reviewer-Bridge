@@ -148,6 +148,24 @@ Run this from the generated reviewer:
 ./scripts/shell/reviewer.sh start-pair --feature api-retry
 ```
 
+To create an isolated Claude-managed Git worktree and bind both terminals to it,
+define the worktree once on the pair command:
+
+```powershell
+just pair api-retry --worktree api-retry
+```
+
+```bash
+./scripts/shell/reviewer.sh start-pair --feature api-retry --worktree api-retry
+```
+
+Claude creates the worktree, and Codex waits for Claude's authenticated
+`SessionStart` path before opening its thread. Codex uses that path as its
+working root and additional project directory; bridge-injected turns and
+approved validation recipes also execute against the worktree. Reuse the same
+feature and worktree name to resume the pair. A feature cannot later switch
+between the main checkout and a worktree, or move to a different worktree.
+
 The launcher opens two terminals—or prints their commands when a graphical
 terminal is unavailable—one for Claude and one for Codex. Work normally in
 Claude. If Claude uses `AskUserQuestion`, its question and choices appear in

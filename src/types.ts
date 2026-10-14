@@ -85,7 +85,10 @@ export interface QuestionAdvisory {
 export interface FeaturePair {
   feature: string;
   displayName: string;
+  repositoryRoot?: string;
   projectRoot: string;
+  worktreeName?: string;
+  worktreePending?: boolean;
   claudeSessionId?: string;
   claudeSessionStarted?: boolean;
   claudeSessionLifecycleVersion?: number;
