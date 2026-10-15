@@ -122,10 +122,13 @@ test("paired Codex sessions resume remotely without permission overrides", () =>
   assert.deepEqual(pairedCodexArguments(
     { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-2", worktreeName: "feature-x" },
     "C:\\project\\.claude\\worktrees\\feature-x"
-  ).slice(-4), [
+  ).slice(-2), [
     "-C", "C:\\project\\.claude\\worktrees\\feature-x",
-    "--add-dir", "C:\\project\\.claude\\worktrees\\feature-x"
   ]);
+  assert.equal(pairedCodexArguments(
+    { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-2", worktreeName: "feature-x" },
+    "C:\\project\\.claude\\worktrees\\feature-x"
+  ).includes("--add-dir"), false);
 });
 
 test("policy initialization cannot access review-tool curation", () => {

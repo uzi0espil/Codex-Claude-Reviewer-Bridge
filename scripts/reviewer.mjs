@@ -660,7 +660,6 @@ export function pairedCodexArguments(pair, projectRoot, passthrough = []) {
     "--no-alt-screen",
     "resume", pair.codexThreadId,
     "-C", projectRoot,
-    ...(pair.worktreeName ? ["--add-dir", projectRoot] : []),
     ...remainingArguments
   ];
 }

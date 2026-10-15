@@ -188,7 +188,10 @@ first launch. Codex does not create a second worktree. Instead, its launcher
 waits for Claude's `SessionStart`, and the broker verifies the reported `cwd`
 has the same Git common directory as the instance's bound repository. That
 authenticated path becomes the immutable project root for the feature. Codex
-uses it for `-C`, `--add-dir`, thread start/resume, and every injected turn.
+uses it for `-C` and for the app-server `cwd` and `runtimeWorkspaceRoots` on
+thread start/resume and every injected turn. Remote Codex sessions do not accept
+the local CLI's `--add-dir` option, so workspace access is configured entirely
+through those app-server fields.
 Approved primary-repository validation recipes may receive the same path as
 `projectRoot`; the review-tools server accepts it only while it is the active,
 authenticated worktree of a stored pair, then resolves all recipe paths and
