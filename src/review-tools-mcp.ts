@@ -1,6 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
+import path from "node:path";
+import { createHash } from "node:crypto";
 import { bridgeVersion } from "./version.js";
 import {
   executeReviewTool,
@@ -26,7 +28,10 @@ import {
   summarizeReviewToolsPreflight,
   writeReviewToolsReadinessCache,
   writeReviewToolsManifest,
+  reviewToolsReadinessPath,
 } from "./review-tools-store.js";
+import { resolveActiveProjectRoot } from "./active-project-root.js";
+import { samePath } from "./worktree.js";
 
 const projectRoot = loadBoundProjectRoot();
 const server = new McpServer({ name: "application-review-tools", version: bridgeVersion });
@@ -35,6 +40,11 @@ let manifest: ReviewToolsManifest | undefined;
 let loadedManifestSha256: string | undefined;
 let manifestError: string | undefined;
 const proposalRegistry = new ReviewToolsProposalRegistry();
+const projectRootSchema = z.object({ projectRoot: z.string().min(1) });
+const effectiveRoot = (requested?: string) => resolveActiveProjectRoot(projectRoot, requested);
+const readinessPath = (root: string) => samePath(root, projectRoot)
+  ? reviewToolsReadinessPath
+  : path.join(path.dirname(reviewToolsReadinessPath), `readiness-${createHash("sha256").update(root).digest("hex").slice(0, 16)}.json`);
 try {
   const loaded = readReviewToolsManifestFile(undefined, projectRoot);
   manifest = loaded?.value;
@@ -56,9 +66,9 @@ function failure(error: unknown) {
 
 server.registerTool("review_tools_status", {
   description: "Show whether generated recommendations and an approved application review-tool manifest exist. This never executes an application command.",
-  inputSchema: z.object({}),
+  inputSchema: projectRootSchema,
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-}, async () => {
+}, async ({ projectRoot: requestedRoot }) => {
   let approved: ReturnType<typeof readReviewToolsManifestFile>;
   let currentManifestError: string | undefined;
   try {
@@ -70,7 +80,7 @@ server.registerTool("review_tools_status", {
     const detected = readReviewToolsDetection(undefined, projectRoot);
     const revision = readReviewToolsManifestRevision();
     return result({
-      projectRoot,
+      projectRoot: effectiveRoot(requestedRoot),
       detection: detected ? {
         sha256: detected.sha256,
         generatedAt: detected.value.generatedAt,
@@ -136,11 +146,11 @@ server.registerTool("review_tools_refresh_detection", {
 
 server.registerTool("review_tools_catalog", {
   description: "List the user-approved, manifest-backed validation capabilities for the bound application. This never executes a command.",
-  inputSchema: z.object({}),
+  inputSchema: projectRootSchema,
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-}, async () => result(manifest ? {
+}, async ({ projectRoot: requestedRoot }) => result(manifest ? {
   schemaVersion: manifest.schemaVersion,
-  projectRoot,
+  projectRoot: effectiveRoot(requestedRoot),
   approvedAt: manifest.approvedAt,
   manifestSha256: loadedManifestSha256,
   readinessDefaults: manifest.readinessDefaults,
@@ -152,7 +162,7 @@ server.registerTool("review_tools_catalog", {
   } : {}),
   tools: manifest.tools
 } : {
-  projectRoot,
+  projectRoot: effectiveRoot(requestedRoot),
   approved: false,
   error: manifestError,
   guidance: "Use $bridge-init-tools to curate and approve application-specific review tools."
@@ -194,41 +204,47 @@ server.registerTool("review_tools_proposal_details", {
 
 server.registerTool("review_tools_doctor", {
   description: "Check approved tool structure and report effective readiness. Static mode never executes commands, trusted mode records the user's approved runtime assumption, and probe mode uses only unexpired results from review_tools_probe.",
-  inputSchema: z.object({}),
+  inputSchema: projectRootSchema,
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-}, async () => result(manifest ? doctorReviewTools(
+}, async ({ projectRoot: requestedRoot }) => {
+  const root = effectiveRoot(requestedRoot);
+  return result(manifest ? doctorReviewTools(
   manifest,
-  projectRoot,
+  root,
   undefined,
-  loadedManifestSha256 ? readReviewToolsReadinessCache(loadedManifestSha256)?.tools : undefined
+  loadedManifestSha256 ? readReviewToolsReadinessCache(loadedManifestSha256, readinessPath(root))?.tools : undefined
 ) : {
-  projectRoot,
+  projectRoot: root,
   ready: false,
   allReady: false,
   approved: false,
   error: manifestError,
   guidance: "No approved manifest exists. Complete $bridge-init-tools first."
-}));
+  });
+});
 
 server.registerTool("review_tools_probe", {
   description: "Run fixed, user-approved readiness probes for selected tools, or every configured probe when no ids are supplied. Probe results are cached by manifest hash for their approved duration. This never substitutes an unapproved shell command.",
   inputSchema: z.object({
-    toolIds: z.array(z.string().regex(/^[a-z][a-z0-9_]{1,63}$/)).max(200).optional()
+    toolIds: z.array(z.string().regex(/^[a-z][a-z0-9_]{1,63}$/)).max(200).optional(),
+    projectRoot: z.string().min(1)
   }),
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-}, async ({ toolIds }) => {
+}, async ({ toolIds, projectRoot: requestedRoot }) => {
   try {
     if (!manifest || !loadedManifestSha256) throw new Error("No approved manifest with readiness probes is loaded.");
     const current = readReviewToolsManifestFile(undefined, projectRoot);
     if (current?.sha256 !== loadedManifestSha256) {
       throw new Error("The approved manifest changed after this MCP server started. Start a fresh Codex session before probing readiness.");
     }
-    const probed = await probeReviewTools(runner, manifest, toolIds, projectRoot);
-    const cache = writeReviewToolsReadinessCache(loadedManifestSha256, probed.results);
+    const root = effectiveRoot(requestedRoot);
+    const probed = await probeReviewTools(runner, manifest, toolIds, root);
+    const cache = writeReviewToolsReadinessCache(loadedManifestSha256, probed.results, readinessPath(root));
     return result({
       manifestSha256: loadedManifestSha256,
       ...probed,
-      readiness: doctorReviewTools(manifest, projectRoot, undefined, cache.tools)
+      projectRoot: root,
+      readiness: doctorReviewTools(manifest, root, undefined, cache.tools)
     });
   } catch (error) {
     return failure(error);
@@ -258,16 +274,20 @@ server.registerTool("review_tools_write_manifest", {
 
 for (const recipe of manifest?.tools ?? []) {
   const toolName = `review_${recipe.id}`;
+  const rootInputName = recipe.inputs.some(({ name }) => name === "projectRoot") ? "bridgeProjectRoot" : "projectRoot";
   server.registerTool(toolName, {
-    description: `${recipe.description}\nRunner: ${recipe.runner.kind}. Approved evidence: ${recipe.evidence.join(", ") || "user-supplied manifest"}. Commands use argv execution without shell interpolation.`,
-    inputSchema: recipeInputObjectSchema(recipe),
+    description: `${recipe.description}\nRunner: ${recipe.runner.kind}. Approved evidence: ${recipe.evidence.join(", ") || "user-supplied manifest"}. Commands use argv execution without shell interpolation. For a paired worktree, pass its authoritative root as ${rootInputName}.`,
+    inputSchema: recipeInputObjectSchema(recipe).extend({ [rootInputName]: z.string().min(1) }),
     annotations: recipe.annotations
   }, async (input) => {
     try {
       if (readReviewToolsManifestFile(undefined, projectRoot)?.sha256 !== loadedManifestSha256) {
         throw new Error("The approved manifest changed. Restart the bridge and reconnect Codex before executing validation tools.");
       }
-      return result(await executeReviewTool(runner, recipe as ReviewToolRecipe, input as Record<string, unknown>, projectRoot));
+      const values = { ...(input as Record<string, unknown>) };
+      const root = effectiveRoot(typeof values[rootInputName] === "string" ? values[rootInputName] as string : undefined);
+      delete values[rootInputName];
+      return result(await executeReviewTool(runner, recipe as ReviewToolRecipe, values, root));
     } catch (error) {
       return failure(error);
     }

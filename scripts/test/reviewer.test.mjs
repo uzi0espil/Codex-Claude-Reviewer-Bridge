@@ -41,6 +41,7 @@ test("rejects unknown CLI options", () => {
   assert.throws(() => validateCommandArguments("setup", {}, ["--model", "x"]), /does not accept/);
   assert.doesNotThrow(() => validateCommandArguments("tools", { "project-root": "/tmp/app" }, ["--model", "x"]));
   assert.doesNotThrow(() => validateCommandArguments("report", { feature: "x", full: true }, []));
+  assert.doesNotThrow(() => validateCommandArguments("start-pair", { feature: "x", worktree: "feature-x" }, []));
 });
 
 test("reads the live session report from the broker with optional full content", async () => {
@@ -117,6 +118,17 @@ test("paired Codex sessions resume remotely without permission overrides", () =>
     "C:\\project",
     ["--no-alt-screen"]
   ).filter((value) => value === "--no-alt-screen").length, 1);
+
+  assert.deepEqual(pairedCodexArguments(
+    { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-2", worktreeName: "feature-x" },
+    "C:\\project\\.claude\\worktrees\\feature-x"
+  ).slice(-2), [
+    "-C", "C:\\project\\.claude\\worktrees\\feature-x",
+  ]);
+  assert.equal(pairedCodexArguments(
+    { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-2", worktreeName: "feature-x" },
+    "C:\\project\\.claude\\worktrees\\feature-x"
+  ).includes("--add-dir"), false);
 });
 
 test("policy initialization cannot access review-tool curation", () => {

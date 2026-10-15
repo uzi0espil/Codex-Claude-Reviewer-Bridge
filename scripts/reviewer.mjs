@@ -17,7 +17,7 @@ const startupLockPath = path.join(runtimeDirectory, "startup.lock");
 
 const optionNames = new Set([
   "project-root", "project-name", "destination", "template-repository", "feature",
-  "profile", "prompt", "session", "ref", "terminal"
+  "profile", "prompt", "session", "ref", "terminal", "worktree"
 ]);
 const booleanNames = new Set(["skip-playwright", "device-auth", "resume", "last", "full"]);
 
@@ -57,9 +57,9 @@ export function validateCommandArguments(command, options, passthrough) {
     folders: [], permissions: [],
     "default-mode": [],
     notifications: [],
-    "start-pair": ["feature", "profile", "project-root", "terminal"],
-    "start-coder": ["feature", "project-root"],
-    "start-reviewer": ["prompt", "feature", "profile", "resume", "last", "session", "project-root"],
+    "start-pair": ["feature", "profile", "project-root", "terminal", "worktree"],
+    "start-coder": ["feature", "project-root", "worktree"],
+    "start-reviewer": ["prompt", "feature", "profile", "resume", "last", "session", "project-root", "worktree"],
     ensure: [], stop: [], update: ["ref"], report: ["feature", "full"]
   };
   if (!Object.hasOwn(allowed, command)) throw new Error(`Unknown command: ${command}`);
@@ -601,19 +601,32 @@ async function tools(options, passthrough) {
 async function startCoder(options, passthrough) {
   await ensureBridge();
   const feature = requireOption(options, "feature");
-  const projectRoot = resolveProjectRoot(options["project-root"]);
-  const pair = await bridgeRequest("/pair/claude", { feature, projectRoot });
+  const repositoryRoot = resolveProjectRoot(options["project-root"]);
+  const worktreeName = options.worktree ? String(options.worktree) : undefined;
+  const pair = await bridgeRequest("/pair/claude", { feature, projectRoot: repositoryRoot, worktreeName });
   const settings = path.join(reviewerRoot, "claude-bridge.settings.json");
   if (!fs.existsSync(settings)) throw new Error(`Claude hook settings are missing; run '${platformExample("setup")}'.`);
   const args = ["--name", pair.displayName, "--settings", settings];
   if (pair.claudeSessionId) args.push(pair.claudeSessionStarted ? "--resume" : "--session-id", pair.claudeSessionId);
+  if (pair.worktreePending) args.push("--worktree", worktreeName);
   args.push(...passthrough);
-  run("claude", args, { cwd: projectRoot, env: { ...process.env, REVIEW_BRIDGE_FEATURE: pair.feature } });
+  run("claude", args, { cwd: pair.worktreePending ? repositoryRoot : pair.projectRoot, env: { ...process.env, REVIEW_BRIDGE_FEATURE: pair.feature } });
+}
+
+async function waitForPairRoot(feature, repositoryRoot, worktreeName, timeoutMs = 300_000) {
+  if (!worktreeName) return repositoryRoot;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await bridgeRequest("/pair/worktree", { feature, projectRoot: repositoryRoot, worktreeName });
+    if (result.state === "ready") return String(result.projectRoot);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Timed out waiting for Claude to create and report worktree '${worktreeName}'. Check the Claude terminal for its startup error.`);
 }
 
 async function startReviewer(options, passthrough) {
-  const projectRoot = resolveProjectRoot(options["project-root"]);
-  assertGitRepository(projectRoot);
+  const repositoryRoot = resolveProjectRoot(options["project-root"]);
+  assertGitRepository(repositoryRoot);
   const selectors = [options.resume, options.last, options.session].filter(Boolean);
   if (options.profile && !["off", "manual", "once", "auto"].includes(String(options.profile))) throw new Error("--profile must be off, manual, once, or auto.");
   if (selectors.length > 1) throw new Error("Use only one of --resume, --last, or --session.");
@@ -622,18 +635,22 @@ async function startReviewer(options, passthrough) {
     throw new Error("Paired mode uses the stored feature mapping; do not combine --feature with another session selector or prompt.");
   }
   const args = [];
+  let launchRoot = repositoryRoot;
   if (options.feature) {
     await ensureBridge();
-    let pair = await bridgeRequest("/pair/codex", { feature: options.feature, projectRoot });
+    const worktreeName = options.worktree ? String(options.worktree) : undefined;
+    const projectRoot = await waitForPairRoot(String(options.feature), repositoryRoot, worktreeName);
+    launchRoot = projectRoot;
+    let pair = await bridgeRequest("/pair/codex", { feature: options.feature, projectRoot: repositoryRoot, worktreeName });
     if (options.profile) pair = await bridgeRequest("/mode", { feature: pair.feature, mode: options.profile });
     args.push(...pairedCodexArguments(pair, projectRoot, passthrough));
-  } else if (options.session) args.push("resume", String(options.session), "-C", projectRoot);
-  else if (options.last) args.push("resume", "--last", "-C", projectRoot);
-  else if (options.resume) args.push("resume", "-C", projectRoot);
-  else args.push("-C", projectRoot);
+  } else if (options.session) args.push("resume", String(options.session), "-C", repositoryRoot);
+  else if (options.last) args.push("resume", "--last", "-C", repositoryRoot);
+  else if (options.resume) args.push("resume", "-C", repositoryRoot);
+  else args.push("-C", repositoryRoot);
   if (!options.feature) args.push(...passthrough);
   if (options.prompt) args.push(String(options.prompt));
-  run("codex", args, { cwd: projectRoot, env: { ...process.env, CODEX_HOME: reviewerRoot } });
+  run("codex", args, { cwd: launchRoot, env: { ...process.env, CODEX_HOME: reviewerRoot } });
 }
 
 export function pairedCodexArguments(pair, projectRoot, passthrough = []) {
@@ -650,6 +667,7 @@ export function pairedCodexArguments(pair, projectRoot, passthrough = []) {
 function pairChildArguments(kind, options, passthrough) {
   const values = [kind, "--feature", String(options.feature)];
   if (options["project-root"]) values.push("--project-root", String(options["project-root"]));
+  if (options.worktree) values.push("--worktree", String(options.worktree));
   if (kind === "start-reviewer" && options.profile) values.push("--profile", String(options.profile));
   if (kind === "start-coder" && passthrough.length) values.push("--", ...passthrough);
   return values;
@@ -695,6 +713,10 @@ async function startPair(options, passthrough) {
   const feature = requireOption(options, "feature");
   if (options.profile && !["off", "manual", "once", "auto"].includes(String(options.profile))) throw new Error("--profile must be off, manual, once, or auto.");
   if (options.terminal && !["auto", "print"].includes(String(options.terminal))) throw new Error("--terminal must be auto or print.");
+  if (options.worktree !== undefined && !String(options.worktree).trim()) throw new Error("--worktree requires a non-empty name.");
+  if (passthrough.some((value) => value === "--worktree" || value === "-w")) {
+    throw new Error("Define --worktree once as a start-pair option, before '--', so Claude and Codex use the same checkout.");
+  }
   const projectRoot = resolveProjectRoot(options["project-root"]);
   if (!fs.existsSync(localPolicyPath)) console.warn(`Warning: no application-specific review policy exists. Run '${platformExample("policy")}' to create one.`);
   const common = { ...options, feature, "project-root": projectRoot };
@@ -828,7 +850,7 @@ async function create(options) {
 
 function usage() {
   console.log("Folder/tool access: folders <list|add|remove> [path ...]; tools --project-root <registered folder>; permissions");
-  console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  default-mode    Set the mode inherited by new workstreams\n  notifications   Enable or disable desktop notifications\n  start-pair      Open paired Claude and Codex terminals\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
+  console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  default-mode    Set the mode inherited by new workstreams\n  notifications   Enable or disable desktop notifications\n  start-pair      Open paired Claude and Codex terminals [--worktree <name>]\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
 }
 
 export async function main(argv = process.argv.slice(2)) {

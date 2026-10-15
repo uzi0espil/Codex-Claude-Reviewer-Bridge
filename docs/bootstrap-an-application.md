@@ -188,6 +188,23 @@ From the generated instance:
 ./scripts/shell/reviewer.sh start-pair --feature billing-retry-policy
 ```
 
+To start both agents on a new isolated worktree, specify its name once:
+
+```powershell
+just pair billing-retry-policy --worktree billing-retry-policy
+```
+
+```bash
+./scripts/shell/reviewer.sh start-pair --feature billing-retry-policy --worktree billing-retry-policy
+```
+
+Claude creates the managed worktree. The Codex launcher waits for Claude's
+`SessionStart` hook, verifies that its reported working directory is a linked
+worktree of the bound repository, and then uses that directory for the Codex
+thread, injected review turns, filesystem access, and approved validation
+recipes. On later launches, repeat the same feature and worktree name; the
+stored worktree is resumed rather than recreated.
+
 The Unix launcher detects Terminal on macOS and common Linux terminal emulators.
 If none is available, it prints separate `start-coder` and `start-reviewer`
 commands. Force that portable fallback with `--terminal print`. WSL follows this
@@ -197,6 +214,10 @@ Arguments following `--` are passed unchanged to Claude. PowerShell users use
 `--passthrough` for the same purpose because PowerShell consumes a literal `--`
 before a script receives it. The corresponding `start-reviewer` and `policy`
 commands pass their trailing arguments to Codex.
+
+`--worktree` is a bridge option and must appear before the passthrough delimiter.
+Do not pass Claude's `--worktree` or `-w` manually after `--`, because Codex
+would not receive the corresponding pairing metadata.
 
 Use one stable feature name for one task. It selects immutable Claude and Codex
 session UUIDs; matching terminal titles do not route messages. Use a new feature

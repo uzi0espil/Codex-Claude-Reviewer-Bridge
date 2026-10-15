@@ -183,6 +183,20 @@ The paired Codex TUI is launched with `--no-alt-screen`. Broker-started app-serv
 turns therefore remain in terminal scrollback even if a later turn redraws the
 interface; this does not inject another model-visible item.
 
+An optional pair-level `--worktree <name>` is forwarded to Claude only for the
+first launch. Codex does not create a second worktree. Instead, its launcher
+waits for Claude's `SessionStart`, and the broker verifies the reported `cwd`
+has the same Git common directory as the instance's bound repository. That
+authenticated path becomes the immutable project root for the feature. Codex
+uses it for `-C` and for the app-server `cwd` and `runtimeWorkspaceRoots` on
+thread start/resume and every injected turn. Remote Codex sessions do not accept
+the local CLI's `--add-dir` option, so workspace access is configured entirely
+through those app-server fields.
+Approved primary-repository validation recipes may receive the same path as
+`projectRoot`; the review-tools server accepts it only while it is the active,
+authenticated worktree of a stored pair, then resolves all recipe paths and
+working directories against it.
+
 Related folders have separate review-tools MCP servers, selected by a stable path
 hash and a `REVIEW_TOOLS_PROJECT_ROOT` environment value. The server validates
 that the root is registered in `bridge.local.json`. Primary tool storage remains
