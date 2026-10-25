@@ -34,7 +34,7 @@
     "release": "npm run stage:package && semantic-release"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "2.2.0",
+    "@modelcontextprotocol/server": "2.3.0",
     "@playwright/mcp": "0.0.83",
     "ws": "8.22.0",
     "yaml": "2.9.1",
