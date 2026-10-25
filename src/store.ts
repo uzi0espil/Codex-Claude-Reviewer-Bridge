@@ -45,14 +45,17 @@ export class StateStore {
     return this.state.pairs[featureKey(feature)];
   }
 
-  ensure(feature: string, projectRoot: string, defaultMode: DefaultBridgeMode = "manual"): FeaturePair {
+  ensure(feature: string, projectRoot: string, defaultMode: DefaultBridgeMode = "manual", worktreeName?: string): FeaturePair {
     const key = featureKey(feature);
     let pair = this.state.pairs[key];
     if (!pair) {
       pair = {
         feature: key,
         displayName: feature.trim(),
+        repositoryRoot: path.resolve(projectRoot),
         projectRoot: path.resolve(projectRoot),
+        worktreeName,
+        worktreePending: Boolean(worktreeName),
         mode: defaultMode,
         status: "idle",
         autoRound: 0,
@@ -62,8 +65,16 @@ export class StateStore {
       };
       this.state.pairs[key] = pair;
       this.save();
-    } else if (path.resolve(projectRoot) !== pair.projectRoot) {
-      throw new Error(`Feature '${feature}' is already paired with ${pair.projectRoot}.`);
+    } else {
+      const repositoryRoot = pair.repositoryRoot ?? pair.projectRoot;
+      if (path.resolve(projectRoot) !== repositoryRoot) {
+        throw new Error(`Feature '${feature}' is already paired with repository ${repositoryRoot}.`);
+      }
+      if ((pair.worktreeName ?? undefined) !== (worktreeName ?? undefined)) {
+        throw new Error(pair.worktreeName
+          ? `Feature '${feature}' is already paired with worktree '${pair.worktreeName}'.`
+          : `Feature '${feature}' is already paired without a managed worktree.`);
+      }
     }
     return pair;
   }

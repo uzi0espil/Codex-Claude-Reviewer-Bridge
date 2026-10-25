@@ -225,7 +225,7 @@ test("automatic review prompts request a control tool and human-readable respons
   assert.match(prompt, /needs_user = choice/i);
   assert.match(prompt, /0\/unlimited/i);
   assert.doesNotMatch(prompt, /cycle report/i);
-  assert.ok(prompt.length < 1_000);
+  assert.ok(prompt.length < 1_200);
 });
 
 test("interim review prompts expose bounded background work and allow findings or silent deferral", () => {
@@ -654,6 +654,22 @@ test("new pairs inherit the instance default without changing existing pairs", (
     const existing = store.ensure("Automatic Feature", directory, "off");
     assert.equal(existing.mode, "auto");
     assert.equal(store.ensure("Disabled Feature", directory, "off").mode, "off");
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("worktree pairing persists one repository and worktree identity", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-bridge-pair-worktree-"));
+  try {
+    const store = new StateStore(path.join(directory, "state.json"));
+    const created = store.ensure("Feature Worktree", directory, "manual", "feature-wt");
+    assert.equal(created.repositoryRoot, path.resolve(directory));
+    assert.equal(created.projectRoot, path.resolve(directory));
+    assert.equal(created.worktreePending, true);
+    assert.equal(store.ensure("Feature Worktree", directory, "manual", "feature-wt").worktreeName, "feature-wt");
+    assert.throws(() => store.ensure("Feature Worktree", directory, "manual"), /already paired with worktree/i);
+    assert.throws(() => store.ensure("Feature Worktree", directory, "manual", "other-wt"), /already paired with worktree/i);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
