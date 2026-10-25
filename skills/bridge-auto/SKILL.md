@@ -3,6 +3,11 @@ name: bridge-auto
 description: Arm the automatic Claude-Codex review loop, optionally with a per-cycle round limit. Use when the user explicitly requests automatic review and revision without approval after every round.
 ---
 
+For a temporary break, use `$bridge-standby` to keep auto armed and capture
+context, then `$bridge-resume` to catch up without resetting the round counter
+or limit. Confirmed usage exhaustion enters standby automatically. Re-arming
+auto with unfinished recovery leaves it in standby until explicitly resumed.
+
 Accept zero or one argument:
 
 - With no argument, call `review_bridge_set_mode` with the paired feature and

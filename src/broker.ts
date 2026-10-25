@@ -2,6 +2,7 @@ import fs from "node:fs";
 import http, { IncomingMessage, ServerResponse } from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawn, ChildProcess } from "node:child_process";
 import { AppServerClient, CompletedTurn, StartedTurn } from "./app-server.js";
@@ -32,6 +33,9 @@ import { readDesktopNotificationsEnabled, readInstanceDefaultMode } from "./inst
 import { checkpointDeferralError, normalizeBackgroundTasks } from "./interim-review.js";
 import { AttentionEventKind, sendDesktopNotification } from "./desktop-notifications.js";
 import { samePath, validateManagedWorktree } from "./worktree.js";
+import { ContextJournal } from "./context-journal.js";
+import { StandbyController, reviewsSuspended } from "./standby.js";
+import { isUsageLimit } from "./usage-limit.js";
 
 type Release = StopHookResult;
 type Waiter = { resolve: (release: Release) => void; response: ServerResponse; onClose: () => void };
@@ -50,6 +54,26 @@ let appProcess: ChildProcess | undefined;
 let app: AppServerClient;
 let appProxy: AppServerProxy | undefined;
 let shutdownBroker: () => void = () => undefined;
+const standby = new StandbyController(store, new ContextJournal(path.join(runtimeDirectory, "context")), {
+  ensureThread: ensureCodexThread,
+  busy: (thread) => activeCodexThreads.has(thread),
+  inject: (thread, text) => app.seedContext(thread, text),
+  interrupt: interruptReview,
+  release: (id) => { release(id, { kind: "allow" }); },
+  report: (feature, id) => { sessionReports.update(feature, id, { status: "standby", resolvedAt: new Date().toISOString() }); },
+  review: (pair, handoff) => {
+    const checkpoint = createCheckpoint(pair, store.newPendingId(), handoff.content,
+      new Date().toISOString(), "pull-queue", handoff.backgroundTasks);
+    store.update(pair.feature, (value) => {
+      value.pending = checkpoint; value.checkpointSequence = checkpoint.sequence;
+      value.status = "reviewing";
+    });
+    sessionReports.start(pair, checkpoint);
+    scheduleReview(pair, checkpoint.id);
+  },
+  rateLimits: () => app.readRateLimits(),
+  notify: (kind, name) => notifyUser(kind === "standby" ? "auto-standby" : "auto-recovered", name)
+});
 
 function log(message: string): void {
   fs.mkdirSync(runtimeDirectory, { recursive: true });
@@ -136,6 +160,7 @@ async function initializeCodexThread(feature: string): Promise<FeaturePair> {
       await app.resumeThread(pair.codexThreadId, pair.projectRoot);
       threadId = pair.codexThreadId;
     } catch (error) {
+      if (isUsageLimit(error)) throw error;
       log(`Could not resume ${pair.codexThreadId}; creating replacement: ${String(error)}`);
     }
   }
@@ -205,6 +230,7 @@ async function interruptReview(threadId: string, turnId: string): Promise<void> 
 }
 
 async function startReview(pair: FeaturePair, pendingId: string): Promise<void> {
+  if (reviewsSuspended(pair)) return;
   if (pair.codexThreadId && activeCodexThreads.has(pair.codexThreadId)) {
     throw new CodexThreadBusyError(pair.codexThreadId);
   }
@@ -212,6 +238,12 @@ async function startReview(pair: FeaturePair, pendingId: string): Promise<void> 
   const current = store.get(pair.feature);
   if (!current?.pending || current.pending.id !== pendingId) return;
   const checkpoint = current.pending;
+  if (reviewsSuspended(current)) return;
+  if (current.mode === "auto") {
+    const delivered = await standby.deliver(current, () => !reviewsSuspended(current) && current.pending?.id === pendingId);
+    if (!delivered) throw new CodexThreadBusyError(pair.codexThreadId!);
+    store.update(pair.feature, (value) => { if (value.pending?.id === pendingId) value.pending.contextSequence = value.contextCursor; });
+  }
   if (activeCodexThreads.has(pair.codexThreadId!)) throw new CodexThreadBusyError(pair.codexThreadId!);
   const consumedCompactionReminder = Boolean(pair.reviewContextCompacted);
   const turnId = await app.startReview(
@@ -240,16 +272,21 @@ function scheduleQuestionAdvisory(feature: string): void {
     .catch((error) => log(`Prior question advisory transition failed for ${feature}: ${String(error)}`))
     .then(async () => {
       let pair = store.get(feature);
-      if (!pair || pair.activeQuestionAdvisory || !pair.questionAdvisoryQueue?.length) return;
+      if (!pair || reviewsSuspended(pair) || pair.activeQuestionAdvisory || !pair.questionAdvisoryQueue?.length) return;
       if (pair.status === "reviewing" && pair.pending?.codexTurnId && !pair.pending.codexResponse) return;
       if (pair.codexThreadId && activeCodexThreads.has(pair.codexThreadId)) return;
-      pair = await ensureCodexThread(pair);
+      try { pair = await ensureCodexThread(pair); }
+      catch (error) {
+        if (!await standby.exhausted(feature, error)) log(`Question advisory thread initialization failed for ${feature}.`);
+        return;
+      }
       const current = store.get(feature);
       const advisory = current?.questionAdvisoryQueue?.[0];
-      if (!current || current.activeQuestionAdvisory || !advisory) return;
+      if (!current || reviewsSuspended(current) || current.activeQuestionAdvisory || !advisory) return;
       if (current.status === "reviewing" && current.pending?.codexTurnId && !current.pending.codexResponse) return;
       if (activeCodexThreads.has(current.codexThreadId!)) return;
       try {
+        if (current.mode === "auto" && !await standby.deliver(current, () => !reviewsSuspended(current) && current.questionAdvisoryQueue?.[0]?.id === advisory.id)) return;
         const consumedCompactionReminder = Boolean(current.reviewContextCompacted);
         const turnId = await app.startQuestionAdvisory(
           current.codexThreadId!,
@@ -272,6 +309,7 @@ function scheduleQuestionAdvisory(feature: string): void {
         }
         log(`Started question advisory ${advisory.id} for ${feature} as Codex turn ${turnId}.`);
       } catch (error) {
+        if (await standby.exhausted(feature, error)) return;
         // A user-driven Codex turn may already be active. Keep the advisory queued;
         // turn/completed will trigger another event-driven dispatch attempt.
         log(`Question advisory ${advisory.id} remains queued for ${feature}: ${String(error)}`);
@@ -290,14 +328,19 @@ function schedulePulledReview(feature: string): void {
     .then(async () => {
       let pair = store.get(feature);
       const pulled = pair?.pulledReview;
-      if (!pair || !pulled || pulled.codexTurnId) return;
+      if (!pair || reviewsSuspended(pair) || !pulled || pulled.codexTurnId) return;
       if (pair.pending || pair.queuedClaudeContext) return;
       if (pair.codexThreadId && activeCodexThreads.has(pair.codexThreadId)) return;
-      pair = await ensureCodexThread(pair);
+      try { pair = await ensureCodexThread(pair); }
+      catch (error) {
+        if (!await standby.exhausted(feature, error)) log(`Pulled review thread initialization failed for ${feature}.`);
+        return;
+      }
       const current = store.get(feature);
-      if (!current?.pulledReview || current.pulledReview.id !== pulled.id || current.pending) return;
+      if (!current?.pulledReview || reviewsSuspended(current) || current.pulledReview.id !== pulled.id || current.pending) return;
       if (activeCodexThreads.has(current.codexThreadId!)) return;
       try {
+        if (current.mode === "auto" && !await standby.deliver(current, () => !reviewsSuspended(current) && current.pulledReview?.id === pulled.id)) return;
         const consumedCompactionReminder = Boolean(current.reviewContextCompacted);
         const turnId = await app.startReview(
           current.codexThreadId!,
@@ -317,6 +360,7 @@ function schedulePulledReview(feature: string): void {
         }
         log(`Started pulled review ${pulled.id} for ${feature} as Codex turn ${turnId}.`);
       } catch (error) {
+        if (await standby.exhausted(feature, error)) return;
         if (isCodexThreadBusyError(error) || activeCodexThreads.has(current.codexThreadId!)) {
           log(`Pulled review ${pulled.id} remains queued for ${feature} until the active Codex turn completes.`);
           return;
@@ -374,6 +418,7 @@ function scheduleReview(pair: FeaturePair, pendingId: string, supersededTurnId?:
       } catch (error) {
         const current = store.get(pair.feature);
         if (!current?.pending || current.pending.id !== pendingId) return;
+        if (await standby.exhausted(pair.feature, error)) return;
         if (isCodexThreadBusyError(error) || (current.codexThreadId && activeCodexThreads.has(current.codexThreadId))) {
           log(`Review ${pendingId} remains queued for ${pair.feature} until the active Codex turn completes.`);
           return;
@@ -419,6 +464,24 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
   if (!pair?.pending) return;
   const pendingId = pair.pending.id;
   const completion = reviewTurnCompletion(turn.status, turn.text);
+  if (completion === "completed" && pair.mode === "auto") {
+    try {
+      const history = standby.history(pair);
+      if (history.length > (pair.pending.contextSequence ?? 0)) {
+        standby.enter(pair.feature, "recovery-failed");
+        standby.resume(pair.feature);
+        return;
+      }
+      store.update(pair.feature, (value) => { value.recoveryHandoffSequence = value.pending?.contextSequence; });
+      if (pair.standby) {
+        notifyUser("auto-recovered", pair.displayName);
+        store.update(pair.feature, (value) => { value.standby = undefined; });
+      }
+    } catch {
+      standby.enter(pair.feature, "capture-gap");
+      return;
+    }
+  }
   if (completion === "interrupted") {
     sessionReports.complete(pair.feature, pendingId, turn.text, {
       codexTurnId: turn.turnId,
@@ -617,11 +680,16 @@ function finishPulledReview(turn: CompletedTurn): void {
 
 async function handleTurnCompleted(turn: CompletedTurn): Promise<void> {
   activeCodexThreads.delete(turn.threadId);
+  const owner = store.all().find((pair) => pair.pending?.codexTurnId === turn.turnId
+    || pair.activeQuestionAdvisory?.codexTurnId === turn.turnId || pair.pulledReview?.codexTurnId === turn.turnId);
+  if (owner && turn.status === "failed" && await standby.exhausted(owner.feature, turn.error)) return;
   await finishReview(turn);
   finishQuestionAdvisory(turn);
   finishPulledReview(turn);
   for (const pair of store.all()) {
     if (pair.codexThreadId !== turn.threadId) continue;
+    if (pair.activity === "catching-up") { standby.dispatch(pair.feature); continue; }
+    if (reviewsSuspended(pair)) continue;
     if (pair.status === "reviewing" && pair.pending && !pair.pending.codexTurnId) {
       scheduleReview(pair, pair.pending.id);
     } else if (pair.pulledReview && !pair.pulledReview.codexTurnId) {
@@ -656,8 +724,13 @@ function send(res: ServerResponse, status: number, value: unknown): void {
 }
 
 function publicPair(pair: FeaturePair): Record<string, unknown> {
+  let backlog;
+  try { standby.history(pair); backlog = standby.journal.summary(pair.feature, pair.contextCursor ?? 0); }
+  catch { backlog = { captureGap: true }; }
   return {
     ...pair,
+    activity: pair.activity ?? "active",
+    backlog,
     claudeSessionStarted: pair.claudeSessionStarted ?? false,
     initialPrompt: pair.initialPrompt ? "[held until Codex thread is ready]" : undefined,
     workstreamContext: pair.workstreamContext ? "[stored for replacement thread recovery]" : undefined,
@@ -749,6 +822,21 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const pair = feature ? store.get(feature) : undefined;
     return pair ? send(res, 200, publicPair(pair)) : send(res, 404, { error: "unknown feature" });
   }
+  if ((req.url === "/standby" || req.url === "/resume") && req.method === "POST") {
+    const pair = feature ? store.get(feature) : undefined;
+    if (!pair) return send(res, 404, { error: "unknown feature" });
+    if (pair.mode !== "auto") return send(res, 409, { error: "Standby and resume require auto mode." });
+    if (req.url === "/standby") standby.enter(pair.feature, "user-requested");
+    else {
+      try { standby.resume(pair.feature); }
+      catch (error) { return send(res, 409, { error: error instanceof Error ? error.message : "Cannot resume." }); }
+    }
+    return send(res, 200, publicPair(pair));
+  }
+  if (["/pull-review", "/pull-queue", "/publish", "/force-publish", "/auto-decision", "/defer"].includes(req.url ?? "")) {
+    const pair = feature ? store.get(feature) : undefined;
+    if (pair && reviewsSuspended(pair)) return send(res, 409, { error: "Automatic reviews are on standby or catching up. Use resume first." });
+  }
   if (req.url === "/report" && req.method === "POST") {
     if (!feature) return send(res, 400, { error: "feature required" });
     if (body.full !== undefined && typeof body.full !== "boolean") {
@@ -835,6 +923,12 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
         );
       }
       value.mode = mode;
+      if (mode !== "auto") {
+        value.activity = "active";
+        if (value.standby) { value.standby.generation++; value.standby.nextRetryAt = undefined; }
+      } else if (value.recoveryNeeded) {
+        value.activity = "standby";
+      }
       value.autoRound = 0;
       value.autoRoundLimit = autoRoundLimitForMode(mode, body.roundLimit as number | undefined);
       if (mode === "off") {
@@ -846,6 +940,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
         value.activeQuestionAdvisory = undefined;
       }
     });
+    standby.cancelTimer(feature);
     if (advisoryTurnId && pair.codexThreadId) {
       await interruptReview(pair.codexThreadId, advisoryTurnId);
       log(`Interrupted question advisory turn ${advisoryTurnId} because ${feature} was switched off.`);
@@ -990,6 +1085,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const pair = store.update(String(body.feature), (value) => {
       recordClaudeSession(value, input.session_id, true);
     });
+    if (input.prompt) standby.capture(pair, { kind: "prompt", content: input.prompt, sessionId: input.session_id });
     let context = pair.queuedClaudeContext;
     if (context) store.update(pair.feature, (value) => {
       value.queuedClaudeContext = undefined;
@@ -1002,7 +1098,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
         value.initialPrompt = undefined;
       });
     }
-    if (current.codexThreadId && current.workstreamContext && current.workstreamContextThreadId !== current.codexThreadId) {
+    if (!reviewsSuspended(current) && current.codexThreadId && current.workstreamContext && current.workstreamContextThreadId !== current.codexThreadId) {
       await ensureCodexThread(current);
     }
     return send(res, 200, { additionalContext: context, sessionTitle: pair.displayName });
@@ -1028,6 +1124,8 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const existing = store.get(feature);
     if (!existing) return send(res, 200, { accepted: false, reason: "unknown feature" });
     if (existing.mode === "off") return send(res, 200, { accepted: false, reason: "bridge mode is off" });
+    standby.capture(existing, { kind: "question", content: JSON.stringify(advisory.questions), sessionId: input.session_id, sourceId: input.tool_use_id });
+    if (reviewsSuspended(existing)) return send(res, 200, { accepted: true, captured: true });
     if (existing.seenQuestionAdvisoryIds?.includes(advisory.id)) {
       return send(res, 200, { accepted: true, duplicate: true, id: advisory.id });
     }
@@ -1041,10 +1139,26 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     scheduleQuestionAdvisory(feature);
     return;
   }
+  if (req.url === "/hook/answer" && req.method === "POST") {
+    const input = body.input as ClaudeHookInput;
+    const pair = feature ? store.get(feature) : undefined;
+    if (pair && input.tool_name === "AskUserQuestion") {
+      standby.capture(pair, { kind: "answer", sessionId: input.session_id,
+        sourceId: input.tool_use_id, content: JSON.stringify({ input: input.tool_input, response: input.tool_response }) });
+    }
+    return send(res, 200, {});
+  }
   if (req.url === "/hook/stop" && req.method === "POST") {
     const input = body.input as ClaudeHookInput;
     const pair = store.get(String(body.feature));
     if (!pair || !input.last_assistant_message) return send(res, 200, { kind: "allow" });
+    standby.capture(pair, { kind: "handoff", content: input.last_assistant_message,
+      sessionId: input.session_id, backgroundTasks: normalizeBackgroundTasks(input.background_tasks) });
+    if (reviewsSuspended(pair)) {
+      store.update(pair.feature, (value) => { recordClaudeSession(value, input.session_id, true); });
+      if (pair.activity === "catching-up") standby.dispatch(pair.feature);
+      return send(res, 200, { kind: "allow" });
+    }
     if (pair.mode === "off") {
       store.update(pair.feature, (value) => {
         recordClaudeSession(value, input.session_id, true);
@@ -1116,9 +1230,21 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   return send(res, 404, { error: "not found" });
 }
 
-async function main(): Promise<void> {
+export async function main(testClient?: AppServerClient): Promise<void> {
   fs.mkdirSync(runtimeDirectory, { recursive: true });
-  const appServerUrl = await startAppServer();
+  let appServerUrl: string;
+  if (testClient) {
+    app = testClient;
+    await app.connect();
+    app.on("turnStarted", (turn: StartedTurn) => { activeCodexThreads.add(turn.threadId); });
+    app.on("turnCompleted", (turn: CompletedTurn) => void handleTurnCompleted(turn));
+    appProxy = await AppServerProxy.start(app);
+    appServerUrl = appProxy.url;
+  } else appServerUrl = await startAppServer();
+  for (const pair of store.all()) {
+    if (pair.mode === "auto" && pair.pending) standby.enter(pair.feature, "recovery-failed");
+    standby.armRetry(pair);
+  }
   const server = http.createServer((req, res) => {
     void route(req, res, appServerUrl).catch((error) => {
       log(`HTTP error: ${String(error)}`);
@@ -1147,6 +1273,7 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     if (shuttingDown) return;
     shuttingDown = true;
+    standby.close();
     for (const pendingId of [...waiters.keys()]) release(pendingId, { kind: "allow" });
     try {
       const endpoint = JSON.parse(fs.readFileSync(endpointPath, "utf8")) as EndpointFile;
@@ -1163,7 +1290,7 @@ async function main(): Promise<void> {
   process.on("SIGTERM", shutdown);
 }
 
-void main().catch((error) => {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) void main().catch((error) => {
   log(`Fatal: ${error instanceof Error ? error.stack : String(error)}`);
   process.exitCode = 1;
 });

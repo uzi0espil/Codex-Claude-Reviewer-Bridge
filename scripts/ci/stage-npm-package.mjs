@@ -8,7 +8,9 @@ export const packageRoot = path.join(repositoryRoot, ".npm-package");
 const copiedPaths = [
   "README.md",
   "LICENSE",
-  "docs",
+  path.join("docs", "architecture.md"),
+  path.join("docs", "bootstrap-an-application.md"),
+  path.join("docs", "review-workflows.md"),
   path.join(".github", "CONTRIBUTING.md"),
   path.join(".github", "SECURITY.md"),
   path.join("scripts", "npm-bootstrap.mjs")
