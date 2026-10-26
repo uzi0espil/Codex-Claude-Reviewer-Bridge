@@ -11,6 +11,12 @@ interface PendingRpc {
   reject: (error: Error) => void;
 }
 
+export class AppServerRpcError extends Error {
+  constructor(readonly detail: any) {
+    super(typeof detail?.message === "string" ? detail.message : "App-server request failed.");
+  }
+}
+
 interface DownstreamRequest {
   downstreamId: JsonRpcId;
   generation: number;
@@ -152,6 +158,10 @@ export class AppServerClient extends EventEmitter {
     });
   }
 
+  async readRateLimits(): Promise<unknown> {
+    return await this.request("account/rateLimits/read", {});
+  }
+
   async startReview(threadId: string, projectRoot: string, prompt: string): Promise<string> {
     return await this.startReadOnlyTurn(threadId, projectRoot, prompt);
   }
@@ -194,7 +204,7 @@ export class AppServerClient extends EventEmitter {
       const pending = this.pending.get(message.id);
       if (pending) {
         this.pending.delete(message.id);
-        if (message.error) pending.reject(new Error(message.error.message ?? JSON.stringify(message.error)));
+        if (message.error) pending.reject(new AppServerRpcError(message.error));
         else pending.resolve(message.result);
         return;
       }

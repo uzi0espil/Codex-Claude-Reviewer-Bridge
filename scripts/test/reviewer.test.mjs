@@ -164,6 +164,8 @@ test("policy initialization cannot access review-tool curation", () => {
 test("generates portable Claude hooks and Codex configuration", () => {
   const settings = claudeSettings("/tmp/project");
   assert.equal(settings.hooks.PreToolUse[0].matcher, "AskUserQuestion");
+  assert.equal(settings.hooks.PostToolUse[0].matcher, "AskUserQuestion");
+  assert.deepEqual(settings.hooks.PostToolUse[0].hooks[0].args.slice(-1), ["answer"]);
   assert.equal(settings.hooks.Stop[0].hooks[0].command, "node");
   const config = codexConfig("/tmp/project with spaces", true, ["/tmp/related project", "/tmp/team's project"]);
   assert.match(config, /web_search = "live"/);
@@ -176,7 +178,7 @@ test("generates portable Claude hooks and Codex configuration", () => {
   }
   assert.match(config, /review_bridge_record_auto_decision/);
   assert.match(config, /review_bridge_defer_checkpoint/);
-  for (const tool of ["pull_review", "pull_queue"]) {
+  for (const tool of ["pull_review", "pull_queue", "standby", "resume"]) {
     assert.ok(config.includes(
       `[mcp_servers.review_bridge.tools.review_bridge_${tool}]\napproval_mode = "approve"`
     ));

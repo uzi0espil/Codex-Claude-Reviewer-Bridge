@@ -117,6 +117,56 @@ use continuation to create authorization or broaden the task. A final pass or a
 human publish or cancel decision resets the unattended counter without
 disarming automatic mode.
 
+### Standby and resume
+
+`$bridge-standby` puts armed auto reviews on standby. Claude continues, held Stops
+are released without feedback, and the bridge collects prompts, completed
+handoffs, structured questions, and available answers. Reviews, question advice,
+and queued feedback stop. Repeating standby is safe and changes usage-limit
+standby into manual standby, cancelling retries.
+
+`$bridge-resume` delivers captured context chronologically to the paired Codex
+thread, then creates one fresh review of the latest handoff against the current
+worktree. Large events are split into bounded batches; originals are retained.
+Earlier handoffs are history, so obsolete fixes are not replayed as separate
+reviews. Catch-up consumes no round and preserves the auto counter and limit.
+
+Resume is asynchronous. `$bridge-status` reports activity, reason, backlog
+counts, journal size, capture gaps, and retry deadline. Resume does not submit a
+Claude prompt: unheld revisions attach to your next prompt and unheld
+continuations require the usual publish/cancel decision. Empty or prompt-only
+backlogs re-arm auto without inventing a checkpoint.
+
+Confirmed Codex usage exhaustion enters standby with the failed handoff and auto
+settings preserved. Future reset times from exhausted windows in the default
+Codex bucket schedule recovery; when both windows are exhausted, the later reset
+is used. Failed scheduled attempts have an exponential backoff floor (one minute
+through fifteen minutes, plus jitter) and stop after five consecutive attempts.
+Unknown, stale, or unrelated-bucket reset times require manual resume. Temporary
+throttling, login errors, empty responses, and unknown failures keep the existing
+generic fail-open behavior rather than being classified as usage exhaustion.
+
+The journal covers successfully received hooks while the broker is available,
+not Claude's full transcript. Prompt and Stop payloads lack reliable retry IDs,
+so identical text remains distinct. Questions/answers deduplicate by session and
+tool-use ID when available. A targeted `PostToolUse` hook captures question
+results; answers are never submitted back to Claude's UI. Re-run setup after
+updating to install that hook.
+
+Interrupted catch-up and lost broker-owned auto checkpoints return to standby
+after restart for explicit recovery. Missing/corrupt history blocks resume and
+surfaces a gap. Private history lives in `runtime/context/<feature>.jsonl`,
+separate from ephemeral reports, and is not automatically evicted. For cleanup,
+stop the broker, archive as needed, and remove a retired feature's journal and
+matching `runtime/state.json` pair entry together. This permanently removes its
+pairing/history. Never remove a live journal alone: cursors protect against
+silent loss. Use a new feature name for fresh work.
+
+Off cancels retries and retains an unfinished standby backlog. Changing modes
+does not replay it; re-arming auto with unfinished recovery requires resume.
+Off-mode activity still retains only the latest handoff and is not appended to
+the auto journal.
+
 ### Background work and interim Stops
 
 Claude Code 2.1.145 and newer includes its in-flight background commands,
@@ -206,6 +256,8 @@ Structured questions and partial turns are not pull candidates.
 | `$bridge-manual` | Review every completed Claude handoff with human approval. |
 | `$bridge-once` | Review only the next completed handoff. |
 | `$bridge-auto [rounds]` | Arm unlimited automatic review, or bound unattended deliveries per cycle with a positive integer. |
+| `$bridge-standby` | Keep auto armed and collect context without review feedback. |
+| `$bridge-resume` | Catch up context and review the latest handoff. |
 | `$bridge-off` | Disable interception and question advice. |
 | `$bridge-pull-review` | Review the latest off-mode handoff for the user only. |
 | `$bridge-pull-queue` | Put the latest off-mode handoff through the currently armed checkpoint mode. |
@@ -246,7 +298,8 @@ advice, and queued next-prompt feedback.
 Interrupting the active Codex review cancels only that checkpoint and releases
 Claude without publishing partial output. It resets the current automatic
 round cycle while leaving manual or automatic mode armed; once mode turns off.
-A genuine failed or empty reviewer turn still fails open and disarms the bridge.
+Confirmed auto usage exhaustion enters standby with the handoff preserved. Other
+failed or empty reviewer turns still fail open and disarm the bridge.
 
 Normal publication uses `$bridge-publish`. Reserve `$bridge-force-publish` for
 recovery after a restart, cancelled checkpoint, disconnected Stop hook, or a

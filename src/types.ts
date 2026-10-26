@@ -9,6 +9,7 @@ export type PairStatus =
   | "failed";
 
 export interface PendingReview {
+  contextSequence?: number;
   id: string;
   sequence?: number;
   supersedes?: {
@@ -83,6 +84,20 @@ export interface QuestionAdvisory {
 }
 
 export interface FeaturePair {
+  activity?: "active" | "standby" | "catching-up";
+  standby?: {
+    reason: "user-requested" | "usage-limit" | "capture-gap" | "recovery-failed";
+    enteredAt: string;
+    generation: number;
+    attempts: number;
+    nextRetryAt?: string;
+  };
+  contextCursor?: number;
+  contextSequence?: number;
+  contextThreadId?: string;
+  contextGap?: boolean;
+  recoveryHandoffSequence?: number;
+  recoveryNeeded?: boolean;
   feature: string;
   displayName: string;
   repositoryRoot?: string;
@@ -131,6 +146,7 @@ export interface EndpointFile {
 }
 
 export interface ClaudeHookInput {
+  tool_response?: unknown;
   session_id: string;
   transcript_path?: string;
   cwd: string;

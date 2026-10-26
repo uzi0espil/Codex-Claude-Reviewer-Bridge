@@ -14,6 +14,7 @@ export type CheckpointReportStatus =
   | "interrupted"
   | "superseded"
   | "released-mode-off"
+  | "standby"
   | "failed";
 
 export interface SessionCheckpointReport {

@@ -3,6 +3,12 @@ name: bridge-status
 description: Show pairing IDs, mode, pending checkpoint, captured off-mode handoff availability, question-advisory queue, queued feedback, and recovery state for a Claude-Codex bridge workstream. Use for routing checks, delivery diagnosis, or bridge status requests.
 ---
 
+Include activity (active, standby, or catching-up), standby reason, backlog
+prompt/handoff counts, journal bytes, any capture gap, and retry deadline when
+returned by the tool. No deadline means manual resume is required. Never expose
+stored message content. In standby, recommend `$bridge-resume` after capacity
+returns or when the user wants automatic review again.
+
 Call `review_bridge_status` with the paired feature and summarize the result.
 
 Treat immutable Claude session and Codex thread IDs as routing; the shared name

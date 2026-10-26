@@ -248,6 +248,8 @@ Change the current workstream's mode from its paired Codex thread:
 | Manual | `$bridge-manual` | Review every Claude Stop; final handoffs wait for your publish or cancel decision. |
 | Once | `$bridge-once` | Review the next substantive Stop, then turn interception off after your decision. |
 | Automatic | `$bridge-auto [rounds]` | Allow automatic review, revision, or already-authorized continuation rounds, optionally bounded per cycle. |
+| Standby | `$bridge-standby` | Keep auto armed and collect Claude context without reviews or feedback. |
+| Resume | `$bridge-resume` | Catch up from standby and review the latest handoff. |
 | Off | `$bridge-off` | Disable Stop interception and question advice. |
 
 When Claude stops while a background command or subagent is still running,
@@ -285,6 +287,15 @@ you and the reviewer, or arm manual, once, or auto mode and use
 `$bridge-pull-queue` to process that handoff through the checkpoint flow. Because
 the off-mode Stop has already completed, queued feedback reaches Claude on your
 next submitted prompt; automatic mode continues normally after that handoff.
+
+Use standby when you intend to resume auto later. It preserves prompts, handoffs,
+structured questions, and available answers in private runtime storage, including
+across broker restarts. Resume preserves the round counter and limit and reviews
+the latest handoff using earlier events as context. It does not restart Claude.
+Confirmed usage exhaustion enters standby automatically; a future quota reset
+time allows bounded automatic retries. Otherwise resume manually after capacity
+returns. Status shows the reason, backlog, and retry deadline. Re-run setup after
+updating to install the question-answer hook.
 
 See [Review workflows](docs/review-workflows.md) for all bridge skills,
 automatic controls, question advisories, live reporting, and recovery.
