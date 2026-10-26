@@ -305,7 +305,7 @@ test("captured handoffs can be reviewed and queued independently once", () => {
   const current = pair({ mode: "off", capturedClaudeMessage: captured });
 
   assert.equal(pullReviewError(current), undefined);
-  assert.match(pullQueueError(current) ?? "", /requires bridge mode manual, once, or auto/i);
+  assert.equal(pullQueueError(current), undefined);
 
   current.capturedClaudeMessage!.reviewRequestedAt = new Date(2).toISOString();
   assert.match(pullReviewError(current) ?? "", /already queued or active/i);
@@ -321,7 +321,7 @@ test("captured handoffs can be reviewed and queued independently once", () => {
 
 test("pull validation rejects conflicting bridge work and permits a newer capture", () => {
   const current = pair({
-    mode: "manual",
+    mode: "off",
     capturedClaudeMessage: captureClaudeMessage(
       "claude-session",
       "First handoff",
@@ -334,6 +334,12 @@ test("pull validation rejects conflicting bridge work and permits a newer captur
   assert.match(pullQueueError(current) ?? "", /checkpoint is already pending/i);
 
   current.pending = undefined;
+  current.queuedClaudeContext = "Already queued feedback";
+  assert.match(pullQueueError(current) ?? "", /feedback is already queued/i);
+  current.queuedClaudeContext = undefined;
+  current.pulledReview = createPulledReview(current.capturedClaudeMessage!);
+  assert.match(pullQueueError(current) ?? "", /review-only advisory is queued or active/i);
+  current.pulledReview = undefined;
   current.capturedClaudeMessage!.reviewRequestedAt = new Date(2).toISOString();
   current.capturedClaudeMessage!.reviewedAt = new Date(3).toISOString();
   current.capturedClaudeMessage = captureClaudeMessage(

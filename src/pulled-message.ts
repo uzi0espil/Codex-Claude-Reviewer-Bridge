@@ -30,7 +30,6 @@ export function pullReviewError(pair: FeaturePair): string | undefined {
 
 export function pullQueueError(pair: FeaturePair): string | undefined {
   if (!pair.capturedClaudeMessage) return "there is no Claude handoff captured while the bridge was off";
-  if (pair.mode === "off") return "pull-queue requires bridge mode manual, once, or auto";
   if (pair.capturedClaudeMessage.queueRequestedAt) {
     return "the latest captured Claude handoff has already been queued for checkpoint review";
   }

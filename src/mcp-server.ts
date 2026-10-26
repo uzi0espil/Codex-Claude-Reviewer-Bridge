@@ -46,7 +46,7 @@ server.registerTool("review_bridge_pull_review", {
 }, async ({ feature }) => result(await bridgeRequest("/pull-review", { feature })));
 
 server.registerTool("review_bridge_pull_queue", {
-  description: "Create an unheld checkpoint from the latest Claude handoff captured while the bridge was off. Requires manual, once, or auto mode; any resulting feedback is delivered on Claude's next user prompt.",
+  description: "Create an unheld checkpoint from the latest Claude handoff captured while the bridge was off, without changing mode. Off mode waits for user publication or cancellation; armed modes use their normal flow. Published feedback is delivered on Claude's next user prompt.",
   inputSchema: z.object({ feature: z.string() })
 }, async ({ feature }) => result(await bridgeRequest("/pull-queue", { feature })));
 

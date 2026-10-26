@@ -61,7 +61,9 @@ round counter. Missing metadata degrades to the ordinary checkpoint path;
 Even in off mode, the Stop hook receives the completed assistant handoff before
 it immediately allows Claude to finish. The broker retains only the latest such
 handoff. A pull-review starts a non-publishable advisory turn, while a pull-queue
-creates a normal unheld checkpoint in the selected armed mode. Both wait behind
+creates an unheld checkpoint without changing the persistent mode. In off mode,
+it waits for user publication or cancellation and published feedback is consumed
+by the next prompt hook while interception remains off. Both wait behind
 an active Codex turn, and a live checkpoint takes precedence over a queued pull
 advisory.
 
