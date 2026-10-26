@@ -121,6 +121,36 @@ endpoint file, and exits.
 
 ## Modes
 
+Auto has an independent activity state: active, standby, or catching-up.
+`StandbyController` owns context capture, recovery generations, and bounded retry
+timers. Standby invalidates and releases any held checkpoint before interrupting
+its broker-owned turn. Dispatch/decision guards prevent late results and old
+feedback from publishing. Interactive turns are not cancelled.
+
+`ContextJournal` appends private ordered records under `runtime/context/`, fsyncs
+before hook acknowledgment, and splits large events into 12,000-character parts.
+Auto captures prompts, Stops, structured questions, and available PostToolUse
+question results. Reliable tool-use IDs deduplicate per session and event kind.
+No full-transcript parsing is introduced. A persisted high-water mark and
+thread-specific acknowledgment cursor detect missing history; torn/invalid
+records block recovery while originals remain available for repair.
+
+Resume injects bounded historical batches and creates one fresh unheld checkpoint
+for the latest unreviewed handoff. Context acknowledgment follows successful
+injection, separately from review completion. Stable IDs and replay labels
+tolerate a crash after upstream acceptance but before local acknowledgment;
+delivery is at least once. Replacement threads receive retained history from
+the beginning. New events during catch-up remain pending; reviews omitting
+newly captured context are superseded before feedback is sent.
+
+Structured `usageLimitExceeded` errors from broker-owned operations enter standby
+without consuming a round. `account/rateLimits/read` supplies future Unix-second
+`resetsAt` values from exhausted default-Codex quota windows when available.
+Retry deadlines/attempts survive restart; timers check transition generations.
+Unknown reset times require manual resume. Manual standby and mode changes cancel
+retries. Startup converts lost auto checkpoints and interrupted catch-up into
+standby for explicit recovery. Reports remain ephemeral; the journal is durable.
+
 - `manual`: every Stop is reviewed and held for human approval; remains armed.
 - `once`: the next Stop is reviewed; a user decision turns the bridge off.
 - `auto`: persistent automatic review, unlimited by default or optionally
@@ -137,7 +167,7 @@ App-server `turn/completed` status distinguishes user interruption from
 failure. An interrupted active review follows checkpoint cancellation semantics:
 partial output is not published, the Stop is released, the automatic counter is
 reset, persistent modes stay armed, and once turns off. Failed or empty turns
-retain the fail-open safety behavior and switch the mode off. Broker-initiated
+switch the mode off except confirmed auto usage exhaustion, which enters standby. Broker-initiated
 interruptions of superseded turns do not match the current checkpoint and are
 ignored.
 

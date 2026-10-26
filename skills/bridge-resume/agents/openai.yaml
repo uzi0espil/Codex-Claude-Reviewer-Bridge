@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bridge Resume"
+  short_description: "Catch up context and resume automatic reviews"
+  default_prompt: "Use $bridge-resume for the current paired workstream."

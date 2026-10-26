@@ -4,6 +4,8 @@ const applicationName = "Claude-Codex Review Bridge";
 const notificationTimeoutMs = 5_000;
 
 export type AttentionEventKind =
+  | "auto-standby"
+  | "auto-recovered"
   | "review-ready-manual"
   | "review-ready-once"
   | "auto-needs-user"
@@ -51,6 +53,8 @@ function workstreamLabel(value: string): string {
 export function notificationForAttention(event: AttentionEvent): DesktopNotification {
   const workstream = workstreamLabel(event.displayName);
   const messages: Record<AttentionEventKind, DesktopNotification> = {
+    "auto-standby": { title: "Automatic review on standby", body: `${workstream}: context capture continues. Open Codex for status.` },
+    "auto-recovered": { title: "Automatic review resumed", body: `${workstream}: context caught up; automatic review is armed.` },
     "review-ready-manual": {
       title: "Review ready",
       body: `${workstream}: open Codex to publish or cancel the review.`

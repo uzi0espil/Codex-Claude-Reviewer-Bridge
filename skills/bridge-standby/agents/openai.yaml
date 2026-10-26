@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bridge Standby"
+  short_description: "Collect Claude context without automatic reviews"
+  default_prompt: "Use $bridge-standby for the current paired workstream."

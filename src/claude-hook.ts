@@ -17,6 +17,11 @@ async function main(): Promise<void> {
   const feature = process.env.REVIEW_BRIDGE_FEATURE;
   if (!feature) return;
   const input = JSON.parse(await stdin()) as ClaudeHookInput;
+  if (event === "answer") {
+    await bridgeRequest("/hook/answer", { feature, input });
+    output({});
+    return;
+  }
   if (event === "session") {
     await bridgeRequest("/hook/session", { feature, input });
     output({});

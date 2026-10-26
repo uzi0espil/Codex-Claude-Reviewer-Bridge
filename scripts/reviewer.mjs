@@ -445,6 +445,7 @@ export function claudeSettings(projectRoot, playwrightEnabled = true) {
       SessionStart: [{ hooks: [{ type: "command", command: "node", args: [hookScript, "session"], timeout: 30, statusMessage: "Restoring the paired review session" }] }],
       UserPromptSubmit: [{ hooks: [{ type: "command", command: "node", args: [hookScript, "prompt"], timeout: 30, statusMessage: "Pairing this workstream context with Codex" }] }],
       PreToolUse: [{ matcher: "AskUserQuestion", hooks: [{ type: "command", command: "node", args: [hookScript, "question"], timeout: 30, statusMessage: "Sending Claude's question to the paired Codex adviser" }] }],
+      PostToolUse: [{ matcher: "AskUserQuestion", hooks: [{ type: "command", command: "node", args: [hookScript, "answer"], timeout: 30, statusMessage: "Saving the question answer for reviewer context" }] }],
       Stop: [{ hooks: [{ type: "command", command: "node", args: [hookScript, "stop"], timeout: 86400, statusMessage: "Waiting for the paired Codex review" }] }]
     }
   };
@@ -472,7 +473,7 @@ export function codexConfig(projectRoot, skipPlaywright, additionalWorkspaceRoot
   ]);
   for (const tool of [
     "set_mode", "pull_review", "pull_queue", "record_auto_decision", "defer_checkpoint",
-    "publish", "force_publish", "status", "cancel"
+    "publish", "force_publish", "status", "cancel", "standby", "resume"
   ]) {
     lines.push("", `[mcp_servers.review_bridge.tools.review_bridge_${tool}]`, 'approval_mode = "approve"');
   }

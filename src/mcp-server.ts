@@ -8,6 +8,15 @@ import { autoRoundLimitError } from "./mode-policy.js";
 
 const server = new McpServer({ name: "claude-codex-review-bridge", version: bridgeVersion });
 
+for (const action of ["standby", "resume"] as const) {
+  server.registerTool(`review_bridge_${action}`, {
+    description: action === "standby"
+      ? "Put armed auto reviews on standby. Claude continues and context is captured durably; no review feedback is delivered."
+      : "Catch up the armed auto reviewer from durable context and review the latest handoff. Does not restart Claude or reset round limits.",
+    inputSchema: z.object({ feature: z.string() })
+  }, async ({ feature }) => result(await bridgeRequest(`/${action}`, { feature })));
+}
+
 function result(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
 }
