@@ -249,8 +249,9 @@ live session reports, checkpoint behavior, and recovery.
 
 If work completes while the bridge is off, its latest assistant handoff can be
 inspected with `$bridge-pull-review`. To send a resulting checkpoint back to
-Claude, arm manual, once, or auto mode and use `$bridge-pull-queue`; any feedback
-is attached to Claude's next user-submitted prompt.
+Claude, use `$bridge-pull-queue`; published feedback is attached to Claude's next
+user-submitted prompt. The command preserves the current mode, so you can review,
+publish or cancel, and deliver feedback while interception remains off.
 
 Claude `AskUserQuestion` calls are mirrored as read-only Codex advisories. Discuss
 the recommendation in Codex, then answer personally in Claude. Advisories are

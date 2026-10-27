@@ -233,14 +233,17 @@ Use `$bridge-pull-review` for a one-off, read-only opinion in Codex. It works
 without changing off mode, creates no checkpoint or automatic decision, and
 cannot publish or queue feedback for Claude.
 
-Use `$bridge-pull-queue` when the result should re-enter Claude's workflow. First
-arm `$bridge-manual`, `$bridge-once`, or `$bridge-auto`, then pull the captured
-handoff. Manual and once produce the usual publish-or-cancel checkpoint. Auto
+Use `$bridge-pull-queue` when the result should re-enter Claude's workflow. It
+creates a one-off checkpoint without changing the persistent mode. Off, manual,
+and once produce the usual publish-or-cancel checkpoint. In off mode, review,
+publication, cancellation, and delivery all leave interception off; cancellation
+queues no feedback. Auto
 uses its existing pass, revise, continuation, and needs-user decisions and round
 limit. The pulled checkpoint is not connected to a held Stop, so revision
 feedback or an approved continuation is attached to Claude's next
 user-submitted prompt. After that prompt, normal automatic interception can
-continue unattended.
+continue unattended if already armed. New off-mode handoffs update the capture
+without replacing the pending pulled checkpoint or its queued feedback.
 
 Each command can process a captured handoff once, independently: a review-only
 pull does not prevent one later queue pull of the same handoff. A newer off-mode
@@ -260,7 +263,7 @@ Structured questions and partial turns are not pull candidates.
 | `$bridge-resume` | Catch up context and review the latest handoff. |
 | `$bridge-off` | Disable interception and question advice. |
 | `$bridge-pull-review` | Review the latest off-mode handoff for the user only. |
-| `$bridge-pull-queue` | Put the latest off-mode handoff through the currently armed checkpoint mode. |
+| `$bridge-pull-queue` | Review the latest off-mode handoff for next-prompt feedback without changing mode. |
 | `$bridge-status` | Show mode, pairing, pending checkpoint, and recovery state. |
 | `$bridge-publish` | Publish the latest completed checkpoint review. |
 | `$bridge-cancel` | Release the latest checkpoint without feedback. |

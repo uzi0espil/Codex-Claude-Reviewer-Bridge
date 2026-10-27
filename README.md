@@ -283,10 +283,11 @@ in-memory checkpoint history is discarded when the bridge server stops.
 
 While the bridge is off, it retains only Claude's latest completed assistant
 handoff. Use `$bridge-pull-review` for a one-off Codex opinion that stays between
-you and the reviewer, or arm manual, once, or auto mode and use
+you and the reviewer, or use
 `$bridge-pull-queue` to process that handoff through the checkpoint flow. Because
 the off-mode Stop has already completed, queued feedback reaches Claude on your
-next submitted prompt; automatic mode continues normally after that handoff.
+next submitted prompt. Off mode stays off through review, publication,
+cancellation, and delivery; already-armed automatic mode continues normally.
 
 Use standby when you intend to resume auto later. It preserves prompts, handoffs,
 structured questions, and available answers in private runtime storage, including

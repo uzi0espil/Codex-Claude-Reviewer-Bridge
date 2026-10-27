@@ -1162,7 +1162,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     if (pair.mode === "off") {
       store.update(pair.feature, (value) => {
         recordClaudeSession(value, input.session_id, true);
-        value.status = "idle";
+        if (!value.pending && !value.queuedClaudeContext) value.status = "idle";
         value.capturedClaudeMessage = captureClaudeMessage(input.session_id, input.last_assistant_message!);
       });
       log(`Captured the latest off-mode Claude handoff for ${pair.feature}.`);

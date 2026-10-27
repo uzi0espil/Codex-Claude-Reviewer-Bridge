@@ -17,7 +17,7 @@ async function waitFor<T>(read: () => T | Promise<T>, accept: (value: T) => bool
   throw new Error("Timed out waiting for isolated broker");
 }
 
-test("isolated broker: MCP standby/resume, durable restart, quota failure, and next-prompt delivery", { timeout: 25_000 }, async (t) => {
+test("isolated broker: MCP standby/resume, durable restart, quota failure, and off-mode pull delivery", { timeout: 25_000 }, async (t) => {
   const source = fileURLToPath(new URL("../../", import.meta.url));
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "standby-broker-"));
   fs.cpSync(path.join(source, "dist"), path.join(root, "dist"), { recursive: true });
@@ -171,4 +171,63 @@ test("isolated broker: MCP standby/resume, durable restart, quota failure, and n
   await call("/mode", { mode: "auto", roundLimit: 2 });
   assert.equal((await status()).activity, "standby");
   assert.equal((await status()).standby.nextRetryAt, undefined);
+
+  // Explicit pulls review and queue feedback without ever arming interception.
+  await call("/mode", { mode: "off" });
+  assert.equal((await call("/pull-queue")).status, 409); // No off-mode capture yet.
+  assert.equal((await hook("stop", { last_assistant_message: "Off-mode handoff" })).value.kind, "allow");
+  const pulled = await command("pull_queue");
+  assert.equal(pulled.mode, "off");
+  assert.equal(pulled.delivery, "next-prompt-if-feedback");
+  const offReview = await waitFor(status, (value) => Boolean(value.pending?.codexTurnId));
+  assert.equal(offReview.mode, "off");
+  assert.equal(offReview.pending.source, "pull-queue");
+  assert.equal((await call("/pull-queue")).status, 409); // Duplicate capture.
+  assert.equal((await call("/publish", { checkpointId: pulled.checkpointId })).status, 409); // Still reviewing.
+  assert.equal((await hook("stop", { last_assistant_message: "New capture during review" })).value.kind, "allow");
+  assert.equal((await status()).status, "reviewing");
+  assert.match((await call("/pull-queue")).value.error, /checkpoint is already pending/);
+  const finish = (turnId: string, review: string) => {
+    socket!.send(JSON.stringify({ method: "item/completed", params: { turnId, item: { type: "agentMessage", text: review } } }));
+    socket!.send(JSON.stringify({ method: "turn/completed", params: { threadId: "thread-test", turn: { id: turnId, status: "completed" } } }));
+  };
+  finish(offReview.pending.codexTurnId, "Fix the off-mode issue.");
+  const ready = await waitFor(status, (value) => value.status === "waiting-user");
+  assert.equal(ready.mode, "off");
+  assert.equal(ready.queuedClaudeContext, undefined); // Completion never auto-publishes.
+  await hook("stop", { last_assistant_message: "New capture after review" });
+  assert.equal((await status()).status, "waiting-user");
+  assert.equal((await status()).pending.id, pulled.checkpointId);
+  assert.equal((await call("/publish", { checkpointId: "stale" })).status, 409);
+  const published = await call("/publish", { checkpointId: pulled.checkpointId });
+  assert.equal(published.status, 200);
+  assert.equal(published.value.mode, "off");
+  assert.equal(published.value.delivery, "next-prompt");
+  assert.ok(published.value.queuedClaudeContext);
+  await hook("stop", { last_assistant_message: "New capture while feedback queued" });
+  assert.equal((await status()).status, "waiting-claude");
+  assert.match((await call("/pull-queue")).value.error, /feedback is already queued/);
+  const delivered = await hook("prompt", { prompt: "Apply the feedback." });
+  assert.match(delivered.value.additionalContext, /Fix the off-mode issue/);
+  assert.equal((await status()).mode, "off");
+  assert.equal((await status()).queuedClaudeContext, undefined);
+  assert.equal((await hook("prompt", { prompt: "Another prompt." })).value.additionalContext, undefined);
+
+  // Cancel a completed pull; the same capture remains protected from duplicate pulls.
+  const cancelledPull = await command("pull_queue");
+  const cancelReview = await waitFor(status, (value) => Boolean(value.pending?.codexTurnId));
+  finish(cancelReview.pending.codexTurnId, "Feedback that must not be queued.");
+  await waitFor(status, (value) => value.status === "waiting-user");
+  const cancelled = await call("/cancel", { checkpointId: cancelledPull.checkpointId });
+  assert.equal(cancelled.status, 200);
+  assert.equal(cancelled.value.mode, "off");
+  assert.equal(cancelled.value.pending, undefined);
+  assert.equal(cancelled.value.queuedClaudeContext, undefined);
+  assert.match((await call("/pull-queue")).value.error, /already been queued/);
+  assert.equal((await hook("prompt", { prompt: "Continue without feedback." })).value.additionalContext, undefined);
+  const turnsBeforeStop = nextTurn;
+  assert.equal((await hook("stop", { last_assistant_message: "Still not intercepted" })).value.kind, "allow");
+  assert.equal(nextTurn, turnsBeforeStop);
+  assert.equal((await status()).mode, "off");
+  assert.equal((await status()).pending, undefined);
 });

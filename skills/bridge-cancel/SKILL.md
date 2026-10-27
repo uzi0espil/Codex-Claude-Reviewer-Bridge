@@ -9,4 +9,4 @@ First call `review_bridge_status` with the paired feature. Then call
 If no checkpoint is pending, say so. If the ID was superseded, fetch status
 again instead of cancelling another checkpoint silently. Confirm release and
 report the returned mode accurately: `manual` and `auto` remain armed, while
-`once` returns to `off`.
+`once` returns to `off`, and an off-mode pull stays off and queues no feedback.
