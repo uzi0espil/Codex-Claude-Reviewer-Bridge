@@ -46,6 +46,8 @@ function runNpm(script) {
       return runReviewer(["default-mode", args[0]]);
     case "notifications":
       return runReviewer(["notifications", args[0]]);
+    case "terminal":
+      return runReviewer(["terminal", ...args]);
     case "pair":
       return runReviewer(["start-pair", "--feature", args[0], ...args.slice(1)]);
     case "server":
@@ -113,6 +115,11 @@ default-mode mode:
 # Enable or disable desktop notifications for user-attention events.
 [script("node")]
 notifications state:
+    {{ runner }}
+
+# Show or set this instance's default terminal (auto, herdr, or print).
+[script("node")]
+terminal *args:
     {{ runner }}
 
 # Open the paired Claude and Codex terminals for a feature.

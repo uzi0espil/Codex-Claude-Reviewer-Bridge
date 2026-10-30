@@ -114,6 +114,13 @@ npx --yes claude-codex-review-bridge@latest create \
   --project-root /home/me/dev/MyApp
 ```
 
+The first interactive installation offers a terminal choice. Pass
+`--terminal herdr` to use the Herdr desktop app through `hc`, or
+`--terminal auto` for the system terminal. Each instance remembers its choice;
+`just terminal herdr` changes it later. If Herdr becomes unavailable, pairing
+warns and falls back to the system terminal. See
+[terminal selection](docs/bootstrap-an-application.md#choose-a-terminal-for-this-instance).
+
 The default destination is a sibling directory:
 
 ```text

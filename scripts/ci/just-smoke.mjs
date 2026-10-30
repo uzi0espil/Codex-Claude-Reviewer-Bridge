@@ -58,6 +58,8 @@ try {
     invoke(["notifications", "off"]),
     ["notifications", "off"],
   );
+  assert.deepEqual(invoke(["terminal", "herdr"]), ["terminal", "herdr"]);
+  assert.deepEqual(invoke(["pair", "feature", "--terminal", "herder"]), ["start-pair", "--feature", "feature", "--terminal", "herder"]);
   console.log("Just recipe argument forwarding passed.");
 } finally {
   fs.rmSync(fixture, { recursive: true, force: true });

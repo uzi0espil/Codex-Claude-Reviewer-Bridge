@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const bootstrapRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageMetadata = JSON.parse(fs.readFileSync(path.join(bootstrapRoot, "package.json"), "utf8"));
 const defaultTemplateRepository = "https://github.com/uzi0espil/Codex-Claude-Reviewer-Bridge.git";
-const valueOptions = new Set(["project-root", "project-name", "destination", "template-repository", "template-ref"]);
+const valueOptions = new Set(["project-root", "project-name", "destination", "template-repository", "template-ref", "terminal"]);
 const booleanOptions = new Set(["skip-playwright", "device-auth"]);
 
 export function parseBootstrapArguments(values) {
@@ -123,6 +123,7 @@ Options:
   --destination <path>           Reviewer destination; defaults to <project>-reviewer
   --template-repository <url>    Trusted template repository or private fork
   --template-ref <ref>           Initial tag or commit; updates follow the default branch
+  --terminal <auto|herdr|print>   Instance default terminal; herder aliases herdr (uses hc)
   --skip-playwright              Do not install the optional browser reviewer
   --device-auth                  Use device authentication for Codex
   --help                         Show this help
@@ -130,6 +131,9 @@ Options:
 }
 
 export function createReviewer(options) {
+  if (options.terminal !== undefined && !["auto", "herdr", "herder", "print"].includes(options.terminal)) {
+    throw new Error("Terminal must be auto, herdr (or herder), or print.");
+  }
   const projectRoot = canonical(requireOption(options, "project-root"));
   if (!fs.existsSync(path.join(projectRoot, ".git"))) throw new Error(`Project root is not a Git repository: ${projectRoot}`);
   const projectName = String(options["project-name"] ?? path.basename(projectRoot));
@@ -158,6 +162,7 @@ export function createReviewer(options) {
 
   const targetCli = path.join(destination, "scripts", "reviewer.mjs");
   const setupArgs = [targetCli, "setup", "--project-root", projectRoot, "--project-name", projectName];
+  if (options.terminal !== undefined) setupArgs.push("--terminal", options.terminal);
   if (options["skip-playwright"]) setupArgs.push("--skip-playwright");
   run(process.execPath, setupArgs, { cwd: destination });
   const loginArgs = [targetCli, "login"];
