@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 
 const filename = fileURLToPath(import.meta.url);
 
@@ -123,7 +124,9 @@ export async function runReviewer(invocation, cwd) {
   } finally { relay?.close(); }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === filename && process.argv[2] === "child") {
+// Node resolves the module URL through symlinks, but argv retains the launch path
+// (notably macOS /var versus /private/var). Compare the actual files.
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(filename) && process.argv[2] === "child") {
   process.env.REVIEW_BRIDGE_TERMINAL = "herdr";
   // Finish evaluating this module before main imports its status helpers again.
   void import("./reviewer.mjs")

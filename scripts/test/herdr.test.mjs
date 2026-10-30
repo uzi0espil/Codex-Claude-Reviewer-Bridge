@@ -75,16 +75,22 @@ test("launch failure avoids fallback and retry reuses a partially started pair",
 });
 
 test("the hc child entrypoint can import its own status helpers without an ESM await cycle", () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-child-"));
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-child-"));
+  const directory = path.join(fixture, "real");
+  const alias = path.join(fixture, "alias");
   try {
+    fs.mkdirSync(directory);
+    fs.symlinkSync(directory, alias, process.platform === "win32" ? "junction" : "dir");
     fs.copyFileSync(new URL("../herdr.mjs", import.meta.url), path.join(directory, "herdr.mjs"));
     fs.writeFileSync(path.join(directory, "reviewer.mjs"), 'export async function main(args) { const { reportStatus } = await import("./herdr.mjs"); reportStatus("codex", "idle"); console.log(JSON.stringify(args)); }');
     const args = ["start-reviewer", "--feature", "a'b"];
-    const result = spawnSync(process.execPath, [path.join(directory, "herdr.mjs"), "child", Buffer.from(JSON.stringify(args)).toString("base64")], { encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    assert.ok(result.stdout.includes(JSON.stringify(args)));
-    assert.match(result.stdout, /7501;state=idle:app=codex/);
-  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+    for (const entryDirectory of [directory, alias]) {
+      const result = spawnSync(process.execPath, [path.join(entryDirectory, "herdr.mjs"), "child", Buffer.from(JSON.stringify(args)).toString("base64")], { encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(result.stdout.includes(JSON.stringify(args)), `No child output through ${entryDirectory}: ${result.stderr}`);
+      assert.match(result.stdout, /7501;state=idle:app=codex/);
+    }
+  } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
 });
 
 test("Codex status relay forwards RPC unchanged and reports injected turns and approvals", async () => {
