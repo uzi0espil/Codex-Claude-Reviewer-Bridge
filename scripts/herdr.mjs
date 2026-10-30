@@ -43,9 +43,8 @@ export async function launchHerdrPair(options) {
   let attempted = false;
   const specs = herdrPairSpecs(options);
   for (const spec of specs) {
-    const labels = Object.fromEntries(spec.args.flatMap((value, index) => value === "--label" ? [spec.args[index + 1].split("=")] : []));
-    const existing = live.terminals.find((terminal) => terminal.state === "live"
-      && Object.entries(labels).every(([key, value]) => terminal.labels?.[key] === value));
+    const name = spec.args[spec.args.indexOf("--name") + 1];
+    const existing = live.terminals.find((terminal) => terminal.state === "live" && terminal.name === name);
     if (existing) {
       console.log(`Reusing Herdr ${spec.role} terminal ${existing.address}.`);
       continue;
@@ -114,7 +113,7 @@ export async function runReviewer(invocation, cwd) {
   const remote = args.indexOf("--remote");
   const relay = remote >= 0 ? await statusRelay(args[remote + 1]) : undefined;
   if (relay) args[remote + 1] = relay.url;
-  reportStatus("codex", "idle");
+  reportStatus("codex", "blocked");
   try {
     const child = spawn(invocation.command, encodedArgs ? invocation.args : args, {
       cwd, stdio: "inherit", env: encodedArgs ? { ...invocation.env, REVIEWER_EXTERNAL_ARGUMENTS: JSON.stringify(args) } : invocation.env
@@ -126,7 +125,8 @@ export async function runReviewer(invocation, cwd) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === filename && process.argv[2] === "child") {
   process.env.REVIEW_BRIDGE_TERMINAL = "herdr";
-  const { main } = await import("./reviewer.mjs");
-  try { await main(JSON.parse(Buffer.from(process.argv[3], "base64").toString("utf8"))); }
-  catch (error) { reportStatus("bridge", "error"); console.error(error.message); process.exitCode = 1; }
+  // Finish evaluating this module before main imports its status helpers again.
+  void import("./reviewer.mjs")
+    .then(({ main }) => main(JSON.parse(Buffer.from(process.argv[3], "base64").toString("utf8"))))
+    .catch((error) => { reportStatus("bridge", "error"); console.error(error.message); process.exitCode = 1; });
 }

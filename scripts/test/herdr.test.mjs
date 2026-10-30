@@ -3,6 +3,10 @@ import test from "node:test";
 import { once } from "node:events";
 import { WebSocket, WebSocketServer } from "ws";
 import { PassThrough } from "node:stream";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { chooseTerminal, validatedTerminal } from "../reviewer.mjs";
 import { herdrPairSpecs, launchHerdrPair, reportStatus, statusRelay } from "../herdr.mjs";
 
@@ -37,7 +41,7 @@ test("hc launches labelled independent terminals with intact bridge arguments", 
     assert.ok(spec.args.includes("/my project"));
     assert.deepEqual(JSON.parse(Buffer.from(spec.args.at(-1), "base64")), index ? options.reviewerArgs : options.coderArgs);
   }
-  assert.equal(specs[0].args[9], specs[1].args[9]);
+  assert.equal(specs[0].args.filter((arg) => arg.startsWith("herdr.space="))[0], specs[1].args.filter((arg) => arg.startsWith("herdr.space="))[0]);
   assert.notDeepEqual(herdrPairSpecs({ ...options, instanceId: "instance-b" }), specs);
 });
 
@@ -54,13 +58,13 @@ test("missing and incompatible hc fall back with a warning", async () => {
 test("launch failure avoids fallback and retry reuses a partially started pair", async () => {
   const calls = [];
   const specs = herdrPairSpecs(options);
-  const labels = Object.fromEntries(specs[0].args.flatMap((arg, i) => arg === "--label" ? [specs[0].args[i + 1].split("=")] : []));
+  const name = specs[0].args[specs[0].args.indexOf("--name") + 1];
   let terminals = [];
   const run = (_, args) => {
     if (args.includes("--help")) return { stdout: "--bg --no-parent --label --keep" };
     if (args[0] === "ls") return { stdout: JSON.stringify({ terminals }) };
     calls.push(args);
-    if (calls.length === 1) { terminals = [{ state: "live", address: "t1", labels }]; return { stdout: '{"address":"t1"}' }; }
+    if (calls.length === 1) { terminals = [{ state: "live", address: "t1", name }]; return { stdout: '{"address":"t1"}' }; }
     if (calls.length === 2) throw new Error("lost response");
     return { stdout: '{"address":"t2"}' };
   };
@@ -68,6 +72,19 @@ test("launch failure avoids fallback and retry reuses a partially started pair",
   assert.equal(await launchHerdrPair({ ...options, run }), true);
   assert.equal(calls.length, 3);
   assert.deepEqual(calls[2], specs[1].args);
+});
+
+test("the hc child entrypoint can import its own status helpers without an ESM await cycle", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-child-"));
+  try {
+    fs.copyFileSync(new URL("../herdr.mjs", import.meta.url), path.join(directory, "herdr.mjs"));
+    fs.writeFileSync(path.join(directory, "reviewer.mjs"), 'export async function main(args) { const { reportStatus } = await import("./herdr.mjs"); reportStatus("codex", "idle"); console.log(JSON.stringify(args)); }');
+    const args = ["start-reviewer", "--feature", "a'b"];
+    const result = spawnSync(process.execPath, [path.join(directory, "herdr.mjs"), "child", Buffer.from(JSON.stringify(args)).toString("base64")], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes(JSON.stringify(args)));
+    assert.match(result.stdout, /7501;state=idle:app=codex/);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
 test("Codex status relay forwards RPC unchanged and reports injected turns and approvals", async () => {

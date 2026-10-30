@@ -648,7 +648,8 @@ async function startCoder(options, passthrough) {
   args.push(...passthrough);
   if (process.env.REVIEW_BRIDGE_TERMINAL === "herdr") {
     const { reportStatus } = await import("./herdr.mjs");
-    reportStatus("claude-code", "idle");
+    // Native reports take over after startup; trust/login dialogs need attention first.
+    reportStatus("claude-code", "blocked");
   }
   run("claude", args, { cwd: pair.worktreePending ? repositoryRoot : pair.projectRoot, env: { ...process.env, REVIEW_BRIDGE_FEATURE: pair.feature } });
 }
