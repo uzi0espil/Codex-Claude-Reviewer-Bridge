@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { chooseTerminal, validatedTerminal } from "../reviewer.mjs";
-import { herdrPairSpecs, launchHerdrPair, reportStatus, statusRelay } from "../herdr.mjs";
+import { herdrPairSpecs, launchHerdrPair, nameHerdrWorkspace, reportStatus, statusRelay } from "../herdr.mjs";
 
 test("terminal choices normalize aliases and retain the platform default", async () => {
   assert.equal(validatedTerminal(), "auto");
@@ -43,6 +43,53 @@ test("hc launches labelled independent terminals with intact bridge arguments", 
   }
   assert.equal(specs[0].args.filter((arg) => arg.startsWith("herdr.space="))[0], specs[1].args.filter((arg) => arg.startsWith("herdr.space="))[0]);
   assert.notDeepEqual(herdrPairSpecs({ ...options, instanceId: "instance-b" }), specs);
+  const workspace = (values) => values[0].args.find((arg) => arg.startsWith("herdr.space="));
+  assert.notEqual(workspace(herdrPairSpecs({ ...options, feature: "another feature" })), workspace(specs));
+});
+
+test("names the adopted workspace after the exact feature without restarting terminals", async () => {
+  const calls = [];
+  const feature = "feature with spaces and 'quotes'";
+  const run = (command, args) => {
+    calls.push({ command, args });
+    if (args[0] === "ls") return { stdout: JSON.stringify({ spaces: [{ id: "workspace-id", name: "application", tabs: [{ terminals: [{ terminal: "t1" }, { terminal: "t2" }] }] }] }) };
+    return { stdout: '{"ok":true}' };
+  };
+  await nameHerdrWorkspace({ appExecutable: "herdr-app", run, feature, addresses: ["t1", "t2"] });
+  assert.deepEqual(calls, [
+    { command: "herdr-app", args: ["ls"] },
+    { command: "herdr-app", args: ["do", "space.rename", "--id", "workspace-id", "--name", feature] }
+  ]);
+});
+
+test("waits for desktop adoption and leaves an already named workspace alone", async () => {
+  let reads = 0;
+  await nameHerdrWorkspace({
+    appExecutable: "herdr-app", feature: "my-feature", addresses: ["t1", "t2"], attempts: 2,
+    run: (_, args) => {
+      assert.deepEqual(args, ["ls"]);
+      reads++;
+      return { stdout: JSON.stringify({ spaces: reads === 1 ? [] : [{ id: "space", name: "my-feature", tabs: [{ terminals: [{ terminal: "t1" }, { terminal: "t2" }] }] }] }) };
+    }
+  });
+  assert.equal(reads, 2);
+});
+
+test("naming failures warn without relaunching or renaming an unrelated workspace", async () => {
+  const warnings = [];
+  const warn = (message) => warnings.push(message);
+  await nameHerdrWorkspace({ warn });
+  await nameHerdrWorkspace({ appExecutable: "herdr-app", warn, run: () => { throw new Error("app is closed"); } });
+  await nameHerdrWorkspace({
+    appExecutable: "herdr-app", warn, feature: "my-feature", addresses: ["t1", "t2"], attempts: 1,
+    run: (_, args) => {
+      assert.deepEqual(args, ["ls"]);
+      return { stdout: JSON.stringify({ spaces: [{ id: "shared", tabs: [{ terminals: [{ terminal: "t1" }, { terminal: "t2" }] }, { terminals: [{ terminal: "other-feature" }] }] }] }) };
+    }
+  });
+  assert.match(warnings[0], /herdr-app on PATH/);
+  assert.match(warnings[1], /app is closed/);
+  assert.match(warnings[2], /shared by other features/);
 });
 
 test("missing and incompatible hc fall back with a warning", async () => {

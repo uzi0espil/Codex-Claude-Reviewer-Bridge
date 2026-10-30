@@ -770,8 +770,12 @@ async function startPair(options, passthrough) {
   if (terminal === "print") return printPairCommands(coderArgs, reviewerArgs);
   if (terminal === "herdr") {
     const { launchHerdrPair } = await import("./herdr.mjs");
+    const executable = resolveCommand("hc");
+    const appExecutable = resolveCommand("herdr-app")
+      ?? (executable && resolveCommand(path.join(path.dirname(executable), process.platform === "win32" ? "herdr-app.exe" : "herdr-app")))
+      ?? (process.platform === "win32" && executable ? resolveCommand(path.join(path.dirname(executable), "..", "herdr-app", "herdr-app.exe")) : undefined);
     const launched = await launchHerdrPair({
-      executable: resolveCommand("hc"), root: reviewerRoot, projectRoot, feature,
+      executable, appExecutable, root: reviewerRoot, projectRoot, feature,
       instanceId: loadConfig().instanceId, coderArgs, reviewerArgs,
       run: (command, args) => run(command, args, { cwd: projectRoot, capture: true, windowsHide: true })
     });

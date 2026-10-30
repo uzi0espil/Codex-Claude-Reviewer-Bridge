@@ -19,7 +19,7 @@ export function herdrPairSpecs({ executable, root, projectRoot, instanceId, feat
     args: [
       "run", "--json", "--bg", "--no-parent", "--keep", "--cwd", projectRoot,
       "--name", `b-${instance}-${task.slice(0, 8)}-${role}`,
-      "--label", `herdr.space=bridge-${instance}`, "--label", `herdr.tab=bridge-${instance}-${task}`,
+      "--label", `herdr.space=bridge-${instance}-${task}`, "--label", `herdr.tab=bridge-${instance}-${task}`,
       "--label", `bridge.instance=${instance}`, "--label", `bridge.feature=${task}`, "--label", `bridge.role=${role}`,
       "--", process.execPath, path.join(root, "scripts", "herdr.mjs"), "child",
       Buffer.from(JSON.stringify(childArgs), "utf8").toString("base64")
@@ -43,10 +43,12 @@ export async function launchHerdrPair(options) {
   } catch (error) { return fail(error.message); }
   let attempted = false;
   const specs = herdrPairSpecs(options);
+  const addresses = [];
   for (const spec of specs) {
     const name = spec.args[spec.args.indexOf("--name") + 1];
     const existing = live.terminals.find((terminal) => terminal.state === "live" && terminal.name === name);
     if (existing) {
+      addresses.push(existing.address);
       console.log(`Reusing Herdr ${spec.role} terminal ${existing.address}.`);
       continue;
     }
@@ -54,14 +56,48 @@ export async function launchHerdrPair(options) {
     try {
       const started = JSON.parse(options.run(spec.command, spec.args).stdout);
       if (started.error) throw new Error(JSON.stringify(started.error));
+      if (typeof started.address !== "string") throw new Error("hc returned no terminal address");
+      addresses.push(started.address);
       console.log(`Started Herdr ${spec.role} terminal for '${options.feature}'.`);
     } catch (error) {
       // A failed reply can arrive after hc created a terminal. Never launch duplicate agents.
       throw new Error(`Herdr ${spec.role} launch could not be confirmed: ${error.message}. Check 'hc ls --json' and retry the same pair; existing labelled terminals are reused. Automatic fallback was skipped to avoid duplicate sessions.`);
     }
   }
+  await nameHerdrWorkspace({ ...options, addresses });
   console.log(`${attempted ? "Opened" : "Reused"} paired Herdr terminals for '${options.feature}'. View them in the Herdr app.`);
   return true;
+}
+
+export async function nameHerdrWorkspace({ appExecutable, run, feature, addresses, warn = console.warn, attempts = 20 }) {
+  if (!appExecutable) {
+    warn("Warning: Herdr terminals are running, but workspace naming requires herdr-app on PATH. Retry the same pair after making the desktop CLI available.");
+    return;
+  }
+  try {
+    // Desktop adoption follows core terminal creation asynchronously. Use the
+    // returned terminal addresses, including pre-existing pairs, to find the space.
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const { spaces } = JSON.parse(run(appExecutable, ["ls"]).stdout);
+      const workspace = spaces?.find((space) => addresses.every((address) =>
+        space.tabs?.some((tab) => tab.terminals?.some((terminal) => terminal.terminal === address))));
+      if (workspace) {
+        // Do not rename an old instance-wide space containing other feature tabs.
+        const tabs = workspace.tabs.filter((tab) => tab.terminals?.some((terminal) => addresses.includes(terminal.terminal)));
+        if (workspace.tabs.length !== tabs.length) throw new Error("the existing workspace is shared by other features; rename it manually or start a new feature");
+        if (workspace.name !== feature) {
+          const result = JSON.parse(run(appExecutable, ["do", "space.rename", "--id", workspace.id, "--name", feature]).stdout);
+          if (result.error) throw new Error(JSON.stringify(result.error));
+        }
+        return;
+      }
+      if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error("the desktop app has not adopted the pair's terminals; open Herdr and retry the same pair");
+  } catch (error) {
+    // Naming cannot undo terminal creation; falling back here would duplicate agents.
+    warn(`Warning: Herdr terminals are running, but workspace naming failed: ${error.message}.`);
+  }
 }
 
 /** Observe actual app-server events, including bridge-injected turns, without parsing screen output. */

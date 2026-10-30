@@ -210,8 +210,12 @@ alias for `herdr`.
 Herdr support targets the desktop app backed by **herdr-core (`hc`)**, not the
 older Herdr TUI CLI. Install `hc` and make it available on PATH in the shell
 running the bridge. The launcher uses `hc run` with labels to group both agents
-in a space per instance and a tab per feature, preserving the bridge's session
-and worktree setup. Open the Herdr app to view those terminals. Claude's native
+in a separate workspace per feature and instance, preserving the bridge's session
+and worktree setup. The workspace is named after the feature passed to `just pair`.
+Open the Herdr app to view those terminals. Naming uses `herdr-app` on PATH (the
+standard Windows sibling installation is also detected). If the app is closed
+or its CLI is unavailable, terminal creation continues with a naming warning;
+open Herdr and retry the same pair to apply its name. Claude's native
 OSC 7501 status reports supply its activity (use a current Claude Code version).
 The Codex launcher also observes app-server events so injected review turns and
 interactive approval requests update its agent-panel status.
