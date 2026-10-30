@@ -178,6 +178,54 @@ distinguishes static, user-trusted, and runtime-probed readiness.
 
 ## 4. Start and use a pair
 
+### Choose a terminal for this instance
+
+On the first interactive setup, choose the system terminal (default) or Herdr.
+Pass `--terminal` to `create` or `setup` to skip the question, including when
+using the npm bootstrapper:
+
+```powershell
+just create 'C:\dev\MyApp' --terminal herdr
+```
+
+Unattended installations default to `auto`, which uses Windows Terminal on
+Windows (with a console fallback), Terminal.app on macOS, or an available
+supported graphical terminal on Linux. With no graphical launcher, the bridge
+prints the two commands to run manually.
+
+The preference lives in the instance's ignored `bridge.local.json` as
+`defaultTerminal`. Setup refreshes and updates preserve it; older instances
+without the field continue using `auto`. Show or change it without reinstalling:
+
+```powershell
+just terminal
+just terminal herdr
+just pair billing-retry-policy --terminal auto
+```
+
+A `pair --terminal` argument overrides the saved preference for that launch.
+Supported values are `auto`, `herdr`, and `print`; `herder` is accepted as an
+alias for `herdr`.
+
+Herdr support targets the desktop app backed by **herdr-core (`hc`)**, not the
+older Herdr TUI CLI. Install `hc` and make it available on PATH in the shell
+running the bridge. The launcher uses `hc run` with labels to group both agents
+in a separate workspace per feature and instance, preserving the bridge's session
+and worktree setup. The workspace is named after the feature passed to `just pair`.
+Open the Herdr app to view those terminals. Naming uses `herdr-app` on PATH (the
+standard Windows sibling installation is also detected). If the app is closed
+or its CLI is unavailable, terminal creation continues with a naming warning;
+open Herdr and retry the same pair to apply its name. Claude's native
+OSC 7501 status reports supply its activity (use a current Claude Code version).
+The Codex launcher also observes app-server events so injected review turns and
+interactive approval requests update its agent-panel status.
+
+If `hc` is missing, incompatible, or fails its preflight, the bridge warns and
+uses the platform terminal. It retains the saved preference, so reinstalling
+Herdr restores it. After a launch has been attempted, an uncertain failure stops
+with recovery instructions instead of opening duplicate agents. Retry the same
+pair to reuse its live labelled terminals and start the missing one.
+
 From the generated instance:
 
 ```powershell

@@ -7,6 +7,7 @@ import process from "node:process";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
+import { createInterface } from "node:readline/promises";
 
 export const reviewerRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const runtimeDirectory = path.join(reviewerRoot, "runtime");
@@ -49,14 +50,15 @@ export function parseArguments(values) {
 
 export function validateCommandArguments(command, options, passthrough) {
   const allowed = {
-    create: ["project-root", "project-name", "destination", "template-repository", "skip-playwright", "device-auth"],
-    setup: ["project-root", "project-name", "skip-playwright"],
+    create: ["project-root", "project-name", "destination", "template-repository", "skip-playwright", "device-auth", "terminal"],
+    setup: ["project-root", "project-name", "skip-playwright", "terminal"],
     login: ["device-auth"],
     policy: ["project-root"],
     tools: ["project-root"],
     folders: [], permissions: [],
     "default-mode": [],
     notifications: [],
+    terminal: [],
     "start-pair": ["feature", "profile", "project-root", "terminal", "worktree"],
     "start-coder": ["feature", "project-root", "worktree"],
     "start-reviewer": ["prompt", "feature", "profile", "resume", "last", "session", "project-root", "worktree"],
@@ -325,6 +327,7 @@ function projectSettings(projectRoot, projectName, skipPlaywright, existingConfi
     additionalWorkspaceRoots: validatedAdditionalWorkspaceRoots(existingConfig?.additionalWorkspaceRoots),
     defaultMode: validatedDefaultMode(existingConfig?.defaultMode),
     desktopNotifications: validatedDesktopNotifications(existingConfig?.desktopNotifications),
+    defaultTerminal: validatedTerminal(existingConfig?.defaultTerminal),
     templateVersion: packageJson.version,
     playwrightEnabled: !skipPlaywright,
     configuredAt: existingConfig?.configuredAt ?? new Date().toISOString(),
@@ -430,6 +433,35 @@ function setNotifications(positionals) {
   console.log(`Desktop notifications are now ${enabled ? "enabled" : "disabled"}.`);
 }
 
+export function validatedTerminal(value = "auto") {
+  if (value === "herder") return "herdr";
+  if (!["auto", "herdr", "print"].includes(value)) throw new Error("Terminal must be auto, herdr (or herder), or print.");
+  return value;
+}
+
+function setTerminal(positionals) {
+  if (positionals.length > 1) throw new Error("Usage: reviewer terminal [auto|herdr|print]");
+  const config = loadConfig();
+  if (positionals.length) {
+    config.defaultTerminal = validatedTerminal(positionals[0]);
+    config.updatedAt = new Date().toISOString();
+    writeJson(localConfigPath, config);
+  }
+  console.log(`Default terminal: ${validatedTerminal(config.defaultTerminal)}`);
+}
+
+export async function chooseTerminal(explicit, existing, input = process.stdin, output = process.stdout) {
+  if (explicit !== undefined) return validatedTerminal(explicit);
+  if (existing !== undefined || !input.isTTY || !output.isTTY) return validatedTerminal(existing);
+  const prompt = createInterface({ input, output });
+  try {
+    const answer = (await prompt.question("Terminal for this instance: [1] System terminal (default), [2] Herdr via hc: ")).trim();
+    if (!answer || answer === "1") return "auto";
+    if (answer === "2") return "herdr";
+    return validatedTerminal(answer);
+  } finally { prompt.close(); }
+}
+
 export function claudeSettings(projectRoot, playwrightEnabled = true) {
   const hookScript = path.join(reviewerRoot, "dist", "claude-hook.js");
   const reviewerLeaf = path.basename(reviewerRoot);
@@ -522,6 +554,7 @@ export function codexConfig(projectRoot, skipPlaywright, additionalWorkspaceRoot
 }
 
 async function setup(options) {
+  if (options.terminal !== undefined) validatedTerminal(options.terminal);
   const projectRoot = canonical(requireOption(options, "project-root"));
   assertGitRepository(projectRoot);
   const projectName = String(options["project-name"] ?? path.basename(projectRoot));
@@ -535,9 +568,11 @@ async function setup(options) {
   for (const command of ["node", "npm", "codex", "claude"]) {
     if (!resolveCommand(command)) throw new Error(`Required command '${command}' was not found on PATH.`);
   }
+  const defaultTerminal = await chooseTerminal(options.terminal, existing ? validatedTerminal(existing.defaultTerminal) : undefined);
   run("npm", ["install"], { cwd: reviewerRoot });
   run("npm", ["test"], { cwd: reviewerRoot });
   const config = projectSettings(projectRoot, projectName, Boolean(options["skip-playwright"]), existing);
+  config.defaultTerminal = defaultTerminal;
   writeJson(localConfigPath, config);
   const discoveryScript = path.join(reviewerRoot, "dist", "review-tools-discover.js");
   if (!fs.existsSync(discoveryScript)) throw new Error("Review-tool discovery was not built.");
@@ -611,6 +646,11 @@ async function startCoder(options, passthrough) {
   if (pair.claudeSessionId) args.push(pair.claudeSessionStarted ? "--resume" : "--session-id", pair.claudeSessionId);
   if (pair.worktreePending) args.push("--worktree", worktreeName);
   args.push(...passthrough);
+  if (process.env.REVIEW_BRIDGE_TERMINAL === "herdr") {
+    const { reportStatus } = await import("./herdr.mjs");
+    // Native reports take over after startup; trust/login dialogs need attention first.
+    reportStatus("claude-code", "blocked");
+  }
   run("claude", args, { cwd: pair.worktreePending ? repositoryRoot : pair.projectRoot, env: { ...process.env, REVIEW_BRIDGE_FEATURE: pair.feature } });
 }
 
@@ -651,7 +691,11 @@ async function startReviewer(options, passthrough) {
   else args.push("-C", repositoryRoot);
   if (!options.feature) args.push(...passthrough);
   if (options.prompt) args.push(String(options.prompt));
-  run("codex", args, { cwd: launchRoot, env: { ...process.env, CODEX_HOME: reviewerRoot } });
+  const settings = { cwd: launchRoot, env: { ...process.env, CODEX_HOME: reviewerRoot } };
+  if (process.env.REVIEW_BRIDGE_TERMINAL === "herdr") {
+    const { runReviewer } = await import("./herdr.mjs");
+    await runReviewer(externalInvocation("codex", args, settings.env), settings.cwd);
+  } else run("codex", args, settings);
 }
 
 export function pairedCodexArguments(pair, projectRoot, passthrough = []) {
@@ -713,7 +757,7 @@ function launchDetached(spec, cwd) {
 async function startPair(options, passthrough) {
   const feature = requireOption(options, "feature");
   if (options.profile && !["off", "manual", "once", "auto"].includes(String(options.profile))) throw new Error("--profile must be off, manual, once, or auto.");
-  if (options.terminal && !["auto", "print"].includes(String(options.terminal))) throw new Error("--terminal must be auto or print.");
+  const terminal = validatedTerminal(options.terminal ?? loadConfig().defaultTerminal);
   if (options.worktree !== undefined && !String(options.worktree).trim()) throw new Error("--worktree requires a non-empty name.");
   if (passthrough.some((value) => value === "--worktree" || value === "-w")) {
     throw new Error("Define --worktree once as a start-pair option, before '--', so Claude and Codex use the same checkout.");
@@ -723,7 +767,20 @@ async function startPair(options, passthrough) {
   const common = { ...options, feature, "project-root": projectRoot };
   const coderArgs = pairChildArguments("start-coder", common, passthrough);
   const reviewerArgs = pairChildArguments("start-reviewer", common, []);
-  if (options.terminal === "print") return printPairCommands(coderArgs, reviewerArgs);
+  if (terminal === "print") return printPairCommands(coderArgs, reviewerArgs);
+  if (terminal === "herdr") {
+    const { launchHerdrPair } = await import("./herdr.mjs");
+    const executable = resolveCommand("hc");
+    const appExecutable = resolveCommand("herdr-app")
+      ?? (executable && resolveCommand(path.join(path.dirname(executable), process.platform === "win32" ? "herdr-app.exe" : "herdr-app")))
+      ?? (process.platform === "win32" && executable ? resolveCommand(path.join(path.dirname(executable), "..", "herdr-app", "herdr-app.exe")) : undefined);
+    const launched = await launchHerdrPair({
+      executable, appExecutable, root: reviewerRoot, projectRoot, feature,
+      instanceId: loadConfig().instanceId, coderArgs, reviewerArgs,
+      run: (command, args) => run(command, args, { cwd: projectRoot, capture: true, windowsHide: true })
+    });
+    if (launched) return;
+  }
   if (process.platform === "win32") {
     const launcher = path.join(reviewerRoot, "scripts", "powershell", "internal", "Launch-Reviewer.ps1");
     const terminalLauncher = path.join(reviewerRoot, "scripts", "powershell", "internal", "Open-ReviewerTerminal.ps1");
@@ -809,6 +866,7 @@ async function update(options) {
 }
 
 async function create(options) {
+  if (options.terminal !== undefined) validatedTerminal(options.terminal);
   if (!resolveCommand("git")) throw new Error("Required command 'git' was not found on PATH.");
   const projectRoot = canonical(requireOption(options, "project-root"));
   assertGitRepository(projectRoot);
@@ -838,6 +896,7 @@ async function create(options) {
   if (missing.length) throw new Error(`The cloned template is incompatible with the isolated-instance workflow and is missing: ${missing.join(", ")}.`);
   const targetCli = path.join(destination, "scripts", "reviewer.mjs");
   const setupArgs = [targetCli, "setup", "--project-root", projectRoot, "--project-name", projectName];
+  if (options.terminal !== undefined) setupArgs.push("--terminal", validatedTerminal(options.terminal));
   if (options["skip-playwright"]) setupArgs.push("--skip-playwright");
   run(process.execPath, setupArgs, { cwd: destination });
   const loginArgs = [targetCli, "login"];
@@ -851,6 +910,7 @@ async function create(options) {
 
 function usage() {
   console.log("Folder/tool access: folders <list|add|remove> [path ...]; tools --project-root <registered folder>; permissions");
+  console.log("Terminals: create/setup/start-pair --terminal <auto|herdr|print> (herder is an alias); terminal [auto|herdr|print] shows or saves the instance default. Herdr uses hc on PATH.");
   console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  default-mode    Set the mode inherited by new workstreams\n  notifications   Enable or disable desktop notifications\n  start-pair      Open paired Claude and Codex terminals [--worktree <name>]\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
 }
 
@@ -861,6 +921,7 @@ export async function main(argv = process.argv.slice(2)) {
   validateCommandArguments(command, options, passthrough);
   if (command === "default-mode") return setDefaultMode(positionals);
   if (command === "notifications") return setNotifications(positionals);
+  if (command === "terminal") return setTerminal(positionals);
   if (command === "folders") return folders(positionals);
   if (command === "permissions" && !positionals.length) return permissions();
   if (positionals.length) throw new Error(`Unexpected argument: ${positionals[0]}`);

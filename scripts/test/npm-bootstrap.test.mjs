@@ -99,6 +99,7 @@ test("the npx bootstrapper clones a pinned template and preserves its update ups
       "--destination", destination,
       "--template-repository", origin,
       "--template-ref", "v0.3.2",
+      "--terminal", "herder",
       "--skip-playwright"
     ], { cwd: temporary, env: environment, encoding: "utf8" });
     assert.equal(created.status, 0, created.stderr || created.stdout);
@@ -107,6 +108,7 @@ test("the npx bootstrapper clones a pinned template and preserves its update ups
     assert.equal(git(["rev-parse", "--abbrev-ref", "@{upstream}"], destination), "origin/main");
     assert.equal(JSON.parse(fs.readFileSync(path.join(destination, "bridge.local.json"), "utf8")).templateVersion, "0.3.2");
     assert.equal(JSON.parse(fs.readFileSync(path.join(destination, "bridge.local.json"), "utf8")).defaultMode, "manual");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(destination, "bridge.local.json"), "utf8")).defaultTerminal, "herdr");
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

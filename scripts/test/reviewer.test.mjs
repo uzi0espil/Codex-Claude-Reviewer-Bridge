@@ -280,6 +280,17 @@ test("setup bootstraps an isolated reviewer and preserves immutable project bind
     assert.deepEqual(local.additionalWorkspaceRoots, []);
     assert.equal(local.defaultMode, "manual");
     assert.equal(local.desktopNotifications, true);
+    assert.equal(local.defaultTerminal, "auto");
+    const setTerminal = spawnSync(process.execPath, [cli, "terminal", "herder"], {
+      cwd: instance, env: environment, encoding: "utf8"
+    });
+    assert.equal(setTerminal.status, 0, setTerminal.stderr);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).defaultTerminal, "herdr");
+    const invalidTerminal = spawnSync(process.execPath, [cli, "terminal", "unknown"], {
+      cwd: instance, env: environment, encoding: "utf8"
+    });
+    assert.notEqual(invalidTerminal.status, 0);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).defaultTerminal, "herdr");
 
     const setDefault = spawnSync(process.execPath, [cli, "default-mode", "auto"], {
       cwd: instance, env: environment, encoding: "utf8"
@@ -388,6 +399,7 @@ test("update fast-forwards an instance and reruns the updated setup", () => {
       additionalWorkspaceRoots: [path.join(temporary, "related project")],
       defaultMode: "auto", templateVersion: "0.2.1", playwrightEnabled: false,
       desktopNotifications: false,
+      defaultTerminal: "herdr",
       configuredAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString()
     }, null, 2)}\n`);
     const mockNames = ["npm", "codex", "claude"];
@@ -409,6 +421,7 @@ test("update fast-forwards an instance and reruns the updated setup", () => {
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).templateVersion, "0.3.0");
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).defaultMode, "auto");
     assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).desktopNotifications, false);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).defaultTerminal, "herdr");
     assert.deepEqual(
       JSON.parse(fs.readFileSync(path.join(instance, "bridge.local.json"), "utf8")).additionalWorkspaceRoots,
       [path.join(temporary, "related project")]
