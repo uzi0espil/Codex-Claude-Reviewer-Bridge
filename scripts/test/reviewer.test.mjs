@@ -44,6 +44,58 @@ test("rejects unknown CLI options", () => {
   assert.doesNotThrow(() => validateCommandArguments("start-pair", { feature: "x", worktree: "feature-x" }, []));
 });
 
+test("worktree shorthand is boolean, pair-only, and preserves passthrough arguments", () => {
+  for (const flag of ["--with-worktree", "--wt"]) {
+    const parsed = parseArguments([flag, "--feature", "feature name", "--", flag]);
+    assert.deepEqual(parsed, {
+      options: { [flag.slice(2)]: true, feature: "feature name" },
+      positionals: [],
+      passthrough: [flag]
+    });
+    assert.doesNotThrow(() => validateCommandArguments("start-pair", parsed.options, parsed.passthrough));
+    assert.throws(() => validateCommandArguments("report", parsed.options, []), /not valid for report/);
+  }
+});
+
+test("pair launches resolve worktree shorthand for both agents with explicit names taking precedence", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "reviewer-worktree-flags-"));
+  try {
+    fs.mkdirSync(path.join(temporary, "scripts"));
+    const cli = path.join(temporary, "scripts", "reviewer.mjs");
+    fs.copyFileSync(fileURLToPath(new URL("../reviewer.mjs", import.meta.url)), cli);
+    fs.writeFileSync(path.join(temporary, "bridge.local.json"), JSON.stringify({ projectRoot: temporary }));
+    const call = (...args) => spawnSync(process.execPath, [cli, "start-pair", "--terminal", "print", ...args], {
+      cwd: temporary, encoding: "utf8", windowsHide: true
+    });
+    const feature = "feature name";
+    for (const flag of ["--with-worktree", "--wt"]) {
+      for (const args of [[flag, "--feature", feature], ["--feature", feature, flag]]) {
+        const result = call(...args);
+        assert.equal(result.status, 0, result.stderr);
+        const commands = result.stdout.split(/\r?\n/).filter((line) => line.includes("'--feature'"));
+        assert.equal(commands.length, 2);
+        for (const command of commands) assert.ok(command.includes("'--worktree' 'feature name'"), command);
+      }
+      for (const args of [[flag, "--worktree", "custom-name"], ["--worktree", "custom-name", flag]]) {
+        const result = call("--feature", feature, ...args);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout.split("'--worktree' 'custom-name'").length - 1, 2);
+      }
+      const missingFeature = call(flag);
+      assert.notEqual(missingFeature.status, 0);
+      assert.match(missingFeature.stderr, /--feature is required/);
+    }
+    const plain = call("--feature", feature);
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.equal(plain.stdout.includes("'--worktree'"), false);
+    const explicit = call("--feature", feature, "--worktree", "custom-name");
+    assert.equal(explicit.status, 0, explicit.stderr);
+    assert.equal(explicit.stdout.split("'--worktree' 'custom-name'").length - 1, 2);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 test("reads the live session report from the broker with optional full content", async () => {
   const calls = [];
   const request = async (route, body) => {
