@@ -215,7 +215,8 @@ The paired Codex TUI is launched with `--no-alt-screen`. Broker-started app-serv
 turns therefore remain in terminal scrollback even if a later turn redraws the
 interface; this does not inject another model-visible item.
 
-An optional pair-level `--worktree <name>` is forwarded to Claude only for the
+An optional pair-level `--worktree <name>` (or `--with-worktree` / `--wt` to
+reuse `--feature`, with an explicit worktree name taking precedence) is forwarded to Claude only for the
 first launch. Codex does not create a second worktree. Instead, its launcher
 waits for Claude's `SessionStart`, and the broker verifies the reported `cwd`
 has the same Git common directory as the instance's bound repository. That

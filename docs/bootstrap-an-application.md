@@ -236,15 +236,19 @@ From the generated instance:
 ./scripts/shell/reviewer.sh start-pair --feature billing-retry-policy
 ```
 
-To start both agents on a new isolated worktree, specify its name once:
+To start both agents on a new isolated worktree, reuse the feature name:
 
 ```powershell
-just pair billing-retry-policy --worktree billing-retry-policy
+just pair billing-retry-policy --wt
 ```
 
 ```bash
-./scripts/shell/reviewer.sh start-pair --feature billing-retry-policy --worktree billing-retry-policy
+./scripts/shell/reviewer.sh start-pair --feature billing-retry-policy --with-worktree
 ```
+
+`--with-worktree` (alias `--wt`) uses the value of `--feature` as the worktree
+name. Use `--worktree <name>` to choose a different name; an explicit name takes
+precedence over the shorthand, regardless of argument order.
 
 Claude creates the managed worktree. The Codex launcher waits for Claude's
 `SessionStart` hook, verifies that its reported working directory is a linked
@@ -263,7 +267,8 @@ Arguments following `--` are passed unchanged to Claude. PowerShell users use
 before a script receives it. The corresponding `start-reviewer` and `policy`
 commands pass their trailing arguments to Codex.
 
-`--worktree` is a bridge option and must appear before the passthrough delimiter.
+`--worktree`, `--with-worktree`, and `--wt` are bridge options and must appear
+before the passthrough delimiter.
 Do not pass Claude's `--worktree` or `-w` manually after `--`, because Codex
 would not receive the corresponding pairing metadata.
 

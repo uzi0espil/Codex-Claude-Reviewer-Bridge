@@ -156,15 +156,18 @@ Run this from the generated reviewer:
 ```
 
 To create an isolated Claude-managed Git worktree and bind both terminals to it,
-define the worktree once on the pair command:
+reuse the feature name on the pair command:
 
 ```powershell
-just pair api-retry --worktree api-retry
+just pair api-retry --wt
 ```
 
 ```bash
-./scripts/shell/reviewer.sh start-pair --feature api-retry --worktree api-retry
+./scripts/shell/reviewer.sh start-pair --feature api-retry --with-worktree
 ```
+
+`--with-worktree` and `--wt` use the feature name as the worktree name.
+Use `--worktree <name>` for a different name; it takes precedence over either shorthand.
 
 Claude creates the worktree, and Codex waits for Claude's authenticated
 `SessionStart` path before opening its thread. Codex uses that path as its

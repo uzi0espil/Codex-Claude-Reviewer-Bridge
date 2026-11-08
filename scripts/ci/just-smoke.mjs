@@ -38,6 +38,12 @@ try {
     invoke(["pair", "worktree feature", "--worktree", "feature-wt"]),
     ["start-pair", "--feature", "worktree feature", "--worktree", "feature-wt"],
   );
+  for (const flag of ["--with-worktree", "--wt"]) {
+    assert.deepEqual(
+      invoke(["pair", "worktree feature", flag]),
+      ["start-pair", "--feature", "worktree feature", flag],
+    );
+  }
   assert.deepEqual(
     invoke(["create", "E:\\dev\\App With Spaces", "--", "--destination", "E:\\dev\\App's Reviewer"]),
     ["create", "--project-root", "E:\\dev\\App With Spaces", "--destination", "E:\\dev\\App's Reviewer"],

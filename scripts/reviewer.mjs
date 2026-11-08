@@ -20,7 +20,7 @@ const optionNames = new Set([
   "project-root", "project-name", "destination", "template-repository", "feature",
   "profile", "prompt", "session", "ref", "terminal", "worktree"
 ]);
-const booleanNames = new Set(["skip-playwright", "device-auth", "resume", "last", "full"]);
+const booleanNames = new Set(["skip-playwright", "device-auth", "resume", "last", "full", "with-worktree", "wt"]);
 
 export function parseArguments(values) {
   const options = {};
@@ -59,7 +59,7 @@ export function validateCommandArguments(command, options, passthrough) {
     "default-mode": [],
     notifications: [],
     terminal: [],
-    "start-pair": ["feature", "profile", "project-root", "terminal", "worktree"],
+    "start-pair": ["feature", "profile", "project-root", "terminal", "worktree", "with-worktree", "wt"],
     "start-coder": ["feature", "project-root", "worktree"],
     "start-reviewer": ["prompt", "feature", "profile", "resume", "last", "session", "project-root", "worktree"],
     ensure: [], stop: [], update: ["ref"], report: ["feature", "full"]
@@ -756,15 +756,16 @@ function launchDetached(spec, cwd) {
 
 async function startPair(options, passthrough) {
   const feature = requireOption(options, "feature");
+  const worktree = options.worktree ?? ((options["with-worktree"] || options.wt) ? feature : undefined);
   if (options.profile && !["off", "manual", "once", "auto"].includes(String(options.profile))) throw new Error("--profile must be off, manual, once, or auto.");
   const terminal = validatedTerminal(options.terminal ?? loadConfig().defaultTerminal);
-  if (options.worktree !== undefined && !String(options.worktree).trim()) throw new Error("--worktree requires a non-empty name.");
+  if (worktree !== undefined && !String(worktree).trim()) throw new Error("--worktree requires a non-empty name.");
   if (passthrough.some((value) => value === "--worktree" || value === "-w")) {
     throw new Error("Define --worktree once as a start-pair option, before '--', so Claude and Codex use the same checkout.");
   }
   const projectRoot = resolveProjectRoot(options["project-root"]);
   if (!fs.existsSync(localPolicyPath)) console.warn(`Warning: no application-specific review policy exists. Run '${platformExample("policy")}' to create one.`);
-  const common = { ...options, feature, "project-root": projectRoot };
+  const common = { ...options, feature, worktree, "project-root": projectRoot };
   const coderArgs = pairChildArguments("start-coder", common, passthrough);
   const reviewerArgs = pairChildArguments("start-reviewer", common, []);
   if (terminal === "print") return printPairCommands(coderArgs, reviewerArgs);
@@ -909,6 +910,7 @@ async function create(options) {
 }
 
 function usage() {
+  console.log("Worktrees: start-pair --with-worktree (alias --wt) reuses --feature as the worktree name; --worktree <name> overrides it.");
   console.log("Folder/tool access: folders <list|add|remove> [path ...]; tools --project-root <registered folder>; permissions");
   console.log("Terminals: create/setup/start-pair --terminal <auto|herdr|print> (herder is an alias); terminal [auto|herdr|print] shows or saves the instance default. Herdr uses hc on PATH.");
   console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  default-mode    Set the mode inherited by new workstreams\n  notifications   Enable or disable desktop notifications\n  start-pair      Open paired Claude and Codex terminals [--worktree <name>]\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
