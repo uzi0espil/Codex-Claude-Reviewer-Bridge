@@ -22,7 +22,7 @@ import {
 } from "./auto-review.js";
 import { startStreamedJsonResponse } from "./streamed-json-response.js";
 import { buildQuestionAdvisoryPrompt, createQuestionAdvisory } from "./question-advisory.js";
-import { migrateClaudeSessionLifecycle, recordClaudeSession } from "./claude-session.js";
+import { hasPersistedClaudeConversation, migrateClaudeSessionLifecycle, recordClaudeSession } from "./claude-session.js";
 import { StopHookResult } from "./claude-hook-output.js";
 import { runSingleFlight } from "./single-flight.js";
 import { planAutoDelivery } from "./auto-delivery.js";
@@ -793,6 +793,12 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       migrateClaudeSessionLifecycle(value);
       value.claudeSessionId = String(body.sessionId || value.claudeSessionId || randomUUID());
     });
+    const reservedSessionId = pair.claudeSessionId;
+    if (!pair.claudeSessionStarted && await hasPersistedClaudeConversation(pair)) {
+      pair = store.update(pair.feature, (value) => {
+        if (value.claudeSessionId === reservedSessionId) recordClaudeSession(value, reservedSessionId!, true);
+      });
+    }
     return send(res, 200, publicPair(pair));
   }
   if (req.url === "/pair/worktree" && req.method === "POST") {

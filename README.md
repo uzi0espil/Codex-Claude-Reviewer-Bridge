@@ -176,6 +176,10 @@ approved validation recipes also execute against the worktree. Reuse the same
 feature and worktree name to resume the pair. A feature cannot later switch
 between the main checkout and a worktree, or move to a different worktree.
 
+Claude sessions with saved conversation history resume even when the bridge
+missed their hooks while unavailable. Startup metadata alone does not mark an
+unused session as resumable.
+
 The launcher opens two terminals—or prints their commands when a graphical
 terminal is unavailable—one for Claude and one for Codex. Work normally in
 Claude. If Claude uses `AskUserQuestion`, its question and choices appear in
