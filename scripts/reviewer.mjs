@@ -643,7 +643,14 @@ async function startCoder(options, passthrough) {
   const settings = path.join(reviewerRoot, "claude-bridge.settings.json");
   if (!fs.existsSync(settings)) throw new Error(`Claude hook settings are missing; run '${platformExample("setup")}'.`);
   const args = ["--name", pair.displayName, "--settings", settings];
-  if (pair.claudeSessionId) args.push(pair.claudeSessionStarted ? "--resume" : "--session-id", pair.claudeSessionId);
+  if (pair.claudeSessionId) {
+    // Also recover when an older broker is still running after an update.
+    const { hasPersistedClaudeConversation } = await import("../dist/claude-session.js");
+    const started = pair.claudeSessionStarted || await hasPersistedClaudeConversation({
+      ...pair, repositoryRoot: pair.repositoryRoot ?? repositoryRoot
+    });
+    args.push(started ? "--resume" : "--session-id", pair.claudeSessionId);
+  }
   if (pair.worktreePending) args.push("--worktree", worktreeName);
   args.push(...passthrough);
   if (process.env.REVIEW_BRIDGE_TERMINAL === "herdr") {

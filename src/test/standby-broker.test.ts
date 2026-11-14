@@ -57,7 +57,10 @@ test("isolated broker: MCP standby/resume, durable restart, quota failure, and o
   let mcp: ChildProcess | undefined;
   let endpoint: any;
   const start = async () => {
-    broker = spawn(process.execPath, [path.join(root, "driver.mjs"), `ws://127.0.0.1:${address.port}`], { cwd: root, windowsHide: true, stdio: "pipe" });
+    broker = spawn(process.execPath, [path.join(root, "driver.mjs"), `ws://127.0.0.1:${address.port}`], {
+      cwd: root, windowsHide: true, stdio: "pipe",
+      env: { ...process.env, CLAUDE_CONFIG_DIR: path.join(root, "claude-config") }
+    });
     let errors = "";
     broker.stderr!.on("data", (data) => { errors += String(data); });
     endpoint = await waitFor(() => {
@@ -81,6 +84,19 @@ test("isolated broker: MCP standby/resume, durable restart, quota failure, and o
     fs.rmSync(root, { recursive: true, force: true });
   });
   await start();
+  // The broker must repair a reserved session after hooks were unavailable,
+  // without mistaking promptless startup metadata for conversation history.
+  const recoveryPair = { feature: "recovery", projectRoot: root, sessionId: "recover-session" };
+  assert.equal((await call("/pair/claude", recoveryPair)).value.claudeSessionStarted, false);
+  const project = path.join(root, "claude-config", "projects", root.replace(/[^a-zA-Z0-9]/g, "-"));
+  fs.mkdirSync(project, { recursive: true });
+  const transcript = path.join(project, "recover-session.jsonl");
+  fs.writeFileSync(transcript, JSON.stringify({ type: "file-history-snapshot", sessionId: "recover-session" }) + "\n");
+  assert.equal((await call("/pair/claude", recoveryPair)).value.claudeSessionStarted, false);
+  fs.appendFileSync(transcript, JSON.stringify({ type: "user", sessionId: "recover-session", message: { role: "user", content: "A prompt while the bridge was down" } }) + "\n");
+  assert.equal((await call("/pair/claude", recoveryPair)).value.claudeSessionStarted, true);
+  fs.rmSync(transcript);
+  assert.equal((await call("/pair/claude", recoveryPair)).value.claudeSessionStarted, true);
   await call("/pair/claude", { projectRoot: root, sessionId: "claude-test" });
   await call("/mode", { mode: "auto", roundLimit: 3 });
 
