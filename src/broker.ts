@@ -172,6 +172,9 @@ async function initializeCodexThread(feature: string): Promise<FeaturePair> {
       current.reviewContextCompacted = false;
       current.workstreamContextThreadId = undefined;
     });
+    // Retire a connected terminal bound to an obsolete thread even when the
+    // replacement was created by a hook rather than an interactive launcher.
+    appProxy?.urlFor(pair.feature, threadId);
   }
 
   pair = store.get(pair.feature) ?? pair;
@@ -729,6 +732,7 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
   catch { backlog = { captureGap: true }; }
   return {
     ...pair,
+    reviewerConnected: appProxy?.connected(pair.feature) ?? false,
     activity: pair.activity ?? "active",
     backlog,
     claudeSessionStarted: pair.claudeSessionStarted ?? false,
@@ -818,12 +822,12 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     if (pair.worktreePending) return send(res, 409, { error: "Claude has not reported the requested worktree yet." });
     if (pair.worktreeName) validateManagedWorktree(pair.repositoryRoot ?? pair.projectRoot, pair.projectRoot);
     pair = await ensureCodexThread(pair);
-    send(res, 200, { ...publicPair(pair), appServerUrl });
+    send(res, 200, { ...publicPair(pair), appServerUrl: appProxy!.urlFor(pair.feature, pair.codexThreadId!) });
     if (pair.pulledReview) schedulePulledReview(pair.feature);
     else scheduleQuestionAdvisory(pair.feature);
     return;
   }
-  if (req.url === "/pairs" && req.method === "GET") return send(res, 200, store.all().map(publicPair));
+  if (req.url === "/pairs" && (req.method === "GET" || req.method === "POST")) return send(res, 200, store.all().map(publicPair));
   if (req.url === "/status" && req.method === "POST") {
     const pair = feature ? store.get(feature) : undefined;
     return pair ? send(res, 200, publicPair(pair)) : send(res, 404, { error: "unknown feature" });
@@ -1285,11 +1289,15 @@ export async function main(testClient?: AppServerClient): Promise<void> {
       const endpoint = JSON.parse(fs.readFileSync(endpointPath, "utf8")) as EndpointFile;
       if (endpoint.pid === process.pid) fs.unlinkSync(endpointPath);
     } catch { /* already gone or owned by another broker */ }
-    appProcess?.kill();
     appProxy?.close();
-    app.close();
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 4_000).unref();
+    // Let unwatch/search-stop/process cleanup reach the app-server before
+    // closing its transport or killing its process. Each request is bounded.
+    void app.drainDownstreamCleanup().finally(() => {
+      app.close();
+      appProcess?.kill();
+      server.close(() => process.exit(0));
+    });
+    setTimeout(() => { appProcess?.kill(); process.exit(0); }, 4_000).unref();
   };
   shutdownBroker = shutdown;
   process.on("SIGINT", shutdown);

@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   acquireStartupLock,
+  acquireSessionLock,
+  configurePairMode,
   claudeSettings,
   codexConfig,
   folderToolId,
@@ -42,6 +44,32 @@ test("rejects unknown CLI options", () => {
   assert.doesNotThrow(() => validateCommandArguments("tools", { "project-root": "/tmp/app" }, ["--model", "x"]));
   assert.doesNotThrow(() => validateCommandArguments("report", { feature: "x", full: true }, []));
   assert.doesNotThrow(() => validateCommandArguments("start-pair", { feature: "x", worktree: "feature-x" }, []));
+  assert.doesNotThrow(() => validateCommandArguments("pairs", {}, []));
+});
+
+test("pair launch locks isolate features and roles and release after exit or failure", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "reviewer-launch-lock-"));
+  const releases = [];
+  try {
+    const a = acquireSessionLock(" Feature A ", "claude", temporary); releases.push(a);
+    assert.throws(() => acquireSessionLock("feature-a", "claude", temporary), /already running or starting/);
+    releases.push(acquireSessionLock("Feature B", "claude", temporary));
+    releases.push(acquireSessionLock("Feature A", "codex", temporary));
+    a(); a();
+    const afterExit = acquireSessionLock("feature-a", "claude", temporary);
+    afterExit();
+    // The exit listener also cleans up a launcher that throws before its finally.
+    const moduleUrl = new URL("../reviewer.mjs", import.meta.url).href;
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e",
+      `import { acquireSessionLock } from ${JSON.stringify(moduleUrl)}; acquireSessionLock("failed", "codex", process.argv[1]); throw new Error("launch failure");`, temporary], { encoding: "utf8", windowsHide: true });
+    assert.notEqual(child.status, 0);
+    const afterFailure = acquireSessionLock("failed", "codex", temporary);
+    afterFailure();
+    assert.equal(fs.readdirSync(path.join(temporary, "launches")).length, 2);
+  } finally {
+    for (const release of releases) release();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
 });
 
 test("worktree shorthand is boolean, pair-only, and preserves passthrough arguments", () => {
@@ -181,6 +209,18 @@ test("paired Codex sessions resume remotely without permission overrides", () =>
     { appServerUrl: "ws://127.0.0.1:1234", codexThreadId: "thread-2", worktreeName: "feature-x" },
     "C:\\project\\.claude\\worktrees\\feature-x"
   ).includes("--add-dir"), false);
+});
+
+test("changing the pair mode preserves its feature-bound remote connection URL", async () => {
+  const pair = { feature: "a", codexThreadId: "thread-a", appServerUrl: "ws://127.0.0.1:1234/pair/capability", mode: "manual" };
+  const configured = await configurePairMode(pair, "auto", async (route, body) => {
+    assert.equal(route, "/mode");
+    assert.deepEqual(body, { feature: "a", mode: "auto" });
+    return { feature: "a", codexThreadId: "thread-a", mode: "auto" };
+  });
+  assert.equal(configured.mode, "auto");
+  assert.equal(pairedCodexArguments(configured, "C:/project")[1], pair.appServerUrl);
+  assert.throws(() => pairedCodexArguments({ codexThreadId: "thread-a" }, "C:/project"), /no app-server connection URL/);
 });
 
 test("policy initialization cannot access review-tool curation", () => {

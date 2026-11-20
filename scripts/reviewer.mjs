@@ -62,7 +62,7 @@ export function validateCommandArguments(command, options, passthrough) {
     "start-pair": ["feature", "profile", "project-root", "terminal", "worktree", "with-worktree", "wt"],
     "start-coder": ["feature", "project-root", "worktree"],
     "start-reviewer": ["prompt", "feature", "profile", "resume", "last", "session", "project-root", "worktree"],
-    ensure: [], stop: [], update: ["ref"], report: ["feature", "full"]
+    ensure: [], pairs: [], stop: [], update: ["ref"], report: ["feature", "full"]
   };
   if (!Object.hasOwn(allowed, command)) throw new Error(`Unknown command: ${command}`);
   for (const name of Object.keys(options)) {
@@ -316,6 +316,39 @@ async function ensureBridge() {
   } finally {
     fs.rmSync(startupLockPath, { recursive: true, force: true });
   }
+}
+
+export function acquireSessionLock(feature, role, directory = runtimeDirectory) {
+  const key = String(feature).trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!key) throw new Error("Feature name must contain at least one letter or number.");
+  if (!["claude", "codex"].includes(role)) throw new Error("Unknown pair participant.");
+  const identity = createHash("sha256").update(key).digest("hex");
+  const lockPath = path.resolve(directory, "launches", `${identity}-${role}.lock`);
+  if (!acquireStartupLock(lockPath)) throw new Error(`The ${role} session for '${key}' is already running or starting. Close it before relaunching the same pair.`);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    process.off("exit", release);
+    // Never remove a replacement owner's lock.
+    try {
+      if (readJson(path.join(lockPath, "owner.json")).pid === process.pid) fs.rmSync(lockPath, { recursive: true, force: true });
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+  };
+  process.once("exit", release);
+  return release;
+}
+
+async function withSessionLock(feature, role, start) {
+  const release = acquireSessionLock(feature, role);
+  try { return await start(); } finally { release(); }
+}
+
+async function listPairs() {
+  if (!await endpointHealth()) throw new Error("The review bridge is not running. Start it with 'just server'.");
+  const pairs = await bridgeRequest("/pairs");
+  if (!pairs.length) return console.log("No stored feature pairs.");
+  for (const pair of pairs) console.log(`${pair.feature}\t${pair.reviewerConnected ? "connected" : "disconnected"}\t${pair.mode}/${pair.activity}\t${pair.status}\t${pair.projectRoot}`);
 }
 
 function projectSettings(projectRoot, projectName, skipPlaywright, existingConfig) {
@@ -690,7 +723,7 @@ async function startReviewer(options, passthrough) {
     const projectRoot = await waitForPairRoot(String(options.feature), repositoryRoot, worktreeName);
     launchRoot = projectRoot;
     let pair = await bridgeRequest("/pair/codex", { feature: options.feature, projectRoot: repositoryRoot, worktreeName });
-    if (options.profile) pair = await bridgeRequest("/mode", { feature: pair.feature, mode: options.profile });
+    if (options.profile) pair = await configurePairMode(pair, options.profile);
     args.push(...pairedCodexArguments(pair, projectRoot, passthrough));
   } else if (options.session) args.push("resume", String(options.session), "-C", repositoryRoot);
   else if (options.last) args.push("resume", "--last", "-C", repositoryRoot);
@@ -705,7 +738,13 @@ async function startReviewer(options, passthrough) {
   } else run("codex", args, settings);
 }
 
+export async function configurePairMode(pair, mode, request = bridgeRequest) {
+  // Mode responses contain public state but no connection capability URL.
+  return { ...pair, ...await request("/mode", { feature: pair.feature, mode }) };
+}
+
 export function pairedCodexArguments(pair, projectRoot, passthrough = []) {
+  if (typeof pair.appServerUrl !== "string" || !pair.appServerUrl) throw new Error("The paired reviewer has no app-server connection URL. Restart the bridge and relaunch the pair.");
   const remainingArguments = passthrough.filter((value) => value !== "--no-alt-screen");
   return [
     "--remote", pair.appServerUrl,
@@ -920,7 +959,7 @@ function usage() {
   console.log("Worktrees: start-pair --with-worktree (alias --wt) reuses --feature as the worktree name; --worktree <name> overrides it.");
   console.log("Folder/tool access: folders <list|add|remove> [path ...]; tools --project-root <registered folder>; permissions");
   console.log("Terminals: create/setup/start-pair --terminal <auto|herdr|print> (herder is an alias); terminal [auto|herdr|print] shows or saves the instance default. Herdr uses hc on PATH.");
-  console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  default-mode    Set the mode inherited by new workstreams\n  notifications   Enable or disable desktop notifications\n  start-pair      Open paired Claude and Codex terminals [--worktree <name>]\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
+  console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  default-mode    Set the mode inherited by new workstreams\n  notifications   Enable or disable desktop notifications\n  start-pair      Open paired Claude and Codex terminals [--worktree <name>]\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  pairs           List feature pairs and reviewer connection states\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -940,9 +979,12 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === "policy") return policy(options, passthrough);
   if (command === "tools") return tools(options, passthrough);
   if (command === "start-pair") return startPair(options, passthrough);
-  if (command === "start-coder") return startCoder(options, passthrough);
-  if (command === "start-reviewer") return startReviewer(options, passthrough);
+  if (command === "start-coder") return withSessionLock(requireOption(options, "feature"), "claude", () => startCoder(options, passthrough));
+  if (command === "start-reviewer") return options.feature
+    ? withSessionLock(options.feature, "codex", () => startReviewer(options, passthrough))
+    : startReviewer(options, passthrough);
   if (command === "ensure") return void await ensureBridge();
+  if (command === "pairs") return listPairs();
   if (command === "report") return report(options);
   if (command === "stop") return stop();
   if (command === "update") return update(options);
