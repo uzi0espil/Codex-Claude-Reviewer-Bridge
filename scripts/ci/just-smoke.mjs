@@ -65,6 +65,7 @@ try {
     ["notifications", "off"],
   );
   assert.deepEqual(invoke(["terminal", "herdr"]), ["terminal", "herdr"]);
+  assert.deepEqual(invoke(["pairs"]), ["pairs"]);
   assert.deepEqual(invoke(["pair", "feature", "--terminal", "herder"]), ["start-pair", "--feature", "feature", "--terminal", "herder"]);
   console.log("Just recipe argument forwarding passed.");
 } finally {

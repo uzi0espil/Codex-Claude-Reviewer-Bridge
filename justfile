@@ -52,6 +52,8 @@ function runNpm(script) {
       return runReviewer(["start-pair", "--feature", args[0], ...args.slice(1)]);
     case "server":
       return runReviewer(["ensure"]);
+    case "pairs":
+      return runReviewer(["pairs"]);
     case "report":
       return runReviewer(["report", "--feature", args[0], ...args.slice(1)]);
     case "stop":
@@ -130,6 +132,11 @@ pair feature *claude_args:
 # Ensure the local review bridge server is running.
 [script("node")]
 server:
+    {{ runner }}
+
+# List stored feature pairs and their reviewer connection state.
+[script("node")]
+pairs:
     {{ runner }}
 
 # Print the live checkpoint report for the current server session.

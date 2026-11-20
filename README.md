@@ -176,6 +176,25 @@ approved validation recipes also execute against the worktree. Reuse the same
 feature and worktree name to resume the pair. A feature cannot later switch
 between the main checkout and a worktree, or move to a different worktree.
 
+Several feature pairs can run concurrently in the same reviewer instance:
+
+```sh
+just server
+just pair api-retry --wt
+just pair checkout-ui --wt
+just pairs
+```
+
+Each feature has its own Claude session, Codex thread, and reviewer connection.
+Use distinct feature names and separate worktrees for concurrent implementation;
+features launched without `--wt` share the main checkout's files. A second launch
+of an already-running participant is rejected. Close that participant before
+resuming the same feature. Exiting a Codex terminal cleans up its connection,
+pending interactive requests, searches, file watches, and processes without
+disconnecting other features. Broken connections are reclaimed by heartbeat.
+`just pairs` lists stored features and their reviewer connection states;
+`just stop` shuts down the entire instance and all its reviewer connections.
+
 Claude sessions with saved conversation history resume even when the bridge
 missed their hooks while unavailable. Startup metadata alone does not mark an
 unused session as resumable.

@@ -22,7 +22,7 @@ cache never stores application policy, credentials, sessions, or bridge state.
   held Stop responses.
 - **Codex app-server** owns persistent review threads and executes injected
   read-only review turns.
-- **App-server proxy** multiplexes the broker and one interactive Codex terminal
+- **App-server proxy** multiplexes the broker and multiple interactive Codex terminals
   over the broker's single upstream app-server connection.
 - **Codex MCP server** exposes status, mode, publish, cancel, off-mode handoff
   pulling, recovery, and one path-fixed application-policy writer to the
@@ -102,6 +102,34 @@ the question has already been answered, so queued advice is discarded and an
 in-flight advisory is interrupted in favor of the newer review checkpoint.
 
 ## Concurrency
+
+One broker and one upstream app-server connection serve multiple feature pairs.
+Each `/pair/codex` response supplies an opaque, process-lifetime proxy URL bound
+to that feature's thread. The proxy keeps one terminal connection per feature;
+reconnecting one feature replaces only its own connection. Paired terminals
+cannot resume another thread or start/fork a thread outside their stored pair.
+JSON-RPC responses return to their originating connection generation. Thread
+notifications and interactive requests route by thread ID; account-wide
+notifications are shared. Unscoped interactive requests fail with a protocol
+error instead of selecting an arbitrary reviewer. `serverRequest/resolved`
+notifications translate request IDs back to the owning terminal's namespace.
+
+Connection-scoped search, file-watch, process, and MCP subscription identifiers
+are namespaced per terminal and translated on notifications. Terminal exit
+removes its routing state, rejects unanswered upstream interactive requests,
+and sends bounded cleanup requests for its active resources. It does not
+cancel broker-owned reviews or release their approval gates. Heartbeats reclaim
+peers that disappear without closing; replacement and shutdown detach state
+immediately and bound the socket close handshake to one second. Upstream exit
+closes every downstream connection and the proxy listener.
+Broker shutdown waits for the bounded resource cleanup requests before closing
+the upstream transport and terminating the managed app-server.
+
+Launcher locks under `runtime/launches/` prevent duplicate participants for the
+same normalized feature and role across terminal backends. They are released on
+normal launcher completion or startup failure; an owner that was forcibly killed
+is recovered on the next launch. `reviewer pairs` reports stored features and
+their live reviewer connection states. `stop` remains instance-wide.
 
 One unpublished checkpoint may be current per feature. A newer Claude Stop:
 
