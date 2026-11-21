@@ -20,6 +20,7 @@ import {
   powershellQuote,
   readSessionReport,
   shellQuote,
+  systemBootTime,
   terminalLaunchSpec,
   tomlLiteral,
   validateCommandArguments,
@@ -329,6 +330,75 @@ test("startup locking serializes callers and recovers stale owners", () => {
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }
+});
+
+test("locks from before the current boot are stale even when their PID was reused", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "reviewer-boot-lock-"));
+  try {
+    const lock = path.join(temporary, "runtime", "launches", "feature-claude.lock");
+    const boot = Date.parse("2026-11-21T00:30:00.000Z");
+    const now = boot + 3_600_000;
+    const owner = (createdAt) => fs.writeFileSync(path.join(lock, "owner.json"),
+      `${JSON.stringify({ pid: process.pid, createdAt: new Date(createdAt).toISOString() })}\n`);
+    assert.equal(acquireStartupLock(lock, now, boot), true);
+    // The previous boot's owner is gone; its PID now names a live process (this test).
+    owner(boot - 600_000);
+    assert.equal(acquireStartupLock(lock, now, boot), true);
+    // A live owner from this boot still blocks.
+    assert.equal(acquireStartupLock(lock, now, boot), false);
+    // Within the clock tolerance the PID check still decides.
+    owner(boot - 30_000);
+    assert.equal(acquireStartupLock(lock, now, boot), false);
+    owner(boot - 60_000);
+    assert.equal(acquireStartupLock(lock, now, boot), false);
+    owner(boot - 60_001);
+    assert.equal(acquireStartupLock(lock, now, boot), true);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test("boot recovery falls back to directory time for missing or invalid owner timestamps", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "reviewer-legacy-lock-"));
+  try {
+    const boot = Date.parse("2026-11-21T00:30:00.000Z");
+    const now = boot + 3_600_000;
+    for (const createdAt of [undefined, "invalid"]) {
+      const lock = path.join(temporary, String(createdAt));
+      fs.mkdirSync(lock);
+      fs.writeFileSync(path.join(lock, "owner.json"), JSON.stringify({ pid: process.pid, createdAt }));
+      const beforeBoot = new Date(boot - 600_000);
+      fs.utimesSync(lock, beforeBoot, beforeBoot);
+      assert.equal(acquireStartupLock(lock, now, boot), true);
+      assert.equal(acquireStartupLock(lock, now, boot), false);
+    }
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test("boot recovery preserves the incomplete-owner grace period", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "reviewer-incomplete-lock-"));
+  try {
+    const lock = path.join(temporary, "startup.lock");
+    const now = Date.now();
+    const boot = now - 3_600_000;
+    fs.mkdirSync(lock);
+    fs.utimesSync(lock, new Date(now), new Date(now));
+    assert.equal(acquireStartupLock(lock, now + 59_000, boot), false);
+    assert.equal(acquireStartupLock(lock, now + 61_000, boot), true);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test("boot estimate stays stable when wall clock and uptime advance through suspension", (t) => {
+  const boot = Date.parse("2026-11-21T00:30:00.000Z");
+  let uptime = 3600;
+  t.mock.method(os, "uptime", () => uptime);
+  assert.equal(systemBootTime(boot + uptime * 1000), boot);
+  uptime += 8 * 3600;
+  assert.equal(systemBootTime(boot + uptime * 1000), boot);
 });
 
 test("setup bootstraps an isolated reviewer and preserves immutable project binding", () => {

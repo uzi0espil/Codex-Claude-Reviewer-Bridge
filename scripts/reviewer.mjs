@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { spawn, spawnSync } from "node:child_process";
@@ -246,17 +247,29 @@ async function report(options) {
   process.stdout.write(await readSessionReport(requireOption(options, "feature"), options.full === true));
 }
 
-export function acquireStartupLock(lockPath = startupLockPath, now = Date.now()) {
+/** Estimated wall-clock boot time; wall-clock adjustments also shift this estimate. */
+export function systemBootTime(now = Date.now()) {
+  return now - os.uptime() * 1000;
+}
+
+// Tolerates small clock corrections and uptime rounding, not arbitrary wall-clock changes.
+const bootClockToleranceMs = 60_000;
+
+export function acquireStartupLock(lockPath = startupLockPath, now = Date.now(), bootTime = systemBootTime(now)) {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   try {
     fs.mkdirSync(lockPath);
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
-    const age = now - fs.statSync(lockPath).mtimeMs;
+    const modified = fs.statSync(lockPath).mtimeMs;
+    const age = now - modified;
+    let createdAt = modified;
     let ownerAlive = false;
     let ownerKnown = false;
     try {
       const owner = readJson(path.join(lockPath, "owner.json"));
+      const recorded = Date.parse(owner.createdAt);
+      if (Number.isFinite(recorded)) createdAt = recorded;
       ownerKnown = Number.isInteger(owner.pid);
       if (ownerKnown) {
         process.kill(Number(owner.pid), 0);
@@ -265,7 +278,10 @@ export function acquireStartupLock(lockPath = startupLockPath, now = Date.now())
     } catch (ownerError) {
       if (ownerError?.code === "EPERM") ownerAlive = true;
     }
-    if (ownerAlive || (!ownerKnown && age < 60_000)) return false;
+    // No owner survives a reboot, but its PID can be reused by an unrelated process afterwards.
+    // A lock from an earlier boot is stale whatever its PID now names.
+    const fromEarlierBoot = createdAt < bootTime - bootClockToleranceMs;
+    if (!fromEarlierBoot && (ownerAlive || (!ownerKnown && age < 60_000))) return false;
     fs.rmSync(lockPath, { recursive: true, force: true });
     try {
       fs.mkdirSync(lockPath);
