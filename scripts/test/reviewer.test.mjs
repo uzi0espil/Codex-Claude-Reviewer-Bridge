@@ -331,6 +331,28 @@ test("startup locking serializes callers and recovers stale owners", () => {
   }
 });
 
+test("locks from before the current boot are stale even when their PID was reused", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "reviewer-boot-lock-"));
+  try {
+    const lock = path.join(temporary, "runtime", "launches", "feature-claude.lock");
+    const boot = Date.parse("2026-11-21T00:30:00.000Z");
+    const now = boot + 3_600_000;
+    const owner = (createdAt) => fs.writeFileSync(path.join(lock, "owner.json"),
+      `${JSON.stringify({ pid: process.pid, createdAt: new Date(createdAt).toISOString() })}\n`);
+    assert.equal(acquireStartupLock(lock, now, boot), true);
+    // The previous boot's owner is gone; its PID now names a live process (this test).
+    owner(boot - 600_000);
+    assert.equal(acquireStartupLock(lock, now, boot), true);
+    // A live owner from this boot still blocks.
+    assert.equal(acquireStartupLock(lock, now, boot), false);
+    // Within the clock tolerance the PID check still decides.
+    owner(boot - 30_000);
+    assert.equal(acquireStartupLock(lock, now, boot), false);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 test("setup bootstraps an isolated reviewer and preserves immutable project binding", () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "reviewer-cli-"));
   try {
