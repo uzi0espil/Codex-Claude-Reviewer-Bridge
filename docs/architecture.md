@@ -128,9 +128,9 @@ the upstream transport and terminating the managed app-server.
 Launcher locks under `runtime/launches/` prevent duplicate participants for the
 same normalized feature and role across terminal backends. They are released on
 normal launcher completion or startup failure; an owner that was forcibly killed
-is recovered on the next launch. A lock created before the current system boot
-is always recovered, because its recorded PID may since belong to an unrelated
-process. `reviewer pairs` reports stored features and
+is recovered on the next launch. A lock created more than one minute before the
+estimated current system boot is recovered even if its recorded PID now belongs
+to an unrelated process. `reviewer pairs` reports stored features and
 their live reviewer connection states. `stop` remains instance-wide.
 
 One unpublished checkpoint may be current per feature. A newer Claude Stop:
@@ -146,10 +146,16 @@ rejected rather than silently applied to newer work.
 Broker startup is serialized with an atomic runtime lock. A caller first checks
 the loopback health endpoint, waits for an active startup, and recovers a lock
 whose owner exited, whose owner metadata remained incomplete for more than a
-minute, or that was created before the current system boot. Shutdown is an authenticated
+minute, or that was created more than one minute before the estimated current
+system boot. Shutdown is an authenticated
 broker request rather than a platform-specific PID kill. It releases held Stop
 hooks without feedback, terminates the managed Codex app-server, removes the
 endpoint file, and exits.
+
+Boot estimate: `Date.now() - os.uptime() * 1000`; lock time: `createdAt` or mtime.
+Large clock jumps can misclassify locks. Same-boot PID reuse and Fast Startup
+remain uncovered. Windows uptime
+[includes sleep and hibernation](https://learn.microsoft.com/en-us/windows/win32/sysinfo/windows-time).
 
 ## Modes
 

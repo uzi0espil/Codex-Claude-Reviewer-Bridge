@@ -247,12 +247,12 @@ async function report(options) {
   process.stdout.write(await readSessionReport(requireOption(options, "feature"), options.full === true));
 }
 
-/** Wall-clock time of the current system boot. */
+/** Estimated wall-clock boot time; wall-clock adjustments also shift this estimate. */
 export function systemBootTime(now = Date.now()) {
   return now - os.uptime() * 1000;
 }
 
-// Absorbs clock corrections after boot, so a live lock is never mistaken for one from an earlier boot.
+// Tolerates small clock corrections and uptime rounding, not arbitrary wall-clock changes.
 const bootClockToleranceMs = 60_000;
 
 export function acquireStartupLock(lockPath = startupLockPath, now = Date.now(), bootTime = systemBootTime(now)) {
