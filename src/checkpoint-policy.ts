@@ -46,8 +46,12 @@ export function forcePublishError(
 ): string | undefined {
   if (pair.pending) return "a checkpoint is pending; use the normal checkpoint-bound publish or cancel flow";
   if (pair.queuedClaudeContext) return "feedback is already queued for Claude's next prompt";
-  if (pair.mode !== "manual") return "force publication requires bridge mode manual";
-  if (pair.status !== "idle") return `force publication requires status idle; current status is ${pair.status}`;
+  if (pair.explicitClaudeMessage) return "an explicit message is already queued; deliver or discard it first";
+  if (pair.mode !== "manual" && pair.mode !== "auto") return "force publication requires bridge mode manual or auto";
+  if (pair.activity === "standby" || pair.activity === "catching-up") return "resume automatic reviews before force publication";
+  if (!["idle", "passed", "waiting-claude"].includes(pair.status)) {
+    return `force publication requires status idle, passed, or waiting-claude; current status is ${pair.status}`;
+  }
   if (!pair.codexThreadId || String(codexThreadId ?? "") !== pair.codexThreadId) {
     return "the supplied Codex thread does not match the paired feature thread";
   }

@@ -449,10 +449,38 @@ test("publish decisions bind to the latest completed checkpoint", () => {
   assert.equal(checkpointDecisionError(current, "checkpoint-2", true), undefined);
 });
 
-test("force publication is restricted to idle unheld manual recovery", () => {
+test("force publication allows unheld manual and active auto states without bypassing queues", () => {
   const current = pair({ codexThreadId: "thread-1" });
-  assert.equal(forcePublishError(current, "thread-1", "Recovered review"), undefined);
+  for (const mode of ["manual", "auto"] as const) {
+    current.mode = mode;
+    for (const status of ["idle", "passed", "waiting-claude"] as const) {
+      current.status = status;
+      assert.equal(forcePublishError(current, "thread-1", "Recovered review"), undefined);
+    }
+  }
   assert.match(forcePublishError(current, "wrong-thread", "Recovered review") ?? "", /does not match/);
+  assert.match(forcePublishError(current, "thread-1", " ") ?? "", /explicit feedback/);
+  for (const mode of ["off", "once"] as const) {
+    current.mode = mode;
+    assert.match(forcePublishError(current, "thread-1", "Review") ?? "", /manual or auto/);
+  }
+  current.mode = "auto";
+  for (const activity of ["standby", "catching-up"] as const) {
+    current.activity = activity;
+    assert.match(forcePublishError(current, "thread-1", "Review") ?? "", /resume/);
+  }
+  current.activity = "active";
+  for (const status of ["reviewing", "waiting-user", "failed"] as const) {
+    current.status = status;
+    assert.match(forcePublishError(current, "thread-1", "Review") ?? "", /requires status/);
+  }
+  current.status = "idle";
+  current.explicitClaudeMessage = { id: "explicit-1", feedback: "Existing", publishedAt: "now", codexThreadId: "thread-1" };
+  assert.match(forcePublishError(current, "thread-1", "Review") ?? "", /explicit message is already queued/);
+  current.explicitClaudeMessage = undefined;
+  current.queuedClaudeContext = "Automatic feedback";
+  assert.match(forcePublishError(current, "thread-1", "Review") ?? "", /feedback is already queued/);
+  current.queuedClaudeContext = undefined;
   current.pending = { id: "checkpoint-3", claudeMessage: "Latest", createdAt: new Date(3).toISOString() };
   assert.match(forcePublishError(current, "thread-1", "Recovered review") ?? "", /checkpoint is pending/);
 });

@@ -271,7 +271,7 @@ test("generates portable Claude hooks and Codex configuration", () => {
   }
   assert.match(config, /review_bridge_record_auto_decision/);
   assert.match(config, /review_bridge_defer_checkpoint/);
-  for (const tool of ["pull_review", "pull_queue", "standby", "resume"]) {
+  for (const tool of ["pull_review", "pull_queue", "standby", "resume", "discard_message"]) {
     assert.ok(config.includes(
       `[mcp_servers.review_bridge.tools.review_bridge_${tool}]\napproval_mode = "approve"`
     ));

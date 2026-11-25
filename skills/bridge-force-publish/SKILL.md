@@ -1,15 +1,18 @@
 ---
 name: bridge-force-publish
-description: Force-publish an unheld interactive Codex review to Claude's next prompt. Use only for explicit recovery after a restart, cancelled checkpoint, disconnected Stop hook, or manually pasted Claude handoff left the bridge idle.
+description: Explicitly queue an unheld interactive Codex review for Claude's next user prompt in manual or active auto mode, including after a skipped, deferred, or continued review.
 ---
 
-Call `review_bridge_status` for the paired feature. Proceed only when mode is
-`manual`, status is `idle`, `pending` and `queuedClaudeContext` are absent, and
-`codexThreadId` is present.
+Call `review_bridge_status` for the paired feature. Proceed only in `manual` or
+active `auto` mode, with status `idle`, `passed`, or `waiting-claude`, no `pending`,
+`queuedClaudeContext`, or `explicitClaudeMessage`, and a paired `codexThreadId`.
+Standby and catch-up require resume first. This remains an explicit interactive
+operation; injected reviews and question/pulled advisories cannot publish.
 
 If a checkpoint is pending, direct the user to `$bridge-publish` or
 `$bridge-cancel`; never bypass checkpoint binding. If feedback is already queued,
-do not overwrite it.
+do not overwrite it. For an explicit queued message, report its ID and offer
+`$bridge-discard-message` only if the user wants to remove it.
 
 Select the most recent substantive Codex review in this conversation. Exclude
 status messages, failed-publication notices, and commentary. Never use the
@@ -22,4 +25,6 @@ or `replace the review with`.
 
 Call `review_bridge_force_publish` with the feature, exact `codexThreadId`, and
 composed feedback. Confirm `delivery: next-prompt`: this unheld recovery appears
-when the user submits Claude's next prompt, and manual mode remains armed.
+when the user submits Claude's next prompt. Report the message ID and explain
+that newer checkpoints and broker restarts preserve it, standby pauses delivery,
+and switching off discards it. Review mode, round count, and limits are unchanged.

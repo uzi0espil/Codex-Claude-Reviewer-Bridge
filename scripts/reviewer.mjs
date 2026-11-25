@@ -572,7 +572,7 @@ export function codexConfig(projectRoot, skipPlaywright, additionalWorkspaceRoot
   ]);
   for (const tool of [
     "set_mode", "pull_review", "pull_queue", "record_auto_decision", "defer_checkpoint",
-    "publish", "force_publish", "status", "cancel", "standby", "resume"
+    "publish", "force_publish", "discard_message", "status", "cancel", "standby", "resume"
   ]) {
     lines.push("", `[mcp_servers.review_bridge.tools.review_bridge_${tool}]`, 'approval_mode = "approve"');
   }

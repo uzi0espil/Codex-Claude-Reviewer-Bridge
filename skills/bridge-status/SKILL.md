@@ -5,8 +5,11 @@ description: Show pairing IDs, mode, pending checkpoint, captured off-mode hando
 
 Include activity (active, standby, or catching-up), standby reason, backlog
 prompt/handoff counts, journal bytes, any capture gap, and retry deadline when
-returned by the tool. No deadline means manual resume is required. Never expose
-stored message content. In standby, recommend `$bridge-resume` after capacity
+returned by the tool. No deadline means manual resume is required. For an
+`explicitClaudeMessage`, report its ID, publication time, preview, and whether
+delivery is paused or awaiting the next user prompt. Offer `$bridge-discard-message`
+for requested removal. Do not reproduce other stored message content.
+In standby, recommend `$bridge-resume` after capacity
 returns or when the user wants automatic review again.
 
 Call `review_bridge_status` with the paired feature and summarize the result.

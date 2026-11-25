@@ -76,9 +76,14 @@ server.registerTool("review_bridge_publish", {
 }, async ({ feature, checkpointId, feedback }) => result(await bridgeRequest("/publish", { feature, checkpointId, feedback })));
 
 server.registerTool("review_bridge_force_publish", {
-  description: "Explicit recovery operation that queues an unheld interactive Codex review for Claude's next prompt. Requires manual mode, idle status, no pending checkpoint, and the paired Codex thread ID.",
+  description: "Explicitly queue an unheld interactive Codex review for Claude's next user prompt in manual or active auto mode. Requires idle, passed, or waiting-claude status, no pending checkpoint or queued feedback, and the paired Codex thread ID. Survives newer handoffs and broker restarts; standby pauses delivery. Does not change review mode or round limits.",
   inputSchema: z.object({ feature: z.string(), codexThreadId: z.string(), feedback: z.string().min(1) })
 }, async ({ feature, codexThreadId, feedback }) => result(await bridgeRequest("/force-publish", { feature, codexThreadId, feedback })));
+
+server.registerTool("review_bridge_discard_message", {
+  description: "Discard the exact queued explicit force-published message without affecting checkpoints or automatic feedback. Read status first for its message ID. Also available during standby.",
+  inputSchema: z.object({ feature: z.string(), messageId: z.string() })
+}, async ({ feature, messageId }) => result(await bridgeRequest("/discard-message", { feature, messageId })));
 
 server.registerTool("review_bridge_cancel", {
   description: "Cancel the exact latest held checkpoint and let Claude stop without feedback.",

@@ -267,7 +267,8 @@ Structured questions and partial turns are not pull candidates.
 | `$bridge-status` | Show mode, pairing, pending checkpoint, and recovery state. |
 | `$bridge-publish` | Publish the latest completed checkpoint review. |
 | `$bridge-cancel` | Release the latest checkpoint without feedback. |
-| `$bridge-force-publish` | Queue feedback only when recovering with no held Stop. |
+| `$bridge-force-publish` | Queue explicit feedback in manual or active auto mode with no pending checkpoint. |
+| `$bridge-discard-message` | Remove the exact queued explicit message without affecting checkpoints. |
 
 Published feedback is advisory. Claude is instructed to challenge or adapt it
 against project evidence rather than accept it blindly.
@@ -304,10 +305,30 @@ round cycle while leaving manual or automatic mode armed; once mode turns off.
 Confirmed auto usage exhaustion enters standby with the handoff preserved. Other
 failed or empty reviewer turns still fail open and disarm the bridge.
 
-Normal publication uses `$bridge-publish`. Reserve `$bridge-force-publish` for
-recovery after a restart, cancelled checkpoint, disconnected Stop hook, or a
-manually pasted handoff when no Stop is held. Recovery feedback is delivered on
-Claude's next user prompt.
+Normal checkpoint publication uses `$bridge-publish`. Use `$bridge-force-publish`
+for explicit interactive feedback when no checkpoint is pending, including after
+an automatic pass, continuation, deferral, cancellation, or a manually pasted
+handoff. It accepts manual or active auto mode with status idle, passed, or
+waiting-claude, and preserves the selected mode, round count, and round limit.
+An existing feedback queue must be delivered or explicitly removed first.
+
+One explicit message can be queued at a time. It survives newer Claude handoffs
+and broker restarts and is attached once to Claude's next user-submitted prompt;
+it does not interrupt a running Claude turn. If automatic feedback is also queued
+later, both are delivered, with the explicit message labeled by publication time
+and assessed against the latest work. Standby and catch-up preserve the explicit
+message but pause its delivery; resume first before publishing another message.
+Status shows its ID, time, short preview, and delivery state. Use
+`$bridge-discard-message` to remove that exact message. Switching the bridge off
+also discards it and reports its ID. Checkpoint cancellation does not remove it.
+
+For an opt-in live check after building, run
+`node scripts/force-publish-live-smoke.mjs`. It uses real Claude and Codex capacity
+in a disposable instance, queues feedback while Claude runs a controlled fixture,
+checks that a newer real Stop and broker restart preserve it, verifies next-prompt
+delivery, and invokes the discard skill. Private logs and evidence stay under
+ignored `runtime/force-publish-live-*`; the temporary Codex login copy is removed
+on exit. The factory broker and paired application configuration are untouched.
 
 For broker-level diagnosis, inspect ignored `runtime/bridge.log`. See
 [Architecture](architecture.md) for routing, concurrency, persistence, and the
