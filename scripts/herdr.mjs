@@ -10,6 +10,49 @@ export function reportStatus(app, state, output = process.stdout) {
   output.write(`\x1b]7501;state=${state}:app=${app}\x1b\\`);
 }
 
+export function herdrServerSpec({ executable, root, instanceId }) {
+  const instance = createHash("sha256").update(String(instanceId ?? root)).digest("hex").slice(0, 12);
+  return {
+    command: executable,
+    args: [
+      "run", "--json", "--bg", "--no-parent", "--outlive-parent", "--cwd", root,
+      "--name", `b-${instance}-server`,
+      "--label", `herdr.space=bridge-${instance}-server`,
+      "--label", `herdr.tab=bridge-${instance}-server`,
+      "--label", `bridge.instance=${instance}`, "--label", "bridge.role=server",
+      "--", process.execPath, path.join(root, "dist", "broker.js")
+    ]
+  };
+}
+
+export async function launchHerdrServer(options) {
+  if (!options.executable) throw new Error("Independent bridge startup requires hc on PATH. Start the bridge from a long-lived context or install hc.");
+  const help = options.run(options.executable, ["run", "--help"]).stdout;
+  if (!["--bg", "--no-parent", "--outlive-parent", "--label"].every((flag) => help.includes(flag))) {
+    throw new Error("hc lacks the options required for an independent bridge server. Update hc before retrying.");
+  }
+  const spec = herdrServerSpec(options);
+  const name = spec.args[spec.args.indexOf("--name") + 1];
+  const live = JSON.parse(options.run(options.executable, ["ls", "--json"]).stdout);
+  if (!Array.isArray(live.terminals)) throw new Error("hc returned an unsupported terminal listing.");
+  let address = live.terminals.find((terminal) => terminal.state === "live" && terminal.name === name)?.address;
+  if (!address) {
+    // An ambiguous reply must never fall back to a terminal-owned broker.
+    try {
+      const started = JSON.parse(options.run(spec.command, spec.args).stdout);
+      if (started.error || typeof started.address !== "string") throw new Error(JSON.stringify(started.error ?? started));
+      address = started.address;
+    } catch (error) {
+      throw new Error(`Independent bridge launch could not be confirmed: ${error.message}. Check 'hc ls --json' and retry; no in-terminal fallback was started.`);
+    }
+  }
+  await nameHerdrWorkspace({ ...options, feature: "review-bridge", addresses: [address] });
+  // Desktop adoption can enable keep automatically. A dead broker must stay visibly stopped.
+  options.run(options.executable, ["keep", address, "--off"]);
+  console.log(`Shared review bridge terminal: ${address} (review-bridge). Keep it open while any pair needs reviews.`);
+  return address;
+}
+
 export function herdrPairSpecs({ executable, root, projectRoot, instanceId, feature, coderArgs, reviewerArgs }) {
   const instance = createHash("sha256").update(String(instanceId ?? root)).digest("hex").slice(0, 12);
   const task = createHash("sha256").update(feature).digest("hex").slice(0, 12);
@@ -41,6 +84,7 @@ export async function launchHerdrPair(options) {
     live = JSON.parse(options.run(options.executable, ["ls", "--json"]).stdout);
     if (!Array.isArray(live.terminals)) return fail("hc returned an unsupported terminal listing");
   } catch (error) { return fail(error.message); }
+  if (options.ensureServer) await options.ensureServer();
   let attempted = false;
   const specs = herdrPairSpecs(options);
   const addresses = [];

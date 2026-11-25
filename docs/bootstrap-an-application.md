@@ -213,7 +213,14 @@ running the bridge. The launcher uses `hc run` with labels to group both agents
 in a separate workspace per feature and instance, preserving the bridge's session
 and worktree setup. The workspace is named after the feature passed to `just pair`.
 Open the Herdr app to view those terminals. Naming uses `herdr-app` on PATH (the
-standard Windows sibling installation is also detected). If the app is closed
+standard Windows sibling installation is also detected). A missing shared server
+is started in its own `review-bridge` space, independent of all feature spaces.
+Closing a feature space leaves the shared server running. Keep the server space
+open while reviews are needed; `just stop` shuts it down. `just pairs` shows its
+terminal address and PID. An already running server is reused without moving it.
+Independent startup requires `hc` support for `--no-parent` and `--outlive-parent`;
+failures do not fall back to hosting the server inside a feature terminal.
+If the app is closed
 or its CLI is unavailable, terminal creation continues with a naming warning;
 open Herdr and retry the same pair to apply its name. Claude's native
 OSC 7501 status reports supply its activity (use a current Claude Code version).

@@ -176,6 +176,8 @@ approved validation recipes also execute against the worktree. Reuse the same
 feature and worktree name to resume the pair. A feature cannot later switch
 between the main checkout and a worktree, or move to a different worktree.
 
+Worktrees inherit repository trust, preserving explicit denials.
+
 Several feature pairs can run concurrently in the same reviewer instance:
 
 ```sh

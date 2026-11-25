@@ -820,7 +820,10 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   if (req.url === "/pair/codex" && req.method === "POST") {
     let pair = store.ensure(String(body.feature), String(body.projectRoot), readInstanceDefaultMode(), body.worktreeName ? String(body.worktreeName) : undefined);
     if (pair.worktreePending) return send(res, 409, { error: "Claude has not reported the requested worktree yet." });
-    if (pair.worktreeName) validateManagedWorktree(pair.repositoryRoot ?? pair.projectRoot, pair.projectRoot);
+    if (pair.worktreeName) {
+      const repositoryRoot = pair.repositoryRoot ?? pair.projectRoot;
+      await app.inheritWorktreeTrust(repositoryRoot, pair.projectRoot, path.join(reviewerRoot, "config.toml"));
+    }
     pair = await ensureCodexThread(pair);
     send(res, 200, { ...publicPair(pair), appServerUrl: appProxy!.urlFor(pair.feature, pair.codexThreadId!) });
     if (pair.pulledReview) schedulePulledReview(pair.feature);
@@ -1273,16 +1276,23 @@ export async function main(testClient?: AppServerClient): Promise<void> {
       token,
       appServerUrl,
       pid: process.pid,
-      startedAt: brokerStartedAt
+      startedAt: brokerStartedAt,
+      herdrTerminal: process.env.HC_TERMINAL_ID || undefined
     };
     fs.writeFileSync(endpointPath, `${JSON.stringify(endpoint, null, 2)}\n`, { mode: 0o600 });
     log(`Bridge ready at ${endpoint.url}`);
+    if (endpoint.herdrTerminal) {
+      console.log(`Shared review bridge ready (PID ${process.pid}, terminal ${endpoint.herdrTerminal}).`);
+      console.log("Keep this server terminal open while any feature pair needs reviews. Stop it with 'just stop'.");
+    }
   });
 
   let shuttingDown = false;
   const shutdown = (): void => {
     if (shuttingDown) return;
     shuttingDown = true;
+    log("Bridge shutting down.");
+    if (process.env.HC_TERMINAL_ID) console.log("Shared review bridge stopping.");
     standby.close();
     for (const pendingId of [...waiters.keys()]) release(pendingId, { kind: "allow" });
     try {
