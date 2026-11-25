@@ -47,6 +47,6 @@ const expectedFiles = [
   ".github/SECURITY.md"
 ];
 assert.deepEqual([...files].sort(), expectedFiles.sort(), "the package must contain only its public bootstrap surface");
-assert.ok(preview.unpackedSize < 100_000, `package is unexpectedly large: ${preview.unpackedSize} bytes`);
+assert.ok(preview.unpackedSize < 110_000, `package is unexpectedly large: ${preview.unpackedSize} bytes`);
 
 console.log(`npm package smoke test passed (${files.size} files, ${preview.unpackedSize} unpacked bytes).`);

@@ -251,6 +251,22 @@ The paired Codex TUI is launched with `--no-alt-screen`. Broker-started app-serv
 turns therefore remain in terminal scrollback even if a later turn redraws the
 interface; this does not inject another model-visible item.
 
+Herdr startup gives each reviewer instance one shared server terminal in a
+separate `review-bridge` space. The startup lock covers discovery and creation;
+the terminal has an instance-scoped name, no parent, and `--outlive-parent`.
+It runs the broker directly, with shell recovery disabled after desktop
+adoption. Pair startup waits for server health before creating agent terminals.
+The same path handles startup requested inside an existing hc terminal. Failure
+to launch independently never falls back to a child broker inside that terminal.
+Non-herdr startup retains the detached process path. Existing healthy servers
+are reused; startup does not migrate or restart them. Endpoint metadata records
+`herdrTerminal` when available, and `just pairs` displays the server owner.
+
+The opt-in `node scripts/herdr-server-live-smoke.mjs` checks the real Windows/hc
+lifetime boundary using an isolated reviewer and two remote pair clients. It
+kills the starter terminals and verifies the same broker PID and surviving
+connection, then removes its terminals, server space, and test home.
+
 An optional pair-level `--worktree <name>` (or `--with-worktree` / `--wt` to
 reuse `--feature`, with an explicit worktree name taking precedence) is forwarded to Claude only for the
 first launch. Codex does not create a second worktree. Instead, its launcher

@@ -7,8 +7,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { chooseTerminal, validatedTerminal } from "../reviewer.mjs";
-import { herdrPairSpecs, launchHerdrPair, nameHerdrWorkspace, reportStatus, statusRelay } from "../herdr.mjs";
+import { chooseTerminal, validatedTerminal, needsHerdrServer } from "../reviewer.mjs";
+import { herdrServerSpec, launchHerdrServer, herdrPairSpecs, launchHerdrPair, nameHerdrWorkspace, reportStatus, statusRelay } from "../herdr.mjs";
 
 test("terminal choices normalize aliases and retain the platform default", async () => {
   assert.equal(validatedTerminal(), "auto");
@@ -30,6 +30,54 @@ const options = {
   feature: "don't flatten this", coderArgs: ["start-coder", "--feature", "don't flatten this", "--", "--model", "opus"],
   reviewerArgs: ["start-reviewer", "--feature", "don't flatten this"]
 };
+
+test("shared servers use independent instance-scoped terminals rather than feature spaces", () => {
+  const spec = herdrServerSpec(options);
+  for (const flag of ["--bg", "--no-parent", "--outlive-parent"]) assert.ok(spec.args.includes(flag));
+  assert.ok(!spec.args.includes("--keep"));
+  assert.deepEqual(spec.args.slice(-3), ["--", process.execPath, path.join(options.root, "dist", "broker.js")]);
+  assert.deepEqual(herdrServerSpec({ ...options, feature: "another feature" }), spec);
+  assert.notDeepEqual(herdrServerSpec({ ...options, instanceId: "other-instance" }), spec);
+  assert.notEqual(spec.args.find((arg) => arg.startsWith("herdr.space=")), herdrPairSpecs(options)[0].args.find((arg) => arg.startsWith("herdr.space=")));
+  assert.equal(needsHerdrServer("herdr", {}), true);
+  assert.equal(needsHerdrServer("auto", { HC_TERMINAL_ID: "t1" }), true);
+  assert.equal(needsHerdrServer("auto", { REVIEW_BRIDGE_TERMINAL: "herdr" }), true);
+  assert.equal(needsHerdrServer("auto", {}), false);
+});
+
+test("server startup reuses a live terminal and never falls back after an uncertain launch", async () => {
+  const spec = herdrServerSpec(options);
+  const name = spec.args[spec.args.indexOf("--name") + 1];
+  let terminals = [], launches = 0;
+  const run = (_, args) => {
+    if (args.includes("--help")) return { stdout: "--bg --no-parent --outlive-parent --label" };
+    if (args[0] === "ls") return { stdout: JSON.stringify({ terminals }) };
+    if (args[0] === "keep") { assert.deepEqual(args, ["keep", "t-server", "--off"]); return { stdout: '{}' }; }
+    launches++;
+    assert.deepEqual(args, spec.args);
+    terminals = [{ state: "live", address: "t-server", name }];
+    throw new Error("lost reply");
+  };
+  await assert.rejects(launchHerdrServer({ ...options, run }), /no in-terminal fallback/);
+  assert.equal(await launchHerdrServer({ ...options, run, warn: () => {} }), "t-server");
+  assert.equal(launches, 1);
+  await assert.rejects(launchHerdrServer({ ...options, executable: undefined }), /requires hc/);
+  await assert.rejects(launchHerdrServer({ ...options, run: () => ({ stdout: "--bg --no-parent --label" }) }), /Update hc/);
+});
+
+test("pair terminals never launch when independent server startup fails", async () => {
+  let launches = 0;
+  await assert.rejects(launchHerdrPair({ ...options,
+    run: (_, args) => {
+      if (args.includes("--help")) return { stdout: "--bg --no-parent --label --keep" };
+      if (args[0] === "ls") return { stdout: '{"terminals":[]}' };
+      launches++;
+      return { stdout: '{"address":"unexpected"}' };
+    },
+    ensureServer: async () => { throw new Error("server unavailable"); }
+  }), /server unavailable/);
+  assert.equal(launches, 0);
+});
 
 test("hc launches labelled independent terminals with intact bridge arguments", () => {
   const specs = herdrPairSpecs(options);

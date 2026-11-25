@@ -143,6 +143,7 @@ export interface EndpointFile {
   appServerUrl: string;
   pid: number;
   startedAt: string;
+  herdrTerminal?: string;
 }
 
 export interface ClaudeHookInput {

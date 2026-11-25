@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { bridgeVersion } from "./version.js";
+import { inheritWorktreeTrust } from "./worktree-trust.js";
 
 type JsonObject = Record<string, unknown>;
 type JsonRpcId = string | number;
@@ -61,6 +62,11 @@ export class AppServerClient extends EventEmitter {
 
   constructor(readonly url: string) {
     super();
+  }
+
+  async inheritWorktreeTrust(repositoryRoot: string, worktree: string, configFile: string): Promise<boolean> {
+    return inheritWorktreeTrust(repositoryRoot, worktree, configFile,
+      (method, params) => this.request(method, params));
   }
 
   async connect(): Promise<void> {

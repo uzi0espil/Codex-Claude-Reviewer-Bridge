@@ -294,7 +294,17 @@ export function acquireStartupLock(lockPath = startupLockPath, now = Date.now(),
   return true;
 }
 
-async function ensureBridge() {
+export function needsHerdrServer(terminal, environment = process.env) {
+  return terminal === "herdr" || environment.REVIEW_BRIDGE_TERMINAL === "herdr" || Boolean(environment.HC_TERMINAL_ID);
+}
+
+function herdrAppExecutable(executable) {
+  return resolveCommand("herdr-app")
+    ?? (executable && resolveCommand(path.join(path.dirname(executable), process.platform === "win32" ? "herdr-app.exe" : "herdr-app")))
+    ?? (process.platform === "win32" && executable ? resolveCommand(path.join(path.dirname(executable), "..", "herdr-app", "herdr-app.exe")) : undefined);
+}
+
+async function ensureBridge(terminal) {
   const healthy = await endpointHealth();
   if (healthy) return healthy;
   const deadline = Date.now() + 30_000;
@@ -312,14 +322,20 @@ async function ensureBridge() {
     const broker = path.join(reviewerRoot, "dist", "broker.js");
     if (!fs.existsSync(broker)) throw new Error(`Bridge has not been built. Run '${platformExample("setup")}' first.`);
     fs.rmSync(endpointPath, { force: true });
-    const child = spawn(process.execPath, [broker], {
-      cwd: reviewerRoot,
-      detached: true,
-      windowsHide: true,
-      stdio: "ignore",
-      env: process.env
-    });
-    child.unref();
+    if (needsHerdrServer(terminal ?? loadConfig().defaultTerminal)) {
+      const { launchHerdrServer } = await import("./herdr.mjs");
+      const executable = resolveCommand("hc");
+      await launchHerdrServer({
+        executable, appExecutable: herdrAppExecutable(executable), root: reviewerRoot,
+        instanceId: loadConfig().instanceId,
+        run: (command, args) => run(command, args, { cwd: reviewerRoot, capture: true, windowsHide: true })
+      });
+    } else {
+      const child = spawn(process.execPath, [broker], {
+        cwd: reviewerRoot, detached: true, windowsHide: true, stdio: "ignore", env: process.env
+      });
+      child.unref();
+    }
     const startupDeadline = Date.now() + 20_000;
     while (Date.now() < startupDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 200));
@@ -363,6 +379,8 @@ async function withSessionLock(feature, role, start) {
 async function listPairs() {
   if (!await endpointHealth()) throw new Error("The review bridge is not running. Start it with 'just server'.");
   const pairs = await bridgeRequest("/pairs");
+  const endpoint = readJson(endpointPath);
+  if (endpoint.herdrTerminal) console.log(`Shared server: ${endpoint.herdrTerminal} (review-bridge), PID ${endpoint.pid}`);
   if (!pairs.length) return console.log("No stored feature pairs.");
   for (const pair of pairs) console.log(`${pair.feature}\t${pair.reviewerConnected ? "connected" : "disconnected"}\t${pair.mode}/${pair.activity}\t${pair.status}\t${pair.projectRoot}`);
 }
@@ -834,12 +852,11 @@ async function startPair(options, passthrough) {
   if (terminal === "herdr") {
     const { launchHerdrPair } = await import("./herdr.mjs");
     const executable = resolveCommand("hc");
-    const appExecutable = resolveCommand("herdr-app")
-      ?? (executable && resolveCommand(path.join(path.dirname(executable), process.platform === "win32" ? "herdr-app.exe" : "herdr-app")))
-      ?? (process.platform === "win32" && executable ? resolveCommand(path.join(path.dirname(executable), "..", "herdr-app", "herdr-app.exe")) : undefined);
+    const appExecutable = herdrAppExecutable(executable);
     const launched = await launchHerdrPair({
       executable, appExecutable, root: reviewerRoot, projectRoot, feature,
       instanceId: loadConfig().instanceId, coderArgs, reviewerArgs,
+      ensureServer: () => ensureBridge("herdr"),
       run: (command, args) => run(command, args, { cwd: projectRoot, capture: true, windowsHide: true })
     });
     if (launched) return;
