@@ -239,6 +239,17 @@ queued Claude context, or an injected second Codex history item. Only `once`
 disarms itself after a user decision; `manual` and `auto` remain armed until
 explicitly switched off.
 
+Explicit force-publication uses a separate persisted `explicitClaudeMessage`
+slot (ID, feedback, publication time, and originating Codex thread). It requires
+manual or active auto mode, no pending checkpoint or queued feedback, and idle,
+passed, or waiting-claude status. New Stop checkpoints only supersede automatic
+`queuedClaudeContext`; the explicit slot survives. The prompt hook combines both
+queues, labels explicit feedback with its time and provenance, and consumes it
+once when a user prompt arrives. Standby/catch-up pause explicit delivery without
+deleting it. Mode-off clears it and returns its ID; exact-ID discard can remove
+it in any activity state without touching a checkpoint or automatic feedback.
+Publication and discard leave automatic counters and limits unchanged.
+
 `pass_continue` is distinct from final `pass`. It is valid only when the current
 review gate is clean and the next concrete action was already authorized by the
 user. The report remains out of band; the Stop hook receives only a bounded

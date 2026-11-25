@@ -120,8 +120,8 @@ test("isolated broker: MCP standby/resume, durable restart, quota failure, and o
   };
   await rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "standby-test", version: "1" } });
   mcp.stdin!.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
-  const command = async (name: string) => {
-    const response = await rpc("tools/call", { name: `review_bridge_${name}`, arguments: { feature: "test" } });
+  const command = async (name: string, args: Record<string, unknown> = {}) => {
+    const response = await rpc("tools/call", { name: `review_bridge_${name}`, arguments: { feature: "test", ...args } });
     assert.equal(response.error, undefined);
     assert.equal(response.result.isError, undefined);
     return JSON.parse(response.result.content[0].text);
@@ -246,4 +246,93 @@ test("isolated broker: MCP standby/resume, durable restart, quota failure, and o
   assert.equal(nextTurn, turnsBeforeStop);
   assert.equal((await status()).mode, "off");
   assert.equal((await status()).pending, undefined);
+  // Recover active auto, then exercise explicit publication after pass and
+  // continuation while real newer Stop requests are held and completed.
+  await call("/mode", { mode: "auto", roundLimit: 3 });
+  await command("resume");
+  const recovered = await waitFor(status, (value) => Boolean(value.pending?.codexTurnId));
+  await call("/auto-decision", { checkpointId: recovered.pending.id, decision: "pass" });
+  finish(recovered.pending.codexTurnId, "Recovered pass.");
+  await waitFor(status, (value) => value.status === "passed");
+  const forced = await command("force_publish", { codexThreadId: "thread-test", feedback: "Explicit follow-up that must survive." });
+  assert.equal(forced.delivery, "next-prompt");
+  assert.equal(forced.mode, "auto");
+  assert.equal(forced.autoRound, 0);
+  assert.equal(forced.autoRoundLimit, 3);
+  const messageId = forced.explicitClaudeMessage.id;
+  assert.equal(forced.explicitClaudeMessage.preview, "Explicit follow-up that must survive.");
+  assert.equal(forced.explicitClaudeMessage.feedback, undefined);
+  assert.equal((await call("/force-publish", { codexThreadId: "thread-test", feedback: "Overwrite" })).status, 409);
+  assert.equal((await call("/discard-message", { messageId: "stale" })).status, 409);
+
+  const newerStop = hook("stop", { last_assistant_message: "Newer work after explicit publication" });
+  const newer = await waitFor(status, (value) => Boolean(value.pending?.codexTurnId));
+  assert.equal(newer.explicitClaudeMessage.id, messageId);
+  assert.equal((await call("/force-publish", { codexThreadId: "thread-test", feedback: "Bypass checkpoint" })).status, 409);
+  await call("/auto-decision", { checkpointId: newer.pending.id, decision: "pass_continue", continuation: "Perform the already-authorized next step." });
+  finish(newer.pending.codexTurnId, "Clean; continue.");
+  assert.equal((await newerStop).value.kind, "continue");
+  const continued = await waitFor(status, (value) => !value.pending);
+  assert.equal(continued.status, "waiting-claude");
+  assert.equal(continued.autoRound, 1);
+  assert.equal(continued.explicitClaudeMessage.id, messageId);
+  await command("discard_message", { messageId });
+  const afterContinue = await command("force_publish", { codexThreadId: "thread-test", feedback: "Explicit after continuation." });
+  assert.equal(afterContinue.autoRound, 1);
+  const retainedId = afterContinue.explicitClaudeMessage.id;
+
+  const interimStop = hook("stop", { last_assistant_message: "Waiting for background work", background_tasks: [{ id: "task-1", type: "shell", status: "running" }] });
+  const interim = await waitFor(status, (value) => Boolean(value.pending?.codexTurnId));
+  assert.equal((await call("/defer", { checkpointId: interim.pending.id })).status, 200);
+  finish(interim.pending.codexTurnId, "Deferred until background work completes.");
+  assert.equal((await interimStop).value.kind, "allow");
+  assert.equal((await status()).explicitClaudeMessage.id, retainedId);
+  assert.equal((await status()).autoRound, 1);
+
+  // Standby retains but never delivers it. Persistence survives a broker restart.
+  await command("standby");
+  assert.equal((await status()).explicitClaudeMessage.delivery, "paused");
+  assert.equal((await hook("prompt", { prompt: "Work while paused" })).value.additionalContext, undefined);
+  await hook("stop", { last_assistant_message: "New handoff collected during standby" });
+  assert.equal((await call("/force-publish", { codexThreadId: "thread-test", feedback: "Cannot send on standby" })).status, 409);
+  const stopped = once(broker!, "exit"); await call("/shutdown"); await stopped;
+  await start();
+  assert.equal((await status()).explicitClaudeMessage.id, retainedId);
+  await command("resume");
+  const resumed = await waitFor(status, (value) => Boolean(value.pending?.codexTurnId));
+  // Promptless lifecycle hooks do not consume an explicit user message.
+  await hook("prompt", {});
+  assert.equal((await status()).explicitClaudeMessage.id, retainedId);
+  assert.equal((await status()).status, "reviewing");
+  await call("/auto-decision", { checkpointId: resumed.pending.id, decision: "revise" });
+  finish(resumed.pending.codexTurnId, "Automatic correction also queued.");
+  await waitFor(status, (value) => Boolean(value.queuedClaudeContext));
+  const combined = await hook("prompt", { prompt: "Apply both messages." });
+  assert.match(combined.value.additionalContext, /Automatic correction also queued/);
+  assert.match(combined.value.additionalContext, /Explicit after continuation/);
+  assert.match(combined.value.additionalContext, /Newer handoffs may have occurred/);
+  assert.equal((await status()).explicitClaudeMessage, undefined);
+  assert.equal((await status()).queuedClaudeContext, undefined);
+  assert.equal((await hook("prompt", { prompt: "No duplicate delivery" })).value.additionalContext, undefined);
+
+  // Discard is available on standby; mode-off explicitly reports removal.
+  const toDiscard = await command("force_publish", { codexThreadId: "thread-test", feedback: "Discard this only." });
+  await command("standby");
+  const discarded = await command("discard_message", { messageId: toDiscard.explicitClaudeMessage.id });
+  assert.equal(discarded.discardedExplicitMessageId, toDiscard.explicitClaudeMessage.id);
+  assert.equal(discarded.activity, "standby");
+  assert.equal(discarded.explicitClaudeMessage, undefined);
+  await call("/mode", { mode: "manual" });
+  const manual = await command("force_publish", { codexThreadId: "thread-test", feedback: "Manual message cleared by off." });
+  const manualStop = hook("stop", { last_assistant_message: "New manual checkpoint" });
+  const manualReview = await waitFor(status, (value) => Boolean(value.pending?.codexTurnId));
+  finish(manualReview.pending.codexTurnId, "Review requiring a user decision.");
+  await waitFor(status, (value) => value.status === "waiting-user");
+  await call("/cancel", { checkpointId: manualReview.pending.id });
+  assert.equal((await manualStop).value.kind, "allow");
+  assert.equal((await status()).explicitClaudeMessage.id, manual.explicitClaudeMessage.id);
+  const off = await call("/mode", { mode: "off" });
+  assert.equal(off.value.discardedExplicitMessageId, manual.explicitClaudeMessage.id);
+  assert.equal(off.value.explicitClaudeMessage, undefined);
+  assert.equal((await hook("prompt", { prompt: "Off must not deliver" })).value.additionalContext, undefined);
 });

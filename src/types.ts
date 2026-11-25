@@ -121,6 +121,12 @@ export interface FeaturePair {
   workstreamContextThreadId?: string;
   pending?: PendingReview;
   queuedClaudeContext?: string;
+  explicitClaudeMessage?: {
+    id: string;
+    feedback: string;
+    publishedAt: string;
+    codexThreadId: string;
+  };
   questionAdvisoryQueue?: QuestionAdvisory[];
   activeQuestionAdvisory?: QuestionAdvisory;
   pulledReview?: PulledReview;

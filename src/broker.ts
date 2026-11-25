@@ -739,6 +739,13 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
     initialPrompt: pair.initialPrompt ? "[held until Codex thread is ready]" : undefined,
     workstreamContext: pair.workstreamContext ? "[stored for replacement thread recovery]" : undefined,
     queuedClaudeContext: pair.queuedClaudeContext ? "[queued for Claude's next prompt]" : undefined,
+    explicitClaudeMessage: pair.explicitClaudeMessage ? {
+      id: pair.explicitClaudeMessage.id,
+      publishedAt: pair.explicitClaudeMessage.publishedAt,
+      codexThreadId: pair.explicitClaudeMessage.codexThreadId,
+      preview: pair.explicitClaudeMessage.feedback.slice(0, 160),
+      delivery: reviewsSuspended(pair) || pair.mode === "off" ? "paused" : "next-prompt"
+    } : undefined,
     lastCodexResponse: pair.lastCodexResponse ? "[held by bridge]" : undefined,
     questionAdvisoryQueue: pair.questionAdvisoryQueue?.map((item) => ({ id: item.id, createdAt: item.createdAt })),
     activeQuestionAdvisory: pair.activeQuestionAdvisory ? {
@@ -921,6 +928,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     if (roundLimitError) return send(res, 400, { error: roundLimitError });
     const existing = store.get(feature);
     const advisoryTurnId = mode === "off" ? existing?.activeQuestionAdvisory?.codexTurnId : undefined;
+    const discardedExplicitMessageId = mode === "off" ? existing?.explicitClaudeMessage?.id : undefined;
     if (mode === "off" && existing?.pending) {
       sessionReports.update(feature, existing.pending.id, {
         status: "released-mode-off",
@@ -949,6 +957,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
         if (value.pending) release(value.pending.id, { kind: "allow" });
         value.pending = undefined;
         value.queuedClaudeContext = undefined;
+        value.explicitClaudeMessage = undefined;
         value.questionAdvisoryQueue = undefined;
         value.activeQuestionAdvisory = undefined;
       }
@@ -958,7 +967,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       await interruptReview(pair.codexThreadId, advisoryTurnId);
       log(`Interrupted question advisory turn ${advisoryTurnId} because ${feature} was switched off.`);
     }
-    return send(res, 200, publicPair(pair));
+    return send(res, 200, { ...publicPair(pair), discardedExplicitMessageId });
   }
   if (req.url === "/pull-review" && req.method === "POST") {
     if (!feature) return send(res, 400, { error: "feature required" });
@@ -1059,17 +1068,30 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const publishError = forcePublishError(existing, body.codexThreadId, body.feedback);
     if (publishError) return send(res, 409, { error: publishError });
     const review = String(body.feedback).trim();
-    const text = buildPublishedFeedback(review);
     const publishedAt = new Date().toISOString();
     const pair = store.update(feature, (value) => {
       value.status = "waiting-claude";
-      value.queuedClaudeContext = text;
+      value.explicitClaudeMessage = {
+        id: randomUUID(), feedback: review, publishedAt,
+        codexThreadId: String(body.codexThreadId)
+      };
       value.lastCodexResponse = review;
       value.lastForcedPublishAt = publishedAt;
       value.lastForcedPublishThreadId = String(body.codexThreadId);
     });
     log(`Forced unheld publication queued for ${feature} from Codex thread ${String(body.codexThreadId)}.`);
-    return send(res, 200, { ...publicPair(pair), delivery: "next-prompt", forced: true });
+    return send(res, 200, { ...publicPair(pair), delivery: "next-prompt", forced: true,
+      message: "Queued for Claude's next user prompt. Newer checkpoints will not discard this message; review mode and round limits are unchanged." });
+  }
+  if (req.url === "/discard-message" && req.method === "POST") {
+    if (!feature) return send(res, 400, { error: "feature required" });
+    const existing = store.get(feature);
+    if (!existing) return send(res, 404, { error: "unknown feature" });
+    if (!existing.explicitClaudeMessage || body.messageId !== existing.explicitClaudeMessage.id) {
+      return send(res, 409, { error: "messageId must match the currently queued explicit message" });
+    }
+    const pair = store.update(feature, (value) => { value.explicitClaudeMessage = undefined; });
+    return send(res, 200, { ...publicPair(pair), discardedExplicitMessageId: body.messageId });
   }
   if (req.url === "/cancel" && req.method === "POST") {
     if (!feature) return send(res, 400, { error: "feature required" });
@@ -1099,21 +1121,30 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       recordClaudeSession(value, input.session_id, true);
     });
     if (input.prompt) standby.capture(pair, { kind: "prompt", content: input.prompt, sessionId: input.session_id });
-    let context = pair.queuedClaudeContext;
-    if (context) store.update(pair.feature, (value) => {
-      value.queuedClaudeContext = undefined;
-      value.status = value.mode === "manual" ? "waiting-claude" : "idle";
-    });
-    let current = store.get(pair.feature) ?? pair;
-    if (!current.workstreamContext && input.prompt) {
-      current = store.update(pair.feature, (value) => {
+    if (!pair.workstreamContext && input.prompt) {
+      store.update(pair.feature, (value) => {
         value.workstreamContext = input.prompt;
         value.initialPrompt = undefined;
       });
     }
-    if (!reviewsSuspended(current) && current.codexThreadId && current.workstreamContext && current.workstreamContextThreadId !== current.codexThreadId) {
-      await ensureCodexThread(current);
+    if (!reviewsSuspended(pair) && pair.codexThreadId && pair.workstreamContext && pair.workstreamContextThreadId !== pair.codexThreadId) {
+      await ensureCodexThread(pair);
     }
+    // Re-read after asynchronous recovery; consume only when ready to respond.
+    const current = store.get(pair.feature) ?? pair;
+    const explicit = input.prompt && !reviewsSuspended(current) && current.mode !== "off"
+      ? current.explicitClaudeMessage : undefined;
+    const context = [current.queuedClaudeContext, explicit ? [
+      `User-requested explicit publication (${explicit.publishedAt}; message ${explicit.id}).`,
+      "This message was explicitly queued by the user. Newer handoffs may have occurred; assess it against the latest work and recognize anything already resolved.",
+      "", buildPublishedFeedback(explicit.feedback)
+    ].join("\n") : undefined].filter(Boolean).join("\n\n") || undefined;
+    if (context) store.update(pair.feature, (value) => {
+      value.queuedClaudeContext = undefined;
+      if (explicit) value.explicitClaudeMessage = undefined;
+      // Delivery can coincide with a newer held checkpoint. Preserve its status.
+      if (!value.pending) value.status = value.mode === "manual" ? "waiting-claude" : "idle";
+    });
     return send(res, 200, { additionalContext: context, sessionTitle: pair.displayName });
   }
   if (req.url === "/hook/session" && req.method === "POST") {
