@@ -24,7 +24,17 @@ async function main(): Promise<void> {
   }
   if (event === "session") {
     await bridgeRequest("/hook/session", { feature, input });
-    output({});
+    output(process.env.REVIEW_BRIDGE_LAUNCH_GENERATION ? {
+      hookSpecificOutput: {
+        hookEventName: "SessionStart",
+        additionalContext: [
+          "When coordinating timing-sensitive work with other pairs, use the same lease name across pairs.",
+          "Run Node with the script at REVIEW_BRIDGE_HOME/scripts/reviewer.mjs and arguments: lock run <name> --mode <exclusive|shared> --wait -- <command>.",
+          "Use exclusive for timed work and shared for CPU-heavy work. The paired feature is inferred.",
+          "Choose a TTL that covers the workload and report its timing interval in the review handoff."
+        ].join(" ")
+      }
+    } : {});
     return;
   }
   if (event === "prompt") {

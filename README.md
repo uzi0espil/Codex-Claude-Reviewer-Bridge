@@ -326,6 +326,32 @@ just watch api-retry --json --until paused
 `just watch` prints the current pair state and follows future transitions,
 including queued feedback, user pauses, and broker restarts.
 
+### Coordinate timing-sensitive work
+
+Use the same name for all participating pairs. CPU-heavy jobs take shared
+leases and timed jobs take exclusive leases. A waiting exclusive blocks later
+shared requests. Names are case-insensitive and local to the broker.
+
+```text
+just lock run machine-load --feature api-retry --mode exclusive --ttl 20 --wait -- node benchmark.mjs
+just lock acquire machine-load --feature search-index --mode shared --wait
+just lock status
+just pairs
+just lock release machine-load --feature search-index --lease-id <id-from-acquire>
+```
+
+In a paired Claude session, run `node` with
+`REVIEW_BRIDGE_HOME/scripts/reviewer.mjs` and the arguments starting at `lock`.
+This runs the workload from the application directory and infers `--feature`.
+Use foreground commands that manage their own container or detached work.
+
+TTL starts at grant and defaults to 30 minutes (range 1–1440). A manual grant
+ends at expiry or Claude launcher exit. Finish the work before releasing it.
+`lock run` stops the foreground workload on lease loss and holds the lock
+through cleanup. If `cleanup-required` persists, verify the workload stopped
+before releasing its ID. Restart restores unexpired grants and cleanup holds.
+`just watch` reports restored leases. Waiting clients rejoin the queue.
+
 The initial prompt's first meaningful line appears as the report subject, and
 Codex responses are included by default. Add `--full` to include the complete
 initial request and the Claude handoff captured for every checkpoint. The

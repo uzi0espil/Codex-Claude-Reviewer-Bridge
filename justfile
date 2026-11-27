@@ -54,6 +54,8 @@ function runNpm(script) {
       return runReviewer(["ensure"]);
     case "pairs":
       return runReviewer(["pairs"]);
+    case "lock":
+      return runReviewer(["lock", ...args]);
     case "report":
     case "watch":
     case "review-options":
@@ -139,6 +141,11 @@ server:
 # List stored feature pairs and their reviewer connection state.
 [script("node")]
 pairs:
+    {{ runner }}
+
+# Acquire, release, inspect, or run a command inside a named work lease.
+[script("node")]
+lock *args:
     {{ runner }}
 
 # Print the live checkpoint report for the current server session.
