@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { BridgeState, DefaultBridgeMode, FeaturePair, PairTransition } from "./types.js";
+import { BridgeState, DefaultBridgeMode, FeaturePair, PairTransition, StoredWorkLease } from "./types.js";
 import { featureKey, runtimeDirectory, statePath } from "./paths.js";
 
 const emptyState = (): BridgeState => ({ version: 1, pairs: {} });
@@ -129,6 +129,16 @@ export class StateStore {
       listeners.delete(listener);
       if (!listeners.size) this.listeners.delete(feature);
     };
+  }
+
+  setWorkLeases(pair: FeaturePair, leases: StoredWorkLease[], event: PairTransition): void {
+    const { workLeases, events, updatedAt } = pair;
+    try {
+      this.update(pair.feature, (value) => { value.workLeases = leases; }, event);
+    } catch (error) {
+      Object.assign(pair, { workLeases, events, updatedAt });
+      throw error;
+    }
   }
 
   newPendingId(): string {

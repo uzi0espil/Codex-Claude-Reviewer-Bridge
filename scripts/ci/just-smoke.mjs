@@ -66,6 +66,8 @@ try {
   );
   assert.deepEqual(invoke(["terminal", "herdr"]), ["terminal", "herdr"]);
   assert.deepEqual(invoke(["pairs"]), ["pairs"]);
+  assert.deepEqual(invoke(["lock", "run", "machine-load", "--feature", "feature name", "--mode", "exclusive", "--", "node", "a b.mjs"]),
+    ["lock", "run", "machine-load", "--feature", "feature name", "--mode", "exclusive", "--", "node", "a b.mjs"]);
   assert.deepEqual(invoke(["watch", "feature name", "--json", "--until", "paused"]),
     ["watch", "--feature", "feature name", "--json", "--until", "paused"]);
   assert.deepEqual(invoke(["review-options", "feature name", "--interim", "skip"]),

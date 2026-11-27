@@ -20,9 +20,10 @@ const startupLockPath = path.join(runtimeDirectory, "startup.lock");
 
 const optionNames = new Set([
   "project-root", "project-name", "destination", "template-repository", "feature",
-  "profile", "prompt", "session", "ref", "terminal", "worktree", "until", "interim", "delivery"
+  "profile", "prompt", "session", "ref", "terminal", "worktree", "until", "interim", "delivery",
+  "mode", "ttl", "lease-id"
 ]);
-const booleanNames = new Set(["skip-playwright", "device-auth", "resume", "last", "full", "with-worktree", "wt", "json", "auto-delivery"]);
+const booleanNames = new Set(["skip-playwright", "device-auth", "resume", "last", "full", "with-worktree", "wt", "json", "auto-delivery", "wait"]);
 
 export function parseArguments(values) {
   const options = {};
@@ -65,13 +66,14 @@ export function validateCommandArguments(command, options, passthrough) {
     "start-coder": ["feature", "project-root", "worktree", "auto-delivery"],
     "start-reviewer": ["prompt", "feature", "profile", "resume", "last", "session", "project-root", "worktree"],
     ensure: [], pairs: [], stop: [], update: ["ref"], report: ["feature", "full"],
-    watch: ["feature", "json", "until"], "review-options": ["feature", "interim", "delivery"]
+    watch: ["feature", "json", "until"], "review-options": ["feature", "interim", "delivery"],
+    lock: ["feature", "mode", "ttl", "lease-id", "wait", "json"]
   };
   if (!Object.hasOwn(allowed, command)) throw new Error(`Unknown command: ${command}`);
   for (const name of Object.keys(options)) {
     if (!allowed[command].includes(name)) throw new Error(`--${name} is not valid for ${command}.`);
   }
-  if (passthrough.length && !["policy", "tools", "start-pair", "start-coder", "start-reviewer"].includes(command)) {
+  if (passthrough.length && !["policy", "tools", "start-pair", "start-coder", "start-reviewer", "lock"].includes(command)) {
     throw new Error(`${command} does not accept trailing tool arguments.`);
   }
 }
@@ -257,7 +259,8 @@ async function report(options) {
 const watchStates = [
   "broker-restarted", "checkpoint-created", "checkpoint-superseded", "interim-skipped",
   "review-started", "review-finished", "paused", "published", "cancelled",
-  "feedback-queued", "feedback-dispatch-claimed", "feedback-delivered", "standby-entered", "standby-left", "standby-retry-scheduled"
+  "feedback-queued", "feedback-dispatch-claimed", "feedback-delivered", "standby-entered", "standby-left", "standby-retry-scheduled",
+  "lease-granted", "lease-armed", "lease-released", "lease-expired", "lease-owner-exited", "lease-restored", "lease-draining"
 ];
 
 export async function watch(options, request = bridgeRequest, write = (line) => console.log(line)) {
@@ -280,12 +283,14 @@ export async function watch(options, request = bridgeRequest, write = (line) => 
       const { mode, activity, status, checkpointId, standbyReason, nextRetryAt, feedbackQueued } = result.snapshot;
       write(options.json ? JSON.stringify({ ...result.snapshot, type: "snapshot", cursor: result.cursor })
         : [feature, "snapshot", mode, activity, status, checkpointId, standbyReason, nextRetryAt,
-          feedbackQueued ? "feedback queued" : undefined].filter(Boolean).join(" "));
+           feedbackQueued ? "feedback queued" : undefined,
+           ...((result.snapshot.leases ?? []).map(formatLease))].filter(Boolean).join(" "));
     }
     for (const event of result.events ?? []) {
       write(options.json ? JSON.stringify(event) : [
         event.at, event.feature, event.type, event.checkpointId, event.messageId,
-        event.decision, event.outcome, event.reason, event.delivery, event.nextRetryAt
+        event.decision, event.outcome, event.reason, event.delivery, event.nextRetryAt,
+        event.lease ? formatLease(event.lease) : undefined
       ].filter(Boolean).join(" "));
       if (event.type === until) return;
     }
@@ -315,7 +320,7 @@ export function systemBootTime(now = Date.now()) {
 // Tolerates small clock corrections and uptime rounding, not arbitrary wall-clock changes.
 const bootClockToleranceMs = 60_000;
 
-export function acquireStartupLock(lockPath = startupLockPath, now = Date.now(), bootTime = systemBootTime(now)) {
+export function acquireStartupLock(lockPath = startupLockPath, now = Date.now(), bootTime = systemBootTime(now), generation) {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   try {
     fs.mkdirSync(lockPath);
@@ -350,7 +355,7 @@ export function acquireStartupLock(lockPath = startupLockPath, now = Date.now(),
       throw retryError;
     }
   }
-  writeJson(path.join(lockPath, "owner.json"), { pid: process.pid, createdAt: new Date(now).toISOString() });
+  writeJson(path.join(lockPath, "owner.json"), { pid: process.pid, createdAt: new Date(now).toISOString(), generation });
   return true;
 }
 
@@ -410,13 +415,18 @@ async function ensureBridge(terminal) {
   }
 }
 
-export function acquireSessionLock(feature, role, directory = runtimeDirectory) {
+function sessionLockPath(feature, role, directory = runtimeDirectory) {
   const key = String(feature).trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   if (!key) throw new Error("Feature name must contain at least one letter or number.");
   if (!["claude", "codex"].includes(role)) throw new Error("Unknown pair participant.");
   const identity = createHash("sha256").update(key).digest("hex");
-  const lockPath = path.resolve(directory, "launches", `${identity}-${role}.lock`);
-  if (!acquireStartupLock(lockPath)) throw new Error(`The ${role} session for '${key}' is already running or starting. Close it before relaunching the same pair.`);
+  return path.resolve(directory, "launches", `${identity}-${role}.lock`);
+}
+
+export function acquireSessionLock(feature, role, directory = runtimeDirectory, generation = randomUUID()) {
+  const lockPath = sessionLockPath(feature, role, directory);
+  const now = Date.now();
+  if (!acquireStartupLock(lockPath, now, systemBootTime(now), generation)) throw new Error(`The ${role} session for '${feature}' is already running or starting. Close it before relaunching the same pair.`);
   let released = false;
   const release = () => {
     if (released) return;
@@ -424,7 +434,7 @@ export function acquireSessionLock(feature, role, directory = runtimeDirectory) 
     process.off("exit", release);
     // Never remove a replacement owner's lock.
     try {
-      if (readJson(path.join(lockPath, "owner.json")).pid === process.pid) fs.rmSync(lockPath, { recursive: true, force: true });
+      if (readJson(path.join(lockPath, "owner.json")).generation === generation) fs.rmSync(lockPath, { recursive: true, force: true });
     } catch (error) { if (error.code !== "ENOENT") throw error; }
   };
   process.once("exit", release);
@@ -432,8 +442,9 @@ export function acquireSessionLock(feature, role, directory = runtimeDirectory) 
 }
 
 async function withSessionLock(feature, role, start) {
-  const release = acquireSessionLock(feature, role);
-  try { return await start(); } finally { release(); }
+  const generation = randomUUID();
+  const release = acquireSessionLock(feature, role, runtimeDirectory, generation);
+  try { return await start(generation); } finally { release(); }
 }
 
 async function listPairs() {
@@ -442,7 +453,196 @@ async function listPairs() {
   const endpoint = readJson(endpointPath);
   if (endpoint.herdrTerminal) console.log(`Shared server: ${endpoint.herdrTerminal} (review-bridge), PID ${endpoint.pid}`);
   if (!pairs.length) return console.log("No stored feature pairs.");
-  for (const pair of pairs) console.log(`${pair.feature}\t${pair.reviewerConnected ? "connected" : "disconnected"}\t${pair.mode}/${pair.activity}\t${pair.status}\t${pair.projectRoot}`);
+  for (const pair of pairs) {
+    console.log(`${pair.feature}\t${pair.reviewerConnected ? "connected" : "disconnected"}\t${pair.mode}/${pair.activity}\t${pair.status}\t${pair.projectRoot}`);
+    for (const lease of pair.leases ?? []) console.log(`  ${formatLease(lease)}`);
+  }
+}
+
+function formatLease(lease, now = Date.now()) {
+  const age = Math.max(0, Math.floor((now - Date.parse(lease.grantedAt)) / 1000));
+  const remaining = Math.max(0, Math.ceil((Date.parse(lease.expiresAt) - now) / 1000));
+  const ttl = (Date.parse(lease.expiresAt) - Date.parse(lease.grantedAt)) / 60_000;
+  return `${lease.name} ${lease.feature} ${lease.mode} age=${age}s ttl=${ttl}m remaining=${remaining}s id=${lease.id}${lease.draining ? ` cleanup-required=${lease.draining}` : ""}`;
+}
+
+function transientBrokerError(error) {
+  return error instanceof TypeError || ["TimeoutError", "SyntaxError"].includes(error.name) ||
+    error.code === "ENOENT" || [401, 503].includes(error.status);
+}
+
+async function acquireWorkLease(body, signal) {
+  for (;;) {
+    const requestSignal = body.wait ? signal : AbortSignal.any([signal, AbortSignal.timeout(2_000)]);
+    try { return await bridgeRequest("/lock/acquire", body, requestSignal); }
+    catch (error) {
+      if (!body.wait || signal.aborted || !transientBrokerError(error)) throw error;
+      await delay(500, undefined, { signal });
+    }
+  }
+}
+
+function watchLeaseOwner(feature, generation) {
+  try {
+    const owner = readJson(path.join(sessionLockPath(feature, "claude"), "owner.json"));
+    if (owner.generation !== generation || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return false;
+    process.kill(owner.pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+async function waitForLeaseLoss(lease, binding, generation, signal) {
+  while (!signal.aborted) {
+    if (Date.now() >= Date.parse(lease.expiresAt)) return "Work lease expired.";
+    if (!watchLeaseOwner(lease.feature, generation)) return "Work lease owner exited.";
+    try {
+      await bridgeRequest("/lock/check", binding, AbortSignal.any([signal, AbortSignal.timeout(1_000)]));
+    } catch (error) {
+      if (signal.aborted) return;
+      if (!transientBrokerError(error)) return error.message;
+      // An unavailable broker keeps the persisted grant. The local deadline still applies.
+    }
+    try { await delay(250, undefined, { signal }); }
+    catch (error) { if (!signal.aborted) throw error; }
+  }
+}
+
+function processGroupAlive(pid) {
+  try { process.kill(-pid, 0); return true; }
+  catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function stopLeaseCommand(child) {
+  if (!child.pid) return;
+  if (process.platform === "win32") {
+    const taskkill = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+    const result = spawnSync(taskkill, ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
+    if (result.error || result.status !== 0) throw new Error("Could not confirm that the Windows workload tree stopped.");
+    return;
+  }
+  try { process.kill(-child.pid, "SIGKILL"); }
+  catch (error) { if (error.code !== "ESRCH") throw error; }
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (!processGroupAlive(child.pid)) return;
+    await delay(100);
+  }
+  throw new Error("Could not confirm that the workload process group stopped.");
+}
+
+async function releaseWorkLease(binding) {
+  for (let attempt = 0; ; attempt += 1) {
+    try { return await bridgeRequest("/lock/release", binding, AbortSignal.timeout(1_000)); }
+    catch (error) {
+      if (error.status === 404) return;
+      if (attempt >= 9 || !transientBrokerError(error)) throw error;
+      await delay(500);
+    }
+  }
+}
+
+async function runWithLease(lease, generation, command, signal) {
+  const binding = { feature: lease.feature, name: lease.name, id: lease.id };
+  const monitor = new AbortController();
+  let canRelease = true;
+  try {
+    const invocation = externalInvocation(command[0], command.slice(1));
+    await bridgeRequest("/lock/arm", binding, AbortSignal.any([signal, AbortSignal.timeout(2_000)]));
+    signal.throwIfAborted();
+    if (Date.now() >= Date.parse(lease.expiresAt) || !watchLeaseOwner(lease.feature, generation)) {
+      throw new Error("The workload could not start within its lease.");
+    }
+    const child = spawn(invocation.command, invocation.args, {
+      env: invocation.env, stdio: "inherit", detached: process.platform !== "win32"
+    });
+    canRelease = false;
+    const exited = new Promise((resolve) => {
+      child.once("error", (error) => resolve({ error }));
+      child.once("exit", (status, childSignal) => resolve({ status, childSignal }));
+    });
+    const observed = AbortSignal.any([signal, monitor.signal]);
+    const loss = waitForLeaseLoss(lease, binding, generation, observed)
+      .then((reason) => ({ reason: reason ?? "Workload interrupted." }), (error) => ({ reason: error.message }));
+    const outcome = await Promise.race([exited, loss]);
+    if (outcome.reason || (child.pid && process.platform !== "win32" && processGroupAlive(child.pid))) {
+      await stopLeaseCommand(child);
+      await exited;
+    }
+    canRelease = true;
+    if (outcome.error) throw outcome.error;
+    if (outcome.reason) throw new Error(outcome.reason);
+    signal.throwIfAborted();
+    if (Date.now() >= Date.parse(lease.expiresAt)) throw new Error("Workload finished after its lease expired.");
+    if (!watchLeaseOwner(lease.feature, generation)) throw new Error("Work lease owner exited.");
+    if (outcome.childSignal) throw new Error(`Workload stopped by ${outcome.childSignal}.`);
+    process.exitCode = outcome.status ?? 1;
+  } finally {
+    monitor.abort();
+    if (canRelease) await releaseWorkLease(binding);
+    else console.error(`Lease ${lease.id} is held for cleanup. Check that the workload stopped before releasing it manually.`);
+  }
+}
+
+async function lock(options, positionals, command) {
+  const [action, name] = positionals;
+  const flags = {
+    status: ["json"],
+    acquire: ["feature", "mode", "ttl", "wait", "json"],
+    run: ["feature", "mode", "ttl", "wait"],
+    release: ["feature", "lease-id"]
+  };
+  if (!Object.hasOwn(flags, action) || positionals.length !== (action === "status" ? 1 : 2) ||
+      (action === "run") !== Boolean(command.length)) {
+    throw new Error("Use lock status, lock acquire <name>, lock release <name>, or lock run <name> -- <command>.");
+  }
+  for (const option of Object.keys(options)) {
+    if (!flags[action].includes(option)) throw new Error(`--${option} is not valid for lock ${action}.`);
+  }
+  if (action === "status") {
+    const result = await bridgeRequest("/lock/status", {}, AbortSignal.timeout(2_000));
+    if (options.json) console.log(JSON.stringify(result.leases));
+    else console.log(result.leases.map((lease) => formatLease(lease)).join("\n") || "No held leases.");
+    return;
+  }
+  const feature = options.feature ?? process.env.REVIEW_BRIDGE_FEATURE;
+  if (!feature) throw new Error("--feature is required outside a paired Claude session.");
+  if (action === "release") {
+    const released = await bridgeRequest("/lock/release", { feature, name, id: requireOption(options, "lease-id") }, AbortSignal.timeout(2_000));
+    console.log(`Released ${released.name} for ${released.feature} (${released.id}).`);
+    return;
+  }
+  const mode = requireOption(options, "mode");
+  const minutes = options.ttl === undefined ? undefined : Number(options.ttl);
+  if (minutes !== undefined && (!/^\d+$/.test(options.ttl) || !Number.isSafeInteger(minutes))) {
+    throw new Error("--ttl must be a whole number of minutes.");
+  }
+  const launchFile = path.join(sessionLockPath(feature, "claude"), "owner.json");
+  const inheritedFeature = process.env.REVIEW_BRIDGE_FEATURE;
+  const sameLaunch = inheritedFeature && sessionLockPath(inheritedFeature, "claude") === sessionLockPath(feature, "claude");
+  let generation = sameLaunch ? process.env.REVIEW_BRIDGE_LAUNCH_GENERATION : undefined;
+  if (!generation) {
+    try { generation = readJson(launchFile).generation; }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  if (!generation) throw new Error("Relaunch paired Claude before acquiring a work lease.");
+  const interrupt = new AbortController();
+  const abort = () => interrupt.abort(new Error("Work lease command interrupted."));
+  process.once("SIGINT", abort);
+  process.once("SIGTERM", abort);
+  try {
+    const lease = await acquireWorkLease({
+      feature, name, generation, requestId: randomUUID(), mode, minutes, wait: options.wait === true
+    }, interrupt.signal);
+    if (action === "run") await runWithLease(lease, generation, command, interrupt.signal);
+    else console.log(options.json ? JSON.stringify(lease) : formatLease(lease));
+  } finally {
+    process.off("SIGINT", abort);
+    process.off("SIGTERM", abort);
+  }
 }
 
 function projectSettings(projectRoot, projectName, skipPlaywright, existingConfig) {
@@ -761,7 +961,7 @@ async function tools(options, passthrough) {
   });
 }
 
-async function startCoder(options, passthrough) {
+async function startCoder(options, passthrough, generation) {
   await ensureBridge();
   const feature = requireOption(options, "feature");
   const repositoryRoot = resolveProjectRoot(options["project-root"]);
@@ -805,7 +1005,9 @@ async function startCoder(options, passthrough) {
         command: process.execPath, args: [channel, bindingFile]
       } } }), "--dangerously-load-development-channels", "server:review-bridge-channel");
     }
-    run("claude", args, { cwd: pair.worktreePending ? repositoryRoot : pair.projectRoot, env: { ...process.env, REVIEW_BRIDGE_FEATURE: pair.feature } });
+    run("claude", args, { cwd: pair.worktreePending ? repositoryRoot : pair.projectRoot, env: {
+      ...process.env, REVIEW_BRIDGE_FEATURE: pair.feature, REVIEW_BRIDGE_HOME: reviewerRoot, REVIEW_BRIDGE_LAUNCH_GENERATION: generation
+    } });
   } finally {
     if (bindingFile) fs.rmSync(bindingFile, { force: true });
     if (launchToken) {
@@ -1081,6 +1283,7 @@ function usage() {
   console.log("Folder/tool access: folders <list|add|remove> [path ...]; tools --project-root <registered folder>; permissions");
   console.log("Terminals: create/setup/start-pair --terminal <auto|herdr|print> (herder is an alias); terminal [auto|herdr|print] shows or saves the instance default. Herdr uses hc on PATH.");
   console.log("Pair monitoring: watch --feature <name> [--json] [--until <state>]; review-options --feature <name> [--interim <skip|review>] [--delivery next-prompt]");
+  console.log("Work leases: lock acquire|run <name> --feature <name> --mode shared|exclusive [--ttl <minutes>] [--wait]; lock release <name> --feature <name> --lease-id <id>; lock status [--json]");
   console.log("Automatic queued revisions (preview): start-pair --feature <name> --auto-delivery.");
   console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  default-mode    Set the mode inherited by new workstreams\n  notifications   Enable or disable desktop notifications\n  start-pair      Open paired Claude and Codex terminals [--worktree <name>]\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  pairs           List feature pairs and reviewer connection states\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
 }
@@ -1094,6 +1297,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === "notifications") return setNotifications(positionals);
   if (command === "terminal") return setTerminal(positionals);
   if (command === "folders") return folders(positionals);
+  if (command === "lock") return lock(options, positionals, passthrough);
   if (command === "permissions" && !positionals.length) return permissions();
   if (positionals.length) throw new Error(`Unexpected argument: ${positionals[0]}`);
   if (command === "create") return create(options);
@@ -1102,7 +1306,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === "policy") return policy(options, passthrough);
   if (command === "tools") return tools(options, passthrough);
   if (command === "start-pair") return startPair(options, passthrough);
-  if (command === "start-coder") return withSessionLock(requireOption(options, "feature"), "claude", () => startCoder(options, passthrough));
+  if (command === "start-coder") return withSessionLock(requireOption(options, "feature"), "claude", (generation) => startCoder(options, passthrough, generation));
   if (command === "start-reviewer") return options.feature
     ? withSessionLock(options.feature, "codex", () => startReviewer(options, passthrough))
     : startReviewer(options, passthrough);

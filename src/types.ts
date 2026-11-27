@@ -9,6 +9,7 @@ export type PairStatus =
   | "failed";
 
 export interface PendingReview {
+  leaseEvidence?: { active: WorkLease[]; history: PairEvent[]; historyMayBeIncomplete: boolean };
   contextSequence?: number;
   id: string;
   sequence?: number;
@@ -65,10 +66,28 @@ export type AutoReviewDecision = "pass" | "pass_continue" | "revise" | "needs_us
 
 export type StandbyReason = "user-requested" | "usage-limit" | "capture-gap" | "recovery-failed" | "broker-restart";
 
+export interface WorkLease {
+  id: string;
+  name: string;
+  feature: string;
+  mode: "exclusive" | "shared";
+  grantedAt: string;
+  expiresAt: string;
+  managed?: boolean;
+  draining?: "expired" | "owner-exited";
+}
+
+export interface StoredWorkLease extends WorkLease {
+  generation: string;
+  requestId: string;
+}
+
 export interface PairTransition {
   type: "broker-restarted" | "checkpoint-created" | "checkpoint-superseded" | "interim-skipped"
     | "review-started" | "review-finished" | "paused" | "published" | "cancelled"
-    | "feedback-queued" | "feedback-dispatch-claimed" | "feedback-delivered" | "standby-entered" | "standby-left" | "standby-retry-scheduled";
+    | "feedback-queued" | "feedback-dispatch-claimed" | "feedback-delivered" | "standby-entered" | "standby-left" | "standby-retry-scheduled"
+    | "lease-granted" | "lease-released" | "lease-expired" | "lease-owner-exited" | "lease-restored" | "lease-draining" | "lease-armed";
+  lease?: WorkLease;
   checkpointId?: string;
   messageId?: string;
   decision?: AutoReviewDecision;
@@ -106,6 +125,7 @@ export interface QuestionAdvisory {
 
 export interface FeaturePair {
   events?: PairEvent[];
+  workLeases?: StoredWorkLease[];
   skipInterimReviews?: boolean;
   activity?: "active" | "standby" | "catching-up";
   standby?: {

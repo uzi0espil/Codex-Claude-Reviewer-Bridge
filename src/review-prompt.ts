@@ -99,6 +99,7 @@ export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint
       formatBackgroundTasks(checkpoint!.backgroundTasks!)
     ].join("\n")
     : undefined;
+  const leaseEvidence = checkpoint?.leaseEvidence;
   return [
     `[Review bridge checkpoint: ${pair.displayName}]`,
     checkpoint ? `Checkpoint: #${checkpoint.sequence ?? "?"} (${checkpoint.id})` : undefined,
@@ -112,6 +113,11 @@ export function buildReviewPrompt(pair: FeaturePair, message: string, checkpoint
     compactedPolicyReminder(pair),
     autoContract,
     backgroundWork,
+    leaseEvidence ? [
+      "Broker-recorded lease evidence at checkpoint creation. Compare grant and end timestamps with the reported workload interval. A lease coordinates participating jobs on this broker.",
+      leaseEvidence.historyMayBeIncomplete ? "Earlier events may have aged out of the retained history." : undefined,
+      JSON.stringify(leaseEvidence)
+    ].filter(Boolean).join("\n") : undefined,
     "",
     "Latest Claude message:",
     message

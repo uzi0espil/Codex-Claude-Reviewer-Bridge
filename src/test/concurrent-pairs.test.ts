@@ -3,8 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { promisify } from "node:util";
 import test from "node:test";
 import { WebSocketServer, WebSocket } from "ws";
 
@@ -21,6 +23,8 @@ test("one broker isolates simultaneous pair checkpoints and terminal exits", { t
   const source = fileURLToPath(new URL("../../", import.meta.url));
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "concurrent-pairs-"));
   fs.cpSync(path.join(source, "dist"), path.join(root, "dist"), { recursive: true });
+  fs.mkdirSync(path.join(root, "scripts"));
+  fs.copyFileSync(path.join(source, "scripts", "reviewer.mjs"), path.join(root, "scripts", "reviewer.mjs"));
   fs.symlinkSync(path.join(source, "node_modules"), path.join(root, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   fs.writeFileSync(path.join(root, "package.json"), '{"type":"module","version":"0.7.0"}');
   fs.writeFileSync(path.join(root, "bridge.local.json"), JSON.stringify({ projectRoot: root, desktopNotifications: false }));
@@ -54,9 +58,10 @@ test("one broker isolates simultaneous pair checkpoints and terminal exits", { t
       socket.send(JSON.stringify({ id: message.id, result }));
     });
   });
-  const broker = spawn(process.execPath, [path.join(root, "driver.mjs"), `ws://127.0.0.1:${address.port}`], {
+  const startBroker = () => spawn(process.execPath, [path.join(root, "driver.mjs"), `ws://127.0.0.1:${address.port}`], {
     cwd: root, windowsHide: true, stdio: "pipe"
   });
+  let broker = startBroker();
   let errors = "";
   broker.stderr!.on("data", (data) => { errors += String(data); });
   let endpoint: any;
@@ -93,11 +98,51 @@ test("one broker isolates simultaneous pair checkpoints and terminal exits", { t
     await once(terminal, "open");
   }
   assert.ok((await call("/pairs")).every((pair: any) => pair.reviewerConnected));
+  const launch = (feature: string) => {
+    const generation = randomUUID();
+    const hash = createHash("sha256").update(feature).digest("hex");
+    const directory = path.join(root, "runtime", "launches", `${hash}-claude.lock`);
+    fs.mkdirSync(directory, { recursive: true });
+    const file = path.join(directory, "owner.json");
+    fs.writeFileSync(file, JSON.stringify({ generation, pid: process.pid, createdAt: new Date().toISOString() }));
+    return file;
+  };
+  const ownerA = launch("a");
+  const ownerB = launch("b");
+  const hook = promisify(execFile)(process.execPath, [path.join(root, "dist", "claude-hook.js"), "session"], {
+    cwd: root, timeout: 5000, env: {
+      ...process.env, REVIEW_BRIDGE_FEATURE: "a",
+      REVIEW_BRIDGE_LAUNCH_GENERATION: JSON.parse(fs.readFileSync(ownerA, "utf8")).generation
+    }
+  });
+  hook.child.stdin!.end(JSON.stringify({ session_id: a.claudeSessionId, cwd: root, hook_event_name: "SessionStart" }));
+  const hookOutput = JSON.parse((await hook).stdout);
+  assert.equal(hookOutput.hookSpecificOutput.hookEventName, "SessionStart");
+  assert.match(hookOutput.hookSpecificOutput.additionalContext, /lock run <name>/);
+  const cli = (...args: string[]) => promisify(execFile)(process.execPath, [
+    path.join(root, "scripts", "reviewer.mjs"), ...args
+  ], { cwd: root, timeout: 5000 });
+  const marker = path.join(root, "workload-started");
+  const managedResult = cli("lock", "run", "machine-load", "--feature", "b", "--mode", "shared", "--",
+    process.execPath, "-e", "require('fs').writeFileSync(process.argv[1], 'running'); setTimeout(() => {}, 4000);", marker)
+    .then((value) => ({ value }), (error: Error) => ({ error }));
+  await waitFor(() => fs.existsSync(marker), Boolean);
+  const waitForExclusive = cli("lock", "acquire", "machine-load", "--feature", "a", "--mode", "exclusive", "--wait", "--json");
+  fs.unlinkSync(ownerB);
+  const stoppedWork = await managedResult;
+  assert.ok("error" in stoppedWork);
+  assert.match(stoppedWork.error.message, /owner exited|cleanup is required/);
+  const held = JSON.parse((await waitForExclusive).stdout);
+  assert.match((await cli("pairs")).stdout, /machine-load a exclusive age=\d+s ttl=30m/);
+  assert.deepEqual((await call("/lock/status")).leases, [held]);
+  const leaseCursor = (await call("/watch", { feature: "a" })).cursor;
   const handoff = (pair: any) => call("/hook/stop", { feature: pair.feature, input: { session_id: pair.claudeSessionId, cwd: root, last_assistant_message: `Handoff ${pair.feature}` } });
   let resolvedB = false;
   const stopA = handoff(a), stopB = handoff(b).then((result) => { resolvedB = true; return result; });
   const state = async (feature: string) => await call("/status", { feature });
   const [reviewA, reviewB] = await Promise.all([a, b].map((pair) => waitFor(() => state(pair.feature), (value) => Boolean(value.pending?.codexTurnId))));
+  assert.deepEqual(reviewA.pending.leaseEvidence.active, [held]);
+  assert.equal(reviewA.pending.leaseEvidence.history.at(-1).type, "lease-granted");
   for (const pair of [reviewA, reviewB]) {
     upstreamSocket.send(JSON.stringify({ method: "item/completed", params: { threadId: pair.codexThreadId, turnId: pair.pending.codexTurnId, item: { type: "agentMessage", text: `Review ${pair.feature}` } } }));
     upstreamSocket.send(JSON.stringify({ method: "turn/completed", params: { threadId: pair.codexThreadId, turn: { id: pair.pending.codexTurnId, status: "completed" } } }));
@@ -121,8 +166,36 @@ test("one broker isolates simultaneous pair checkpoints and terminal exits", { t
   const watched = once(terminals[1], "message");
   terminals[1].send(JSON.stringify({ id: "watch", method: "fs/watch", params: { watchId: "watch", path: root } }));
   assert.equal(JSON.parse(String((await watched)[0])).id, "watch");
+  const running = path.join(root, "restart-workload-started");
+  const finish = path.join(root, "restart-workload-finish");
+  const restartingWork = cli("lock", "run", "restart-test", "--feature", "a", "--mode", "exclusive", "--",
+    process.execPath, "-e", [
+      "const fs = require('fs'); fs.writeFileSync(process.argv[1], 'started');",
+      "const poll = setInterval(() => { if (fs.existsSync(process.argv[2])) { clearInterval(poll); console.log('finished'); } }, 30);",
+      "setTimeout(() => process.exit(2), 4000).unref();"
+    ].join(" "), running, finish).then((value) => ({ value }), (error: Error) => ({ error }));
+  await waitFor(() => fs.existsSync(running), Boolean);
+  const beforeRestart = (await call("/lock/status")).leases;
   const closedB = once(terminals[1], "close"), exited = once(broker, "exit");
   await call("/shutdown"); await Promise.all([closedB, exited]);
   assert.equal(cleanupAcknowledged, true, "Broker must drain cleanup before closing the app-server transport");
   assert.equal(fs.existsSync(path.join(root, "runtime", "endpoint.json")), false);
+  broker = startBroker();
+  broker.stderr!.on("data", (data) => { errors += String(data); });
+  endpoint = await waitFor(() => {
+    if (broker.exitCode !== null) throw new Error(errors || "Test broker exited during restart");
+    try { return JSON.parse(fs.readFileSync(path.join(root, "runtime", "endpoint.json"), "utf8")); } catch { return undefined; }
+  }, Boolean);
+  const restored = (await call("/lock/status")).leases;
+  assert.deepEqual(restored.toSorted((a: any, b: any) => a.name.localeCompare(b.name)),
+    beforeRestart.toSorted((a: any, b: any) => a.name.localeCompare(b.name)));
+  fs.writeFileSync(finish, "");
+  const finishedWork = await restartingWork;
+  if ("error" in finishedWork) throw finishedWork.error;
+  assert.match(finishedWork.value.stdout, /finished/);
+  assert.deepEqual((await call("/lock/status")).leases, [held]);
+  const events = (await call("/watch", { feature: "a", after: leaseCursor })).events;
+  assert.equal(events.find((event: any) => event.type === "lease-restored").lease.id, held.id);
+  fs.unlinkSync(ownerA);
+  assert.deepEqual((await call("/lock/status")).leases, []);
 });

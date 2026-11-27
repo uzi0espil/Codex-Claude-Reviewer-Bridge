@@ -37,11 +37,13 @@ import { ContextJournal } from "./context-journal.js";
 import { StandbyController, reviewsSuspended } from "./standby.js";
 import { isUsageLimit } from "./usage-limit.js";
 import { channelReceiptRecorded, channelTokenHash } from "./claude-channel-delivery.js";
+import { defaultLeaseMinutes, LeaseError, maxLeaseMinutes, WorkLeases } from "./work-leases.js";
 
 type Release = StopHookResult;
 type Waiter = { resolve: (release: Release) => void; response: ServerResponse; onClose: () => void };
 
 const store = new StateStore();
+const leases = new WorkLeases(store, undefined, undefined, (error) => log(`Lease maintenance failed: ${String(error)}`));
 const waiters = new Map<string, Waiter>();
 const watchResponses = new Set<ServerResponse>();
 const reviewTransitions = new Map<string, Promise<void>>();
@@ -66,6 +68,7 @@ const standby = new StandbyController(store, new ContextJournal(path.join(runtim
   review: (pair, handoff) => {
     const checkpoint = createCheckpoint(pair, store.newPendingId(), handoff.content,
       new Date().toISOString(), "pull-queue", handoff.backgroundTasks);
+    checkpoint.leaseEvidence = leases.evidence(pair);
     store.update(pair.feature, (value) => {
       value.pending = checkpoint; value.checkpointSequence = checkpoint.sequence;
       value.status = "reviewing";
@@ -755,6 +758,8 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
   return {
     ...pair,
     events: undefined,
+    workLeases: undefined,
+    leases: leases.active(pair),
     claudeChannel: undefined,
     claudeChannelAttempt: undefined,
     autoDeliveryEnabled: Boolean(pair.claudeChannel),
@@ -821,6 +826,50 @@ async function reconcileChannelReceipt(pair: FeaturePair, input: ClaudeHookInput
   }, { type: "feedback-delivered", checkpointId: attempt.checkpointId, delivery: "claude-channel" });
 }
 
+function routeLease(route: string, res: ServerResponse, body: any): void {
+  try {
+    if (route === "/lock/status") {
+      leases.tick();
+      return send(res, 200, { leases: leases.active() });
+    }
+    if (!["/lock/acquire", "/lock/arm", "/lock/check", "/lock/release"].includes(route)) {
+      throw new LeaseError(404, "Unknown lease operation.");
+    }
+    if (typeof body?.feature !== "string" || !/[a-z0-9._]/i.test(body.feature)) {
+      throw new LeaseError(400, "A valid feature is required.");
+    }
+    const feature = featureKey(body.feature);
+    if (!store.get(feature)) throw new LeaseError(404, "Unknown feature.");
+    if (typeof body.name !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(body.name)) {
+      throw new LeaseError(400, "Lease names must start with a letter or digit and contain up to 64 letters, digits, dots, underscores, or hyphens.");
+    }
+    const name = body.name.toLowerCase();
+    const uuid = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9-]{36}$/.test(value);
+    if (route !== "/lock/acquire") {
+      if (!uuid(body.id)) throw new LeaseError(400, "A lease ID is required.");
+      const action = route === "/lock/release" ? "release" : route === "/lock/arm" ? "arm" : "check";
+      return send(res, 200, leases.operate(feature, name, body.id, action));
+    }
+    const minutes = body.minutes ?? defaultLeaseMinutes;
+    if ((body.mode !== "shared" && body.mode !== "exclusive") || !Number.isInteger(minutes) ||
+        minutes < 1 || minutes > maxLeaseMinutes || !uuid(body.generation) || !uuid(body.requestId) ||
+        (body.wait !== undefined && typeof body.wait !== "boolean")) {
+      throw new LeaseError(400, `Acquisition requires a launch generation, request ID, shared or exclusive mode, and a TTL of 1–${maxLeaseMinutes} minutes.`);
+    }
+    if (res.destroyed) return;
+    const cancel = leases.acquire({ feature, name, minutes, mode: body.mode, generation: body.generation, requestId: body.requestId },
+      body.wait === true, (result) => {
+        if (res.destroyed) return;
+        if (result instanceof LeaseError) send(res, result.status, { error: result.message });
+        else send(res, 200, result);
+      });
+    if (!res.writableEnded) res.once("close", cancel);
+  } catch (error) {
+    if (!(error instanceof LeaseError)) throw error;
+    send(res, error.status, { error: error.message });
+  }
+}
+
 function watchPair(pair: FeaturePair, res: ServerResponse, after: number | undefined): void {
   const read = () => {
     const events = pair.events ?? [];
@@ -828,7 +877,8 @@ function watchPair(pair: FeaturePair, res: ServerResponse, after: number | undef
     if (after === undefined) {
       return { cursor, snapshot: { feature: pair.feature, mode: pair.mode, activity: pair.activity ?? "active",
         status: pair.status, checkpointId: pair.pending?.id, standbyReason: pair.standby?.reason,
-        nextRetryAt: pair.standby?.nextRetryAt, feedbackQueued: Boolean(pair.queuedClaudeContext || pair.explicitClaudeMessage) } };
+        nextRetryAt: pair.standby?.nextRetryAt, feedbackQueued: Boolean(pair.queuedClaudeContext || pair.explicitClaudeMessage),
+        leases: leases.active(pair) } };
     }
     if (after > cursor || after < cursor - events.length) {
       return { cursor, error: "Watch cursor is outside the retained event history. Start a new watch for a fresh snapshot." };
@@ -859,6 +909,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   if (req.url === "/health" && req.method === "GET") return send(res, 200, { ok: true, appServerUrl });
   if (req.headers.authorization !== `Bearer ${token}`) return send(res, 401, { error: "unauthorized" });
   const body = await readJson(req);
+  if (req.method === "POST" && req.url?.startsWith("/lock/")) return routeLease(req.url, res, body);
   const feature = body.feature ? featureKey(String(body.feature)) : undefined;
 
   if ((req.url === "/channel/claim" || req.url === "/channel/unbind") && req.method === "POST") {
@@ -968,7 +1019,10 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     else scheduleQuestionAdvisory(pair.feature);
     return;
   }
-  if (req.url === "/pairs" && (req.method === "GET" || req.method === "POST")) return send(res, 200, store.all().map(publicPair));
+  if (req.url === "/pairs" && (req.method === "GET" || req.method === "POST")) {
+    leases.tick();
+    return send(res, 200, store.all().map(publicPair));
+  }
   if (req.url === "/status" && req.method === "POST") {
     const pair = feature ? store.get(feature) : undefined;
     return pair ? send(res, 200, publicPair(pair)) : send(res, 404, { error: "unknown feature" });
@@ -1138,6 +1192,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const captured = existing.capturedClaudeMessage!;
     const pendingId = store.newPendingId();
     const checkpoint = createCheckpoint(existing, pendingId, captured.message, new Date().toISOString(), "pull-queue");
+    checkpoint.leaseEvidence = leases.evidence(existing);
     const requestedAt = new Date().toISOString();
     const pair = store.update(feature, (value) => {
       if (value.capturedClaudeMessage?.id !== captured.id) return;
@@ -1407,6 +1462,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       "stop",
       backgroundTasks
     );
+    checkpoint.leaseEvidence = leases.evidence(pair);
     if (superseded) {
       sessionReports.update(pair.feature, superseded.id, {
         status: "superseded",
@@ -1474,6 +1530,7 @@ export async function main(testClient?: AppServerClient): Promise<void> {
     appProxy = await AppServerProxy.start(app);
     appServerUrl = appProxy.url;
   } else appServerUrl = await startAppServer();
+  leases.start();
   for (const pair of store.all()) {
     store.update(pair.feature, () => {}, { type: "broker-restarted" });
     if (pair.mode === "auto" && (pair.pending || pair.activity === "catching-up")) standby.enter(pair.feature, "broker-restart");
@@ -1515,6 +1572,7 @@ export async function main(testClient?: AppServerClient): Promise<void> {
     log("Bridge shutting down.");
     if (process.env.HC_TERMINAL_ID) console.log("Shared review bridge stopping.");
     standby.close();
+    leases.close();
     for (const response of watchResponses) response.destroy();
     for (const pendingId of [...waiters.keys()]) release(pendingId, { kind: "allow" });
     try {

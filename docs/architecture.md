@@ -133,6 +133,16 @@ estimated current system boot is recovered even if its recorded PID now belongs
 to an unrelated process. `reviewer pairs` reports stored features and
 their live reviewer connection states. `stop` remains instance-wide.
 
+Named work leases coordinate participating workloads across live Claude launches
+within this broker. A launch generation in the Claude launcher lock distinguishes
+relaunches of the same feature. Per-name admission honors queued exclusives.
+Grants and their watch events are saved together before acknowledgement. Restart
+reconciles expired grants and missing owners before accepting acquisitions.
+Waiters are connection-scoped and requeue after restart. Managed commands retain
+a cleanup hold on expiry or owner exit until their wrapper confirms cleanup,
+or an operator explicitly releases the lease ID after verifying it is safe.
+Checkpoints include a bounded snapshot of broker-recorded lease evidence.
+
 One unpublished checkpoint may be current per feature. A newer Claude Stop:
 
 1. installs a monotonically numbered checkpoint;
