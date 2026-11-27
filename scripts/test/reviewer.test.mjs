@@ -20,6 +20,7 @@ import {
   powershellQuote,
   readSessionReport,
   watch,
+  stopLeaseProcessGroup,
   shellQuote,
   systemBootTime,
   terminalLaunchSpec,
@@ -337,6 +338,21 @@ test("folder tool servers have isolated routing and preserve user configuration 
   assert.equal(refreshed.includes(name), false);
   assert.equal(refreshed.match(/\[mcp_servers.review_tools\]/g).length, 1);
   assert.equal(refreshed.match(/\[permissions.bridge-review\]/g).length, 1);
+});
+
+test("managed cleanup waits for process-group disappearance through transient EPERM", async () => {
+  const outcomes = ["EPERM", "EPERM", undefined, "EPERM", "ESRCH"];
+  const calls = [];
+  await stopLeaseProcessGroup(123, (pid, signal) => {
+    assert.equal(pid, -123);
+    calls.push(signal);
+    const code = outcomes.shift();
+    if (code) throw Object.assign(new Error(code), {code});
+  }, async () => {});
+  assert.deepEqual(calls, ["SIGKILL", 0, "SIGKILL", 0, 0]);
+  await assert.rejects(stopLeaseProcessGroup(123, () => {
+    throw Object.assign(new Error("Permission denied"), {code: "EPERM"});
+  }, async () => {}), /Could not confirm/);
 });
 
 test("startup locking serializes callers and recovers stale owners", () => {

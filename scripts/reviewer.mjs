@@ -509,12 +509,33 @@ async function waitForLeaseLoss(lease, binding, generation, signal) {
   }
 }
 
-function processGroupAlive(pid) {
-  try { process.kill(-pid, 0); return true; }
+function processGroupAlive(pid, signal = process.kill) {
+  try { signal(-pid, 0); return true; }
   catch (error) {
     if (error.code === "ESRCH") return false;
+    // macOS may return EPERM while the last member is exiting. Keep the hold
+    // until the group actually disappears, including when permission is denied.
+    if (error.code === "EPERM") return true;
     throw error;
   }
+}
+
+export async function stopLeaseProcessGroup(pid, signal = process.kill, pause = delay) {
+  let signalled = false;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (!signalled) {
+      try {
+        signal(-pid, "SIGKILL");
+        signalled = true;
+      } catch (error) {
+        if (error.code === "ESRCH") return;
+        if (error.code !== "EPERM") throw error;
+      }
+    }
+    if (!processGroupAlive(pid, signal)) return;
+    await pause(100);
+  }
+  throw new Error("Could not confirm that the workload process group stopped.");
 }
 
 async function stopLeaseCommand(child) {
@@ -525,13 +546,7 @@ async function stopLeaseCommand(child) {
     if (result.error || result.status !== 0) throw new Error("Could not confirm that the Windows workload tree stopped.");
     return;
   }
-  try { process.kill(-child.pid, "SIGKILL"); }
-  catch (error) { if (error.code !== "ESRCH") throw error; }
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (!processGroupAlive(child.pid)) return;
-    await delay(100);
-  }
-  throw new Error("Could not confirm that the workload process group stopped.");
+  await stopLeaseProcessGroup(child.pid);
 }
 
 async function releaseWorkLease(binding) {
