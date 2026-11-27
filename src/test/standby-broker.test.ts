@@ -315,6 +315,65 @@ test("isolated broker: MCP standby/resume, durable restart, quota failure, and o
   assert.equal((await status()).queuedClaudeContext, undefined);
   assert.equal((await hook("prompt", { prompt: "No duplicate delivery" })).value.additionalContext, undefined);
 
+  const watchSnapshot = await call("/watch");
+  assert.equal(watchSnapshot.value.snapshot.feedbackQueued, false);
+  const cursor = watchSnapshot.value.cursor;
+  assert.equal((await call("/watch", { after: -1 })).status, 400);
+  assert.equal((await call("/watch", { after: cursor + 1 })).status, 409);
+  const waitingWatch = call("/watch", { after: cursor });
+  assert.equal((await status()).skipInterimReviews, false);
+  assert.equal((await call("/pair/review-options", { skipInterimReviews: true })).value.skipInterimReviews, true);
+  const beforeSkip = nextTurn;
+  const tasks = [{ id: "task-2", type: "shell", status: "running" }];
+  for (const message of ["First skipped handoff", "Second skipped handoff"]) {
+    assert.equal((await hook("stop", { last_assistant_message: message, background_tasks: tasks })).value.kind, "allow");
+  }
+  assert.equal((await waitingWatch).value.events[0].type, "interim-skipped");
+  assert.equal((await status()).pending, undefined);
+  assert.equal(nextTurn, beforeSkip);
+  const beforeFinal = once(broker!, "exit");
+  await call("/shutdown");
+  await beforeFinal;
+  await start();
+  assert.equal((await status()).skipInterimReviews, true);
+  const finalStop = hook("stop", { last_assistant_message: "Final handoff after skipped reviews" });
+  const finalReview = await waitFor(status, (value) => Boolean(value.pending?.codexTurnId));
+  assert.equal(finalReview.pending.source, "stop");
+  assert.equal(nextTurn, beforeSkip + 1);
+  for (const message of ["First skipped handoff", "Second skipped handoff"]) {
+    assert.ok(messages.some((rpc) => rpc.method === "thread/inject_items" && JSON.stringify(rpc).includes(message)));
+  }
+  await call("/auto-decision", { checkpointId: finalReview.pending.id, decision: "needs_user" });
+  finish(finalReview.pending.codexTurnId, "This review requires a user decision.");
+  await waitFor(status, (value) => value.status === "waiting-user");
+  const pausedEvents = (await call("/watch", { after: cursor })).value.events;
+  assert.deepEqual(pausedEvents.map((event: any) => event.type), [
+    "interim-skipped", "interim-skipped", "broker-restarted", "checkpoint-created", "review-started", "review-finished", "paused"
+  ]);
+  assert.equal(pausedEvents.at(-2).decision, "needs_user");
+  assert.equal(pausedEvents.at(-1).reason, "needs-user");
+  assert.ok(!JSON.stringify(pausedEvents).includes("handoff"));
+  const whilePaused = once(broker!, "exit");
+  await call("/shutdown");
+  await finalStop;
+  await whilePaused;
+  await start();
+  const restartEvents = (await call("/watch", { after: pausedEvents.at(-1).sequence })).value.events;
+  assert.deepEqual(restartEvents.map((event: any) => event.type), ["broker-restarted", "standby-entered"]);
+  assert.equal(restartEvents.at(-1).reason, "broker-restart");
+  await command("resume");
+  const afterRestart = await waitFor(status, (value) => Boolean(value.pending?.codexTurnId));
+  await call("/auto-decision", { checkpointId: afterRestart.pending.id, decision: "revise" });
+  finish(afterRestart.pending.codexTurnId, "Apply the final review.");
+  await waitFor(status, (value) => Boolean(value.queuedClaudeContext));
+  await hook("prompt", { prompt: "Apply that review." });
+  const deliveryEvents = (await call("/watch", { after: restartEvents.at(-1).sequence })).value.events;
+  assert.deepEqual(deliveryEvents.map((event: any) => event.type), [
+    "standby-left", "checkpoint-created", "review-started", "review-finished", "feedback-queued", "feedback-delivered"
+  ]);
+  assert.equal(deliveryEvents.at(-1).checkpointId, afterRestart.pending.id);
+  assert.equal(deliveryEvents.at(-1).delivery, "next-prompt");
+
   // Discard is available on standby; mode-off explicitly reports removal.
   const toDiscard = await command("force_publish", { codexThreadId: "thread-test", feedback: "Discard this only." });
   await command("standby");

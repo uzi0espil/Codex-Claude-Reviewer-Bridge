@@ -295,6 +295,12 @@ stays armed, and no automatic round is consumed. This uses structured Stop-hook
 metadata available in Claude Code 2.1.145 and newer; older clients retain the
 normal review-every-Stop behavior.
 
+For a pair running in auto mode, opt in to skipping those review turns with
+`just review-options api-retry --interim skip`. The first final Stop gets a
+review with the captured interim handoffs as context. This delays findings on
+completed parallel work until the final Stop. Use `--interim review` to restore
+the default.
+
 Interrupting an active Codex checkpoint releases Claude without publishing the
 partial review. Manual and automatic modes remain armed; once mode is consumed
 as it would be by an explicit cancellation. Unexpected reviewer failures still
@@ -309,7 +315,11 @@ server session, regardless of mode, without invoking either model:
 
 ```text
 just report api-retry
+just watch api-retry --json --until paused
 ```
+
+`just watch` prints the current pair state and follows future transitions,
+including queued feedback, user pauses, and broker restarts.
 
 The initial prompt's first meaningful line appears as the report subject, and
 Codex responses are included by default. Add `--full` to include the complete

@@ -9,6 +9,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { createInterface } from "node:readline/promises";
+import { setTimeout as delay } from "node:timers/promises";
 
 export const reviewerRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const runtimeDirectory = path.join(reviewerRoot, "runtime");
@@ -19,9 +20,9 @@ const startupLockPath = path.join(runtimeDirectory, "startup.lock");
 
 const optionNames = new Set([
   "project-root", "project-name", "destination", "template-repository", "feature",
-  "profile", "prompt", "session", "ref", "terminal", "worktree"
+  "profile", "prompt", "session", "ref", "terminal", "worktree", "until", "interim"
 ]);
-const booleanNames = new Set(["skip-playwright", "device-auth", "resume", "last", "full", "with-worktree", "wt"]);
+const booleanNames = new Set(["skip-playwright", "device-auth", "resume", "last", "full", "with-worktree", "wt", "json"]);
 
 export function parseArguments(values) {
   const options = {};
@@ -63,7 +64,8 @@ export function validateCommandArguments(command, options, passthrough) {
     "start-pair": ["feature", "profile", "project-root", "terminal", "worktree", "with-worktree", "wt"],
     "start-coder": ["feature", "project-root", "worktree"],
     "start-reviewer": ["prompt", "feature", "profile", "resume", "last", "session", "project-root", "worktree"],
-    ensure: [], pairs: [], stop: [], update: ["ref"], report: ["feature", "full"]
+    ensure: [], pairs: [], stop: [], update: ["ref"], report: ["feature", "full"],
+    watch: ["feature", "json", "until"], "review-options": ["feature", "interim"]
   };
   if (!Object.hasOwn(allowed, command)) throw new Error(`Unknown command: ${command}`);
   for (const name of Object.keys(options)) {
@@ -222,15 +224,20 @@ async function endpointHealth(timeout = 2000) {
   }
 }
 
-async function bridgeRequest(route, body = {}) {
+async function bridgeRequest(route, body = {}, signal) {
   const endpoint = readJson(endpointPath);
   const response = await fetch(`${endpoint.url}${route}`, {
     method: "POST",
     headers: { authorization: `Bearer ${endpoint.token}`, "content-type": "application/json" },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal
   });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error ?? `Bridge returned HTTP ${response.status}.`);
+  if (!response.ok) {
+    const error = new Error(result.error ?? `Bridge returned HTTP ${response.status}.`);
+    error.status = response.status;
+    throw error;
+  }
   return result;
 }
 
@@ -245,6 +252,53 @@ async function report(options) {
     throw new Error("The review bridge is not running; session reports are available only while the server is running.");
   }
   process.stdout.write(await readSessionReport(requireOption(options, "feature"), options.full === true));
+}
+
+const watchStates = [
+  "broker-restarted", "checkpoint-created", "checkpoint-superseded", "interim-skipped",
+  "review-started", "review-finished", "paused", "published", "cancelled",
+  "feedback-queued", "feedback-delivered", "standby-entered", "standby-left", "standby-retry-scheduled"
+];
+
+export async function watch(options, request = bridgeRequest, write = (line) => console.log(line)) {
+  const feature = requireOption(options, "feature");
+  const until = options.until;
+  if (until && !watchStates.includes(until)) throw new Error(`Unknown watch state: ${until}. Use one of: ${watchStates.join(", ")}.`);
+  let after;
+  for (;;) {
+    let result;
+    try {
+      result = await request("/watch", { feature, after }, AbortSignal.timeout(20_000));
+    } catch (error) {
+      const reconnect = error instanceof TypeError || error.name === "TimeoutError"
+        || error.code === "ENOENT" || error.status === 401;
+      if (after === undefined || !reconnect) throw error;
+      await delay(500);
+      continue;
+    }
+    if (result.snapshot) {
+      const { mode, activity, status, checkpointId, standbyReason, nextRetryAt, feedbackQueued } = result.snapshot;
+      write(options.json ? JSON.stringify({ ...result.snapshot, type: "snapshot", cursor: result.cursor })
+        : [feature, "snapshot", mode, activity, status, checkpointId, standbyReason, nextRetryAt,
+          feedbackQueued ? "feedback queued" : undefined].filter(Boolean).join(" "));
+    }
+    for (const event of result.events ?? []) {
+      write(options.json ? JSON.stringify(event) : [
+        event.at, event.feature, event.type, event.checkpointId, event.messageId,
+        event.decision, event.outcome, event.reason, event.delivery, event.nextRetryAt
+      ].filter(Boolean).join(" "));
+      if (event.type === until) return;
+    }
+    after = result.cursor;
+  }
+}
+
+async function reviewOptions(options) {
+  const feature = requireOption(options, "feature");
+  const interim = requireOption(options, "interim");
+  if (interim !== "skip" && interim !== "review") throw new Error("--interim expects skip or review.");
+  const pair = await bridgeRequest("/pair/review-options", { feature, skipInterimReviews: interim === "skip" });
+  console.log(`${pair.displayName}: interim Stops will ${pair.skipInterimReviews ? "skip review in auto mode" : "use the default review workflow"}.`);
 }
 
 /** Estimated wall-clock boot time; wall-clock adjustments also shift this estimate. */
@@ -992,6 +1046,7 @@ function usage() {
   console.log("Worktrees: start-pair --with-worktree (alias --wt) reuses --feature as the worktree name; --worktree <name> overrides it.");
   console.log("Folder/tool access: folders <list|add|remove> [path ...]; tools --project-root <registered folder>; permissions");
   console.log("Terminals: create/setup/start-pair --terminal <auto|herdr|print> (herder is an alias); terminal [auto|herdr|print] shows or saves the instance default. Herdr uses hc on PATH.");
+  console.log("Pair monitoring: watch --feature <name> [--json] [--until <state>]; review-options --feature <name> --interim <skip|review>");
   console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  default-mode    Set the mode inherited by new workstreams\n  notifications   Enable or disable desktop notifications\n  start-pair      Open paired Claude and Codex terminals [--worktree <name>]\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  pairs           List feature pairs and reviewer connection states\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
 }
 
@@ -1019,6 +1074,8 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === "ensure") return void await ensureBridge();
   if (command === "pairs") return listPairs();
   if (command === "report") return report(options);
+  if (command === "watch") return watch(options);
+  if (command === "review-options") return reviewOptions(options);
   if (command === "stop") return stop();
   if (command === "update") return update(options);
   throw new Error(`Unknown command: ${command}`);

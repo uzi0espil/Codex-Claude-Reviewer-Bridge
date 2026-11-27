@@ -186,6 +186,28 @@ not treated as background work because recurring schedules must not suppress a
 final review indefinitely. If an older Claude Code version omits the structured
 background-task field, the bridge preserves the normal review behavior.
 
+`just review-options <feature> --interim skip` saves an opt-in setting for the
+pair. In active auto mode, an interim Stop is journaled and released without
+starting a checkpoint review. The first final Stop uses the usual held review
+and receives the recorded events as context. Findings on completed parallel
+work may therefore wait for the final Stop. Manual and usage-limit standby
+still follow their existing resume rules. Use `--interim review` to restore
+the default.
+
+### Watch pair transitions
+
+`just watch <feature>` prints a snapshot and follows transitions for an
+existing pair. Use `--json` for one JSON object per line and `--until paused`
+to exit after a future pause. Other event names include `review-finished`,
+`feedback-queued`, `feedback-delivered`, `standby-entered`, and
+`broker-restarted`. A finished review can be followed by a pause or by queued
+feedback. A delivery event records the bridge returning feedback through a hook.
+
+The watch reconnects after broker downtime and replays missed transitions.
+Each pair retains its last 256 events across restarts, with no prompt or review
+text in the feed. If the watch misses more events than the bridge retains, it
+exits with an error so callers can start again from a fresh snapshot.
+
 ### Live checkpoint report
 
 Reviewer responses remain ordinary Markdown in the Codex terminal. The broker
