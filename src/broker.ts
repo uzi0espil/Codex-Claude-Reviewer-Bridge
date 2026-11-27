@@ -36,6 +36,7 @@ import { samePath, validateManagedWorktree } from "./worktree.js";
 import { ContextJournal } from "./context-journal.js";
 import { StandbyController, reviewsSuspended } from "./standby.js";
 import { isUsageLimit } from "./usage-limit.js";
+import { channelReceiptRecorded, channelTokenHash } from "./claude-channel-delivery.js";
 
 type Release = StopHookResult;
 type Waiter = { resolve: (release: Release) => void; response: ServerResponse; onClose: () => void };
@@ -631,6 +632,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
       if (delivery.queueForNextPrompt) {
         value.queuedClaudeContext = feedback;
         value.queuedClaudeCheckpointId = pendingId;
+        value.queuedClaudeRevisionSessionId = value.claudeSessionId;
       }
       if (delivery.clearPending) value.pending = undefined;
     }, finished(delivery.outcome), ...(delivery.queueForNextPrompt ? [{
@@ -753,6 +755,10 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
   return {
     ...pair,
     events: undefined,
+    claudeChannel: undefined,
+    claudeChannelAttempt: undefined,
+    autoDeliveryEnabled: Boolean(pair.claudeChannel),
+    autoDeliveryAwaitingReceipt: Boolean(pair.claudeChannelAttempt),
     skipInterimReviews: pair.skipInterimReviews ?? false,
     reviewerConnected: appProxy?.connected(pair.feature) ?? false,
     activity: pair.activity ?? "active",
@@ -805,6 +811,16 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
   };
 }
 
+async function reconcileChannelReceipt(pair: FeaturePair, input: ClaudeHookInput): Promise<void> {
+  const attempt = pair.claudeChannelAttempt;
+  if (!attempt || input.session_id !== attempt.sessionId || !await channelReceiptRecorded(pair, input.transcript_path)) return;
+  if (pair.claudeChannelAttempt !== attempt || pair.queuedClaudeCheckpointId !== attempt.checkpointId) return;
+  store.update(pair.feature, (value) => {
+    value.queuedClaudeContext = undefined;
+    value.queuedClaudeCheckpointId = undefined;
+  }, { type: "feedback-delivered", checkpointId: attempt.checkpointId, delivery: "claude-channel" });
+}
+
 function watchPair(pair: FeaturePair, res: ServerResponse, after: number | undefined): void {
   const read = () => {
     const events = pair.events ?? [];
@@ -845,6 +861,29 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   const body = await readJson(req);
   const feature = body.feature ? featureKey(String(body.feature)) : undefined;
 
+  if ((req.url === "/channel/claim" || req.url === "/channel/unbind") && req.method === "POST") {
+    const pair = feature && store.get(feature);
+    const channel = pair && pair.claudeChannel;
+    if (!pair || !channel || typeof body.launchToken !== "string" || body.launchToken.length !== 64 ||
+        channel.tokenHash !== channelTokenHash(body.launchToken) || body.sessionId !== channel.sessionId ||
+        pair.claudeSessionId !== channel.sessionId) return send(res, 403, { error: "Claude channel binding expired or invalid" });
+    if (req.url === "/channel/unbind") {
+      store.update(pair.feature, (value) => { value.claudeChannel = undefined; });
+      return send(res, 200, {});
+    }
+    const checkpointId = pair.queuedClaudeCheckpointId;
+    if (!channel.ready || pair.mode !== "auto" || reviewsSuspended(pair) || pair.pending || pair.claudeChannelAttempt ||
+        pair.queuedClaudeRevisionSessionId !== channel.sessionId || !checkpointId || !pair.queuedClaudeContext) {
+      return send(res, 200, {});
+    }
+    const receiptId = randomUUID();
+    store.update(pair.feature, (value) => {
+      value.claudeChannelAttempt = { checkpointId, sessionId: channel.sessionId, receiptId };
+      channel.ready = false;
+    }, { type: "feedback-dispatch-claimed", checkpointId, delivery: "claude-channel" });
+    return send(res, 200, { checkpointId, receiptId, feedback: pair.queuedClaudeContext });
+  }
+
   if ((req.url === "/watch" || req.url === "/pair/review-options") && req.method === "POST") {
     const pair = feature && store.get(feature);
     if (!pair) return send(res, 404, { error: "unknown feature" });
@@ -855,11 +894,21 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       }
       return watchPair(pair, res, after);
     }
-    if (typeof body.skipInterimReviews !== "boolean") {
-      return send(res, 400, { error: "skipInterimReviews must be a boolean" });
+    if ((body.skipInterimReviews !== undefined && typeof body.skipInterimReviews !== "boolean") ||
+        (body.delivery !== undefined && body.delivery !== "next-prompt") ||
+        (body.skipInterimReviews === undefined && body.delivery === undefined)) {
+      return send(res, 400, { error: "Set skipInterimReviews to a boolean or delivery to next-prompt." });
+    }
+    if (body.delivery === "next-prompt") {
+      store.update(pair.feature, (value) => { value.claudeChannel = undefined; });
+      await reconcileChannelReceipt(pair, { session_id: pair.claudeSessionId ?? "", cwd: pair.projectRoot, hook_event_name: "" });
     }
     return send(res, 200, publicPair(store.update(pair.feature, (value) => {
-      value.skipInterimReviews = body.skipInterimReviews;
+      if (body.skipInterimReviews !== undefined) value.skipInterimReviews = body.skipInterimReviews;
+      if (body.delivery === "next-prompt") {
+        value.claudeChannelAttempt = undefined;
+        value.queuedClaudeRevisionSessionId = undefined;
+      }
     })));
   }
 
@@ -870,6 +919,9 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   }
 
   if (req.url === "/pair/claude" && req.method === "POST") {
+    if (body.channelToken !== undefined && (typeof body.channelToken !== "string" || !/^[0-9a-f]{64}$/.test(body.channelToken))) {
+      return send(res, 400, { error: "Invalid Claude channel launch token" });
+    }
     let pair = store.ensure(String(body.feature), String(body.projectRoot), readInstanceDefaultMode(), body.worktreeName ? String(body.worktreeName) : undefined);
     if (pair.worktreeName && !pair.worktreePending) {
       validateManagedWorktree(pair.repositoryRoot ?? pair.projectRoot, pair.projectRoot);
@@ -877,6 +929,11 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     pair = store.update(pair.feature, (value) => {
       migrateClaudeSessionLifecycle(value);
       value.claudeSessionId = String(body.sessionId || value.claudeSessionId || randomUUID());
+      if (body.channelToken) {
+        value.claudeChannel = { sessionId: value.claudeSessionId, tokenHash: channelTokenHash(body.channelToken), ready: false };
+      } else if (body.channelToken === undefined && body.launch === true) {
+        value.claudeChannel = undefined;
+      }
     });
     const reservedSessionId = pair.claudeSessionId;
     if (!pair.claudeSessionStarted && await hasPersistedClaudeConversation(pair)) {
@@ -1138,6 +1195,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       if (delivery === "next-prompt") {
         value.queuedClaudeContext = text;
         value.queuedClaudeCheckpointId = pendingId;
+        value.queuedClaudeRevisionSessionId = undefined;
       }
     }, ...events);
     if (pendingId) release(pendingId, continuationDelivery ? { kind: "continue", text } : { kind: "feedback", text });
@@ -1204,7 +1262,9 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const input = body.input as ClaudeHookInput;
     const pair = store.update(String(body.feature), (value) => {
       recordClaudeSession(value, input.session_id, true);
+      if (value.claudeChannel) value.claudeChannel.ready = false;
     });
+    await reconcileChannelReceipt(pair, input);
     if (input.prompt) standby.capture(pair, { kind: "prompt", content: input.prompt, sessionId: input.session_id });
     if (!pair.workstreamContext && input.prompt) {
       store.update(pair.feature, (value) => {
@@ -1219,19 +1279,22 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const current = store.get(pair.feature) ?? pair;
     const explicit = input.prompt && !reviewsSuspended(current) && current.mode !== "off"
       ? current.explicitClaudeMessage : undefined;
-    const context = [current.queuedClaudeContext, explicit ? [
+    const queued = !current.claudeChannelAttempt ? current.queuedClaudeContext : undefined;
+    const context = [queued, explicit ? [
       `User-requested explicit publication (${explicit.publishedAt}; message ${explicit.id}).`,
       "This message was explicitly queued by the user. Newer handoffs may have occurred; assess it against the latest work and recognize anything already resolved.",
       "", buildPublishedFeedback(explicit.feedback)
     ].join("\n") : undefined].filter(Boolean).join("\n\n") || undefined;
     const delivered: PairTransition[] = [];
-    if (current.queuedClaudeContext) delivered.push({
+    if (queued) delivered.push({
       type: "feedback-delivered", checkpointId: current.queuedClaudeCheckpointId, delivery: "next-prompt"
     });
     if (explicit) delivered.push({ type: "feedback-delivered", messageId: explicit.id, delivery: "next-prompt" });
     if (context) store.update(pair.feature, (value) => {
-      value.queuedClaudeContext = undefined;
-      value.queuedClaudeCheckpointId = undefined;
+      if (queued) {
+        value.queuedClaudeContext = undefined;
+        value.queuedClaudeCheckpointId = undefined;
+      }
       if (explicit) value.explicitClaudeMessage = undefined;
       // Delivery can coincide with a newer held checkpoint. Preserve its status.
       if (!value.pending) value.status = value.mode === "manual" ? "waiting-claude" : "idle";
@@ -1249,6 +1312,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
         throw new Error(`Claude session cwd '${input.cwd}' does not match paired root '${value.projectRoot}'.`);
       }
       recordClaudeSession(value, input.session_id, false);
+      if (value.claudeChannel?.sessionId === input.session_id) value.claudeChannel.ready = true;
     });
     return send(res, 200, publicPair(pair));
   }
@@ -1286,8 +1350,13 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
   if (req.url === "/hook/stop" && req.method === "POST") {
     const input = body.input as ClaudeHookInput;
     const pair = store.get(String(body.feature));
-    if (!pair || !input.last_assistant_message) return send(res, 200, { kind: "allow" });
+    if (!pair) return send(res, 200, { kind: "allow" });
+    await reconcileChannelReceipt(pair, input);
+    if (!input.last_assistant_message) return send(res, 200, { kind: "allow" });
     const backgroundTasks = normalizeBackgroundTasks(input.background_tasks);
+    if (pair.claudeChannel?.sessionId === input.session_id) {
+      store.update(pair.feature, (value) => { value.claudeChannel!.ready = backgroundTasks.length === 0; });
+    }
     standby.capture(pair, { kind: "handoff", content: input.last_assistant_message,
       sessionId: input.session_id, backgroundTasks });
     if (reviewsSuspended(pair)) {
@@ -1385,7 +1454,9 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const released = await releasePromise;
     streamedResponse.finish(released);
     if (released.kind === "feedback" || released.kind === "continue") {
-      store.update(pair.feature, () => {}, { type: "feedback-delivered", checkpointId: pendingId, delivery: "stop-hook" });
+      store.update(pair.feature, (value) => {
+        if (value.claudeChannel) value.claudeChannel.ready = false;
+      }, { type: "feedback-delivered", checkpointId: pendingId, delivery: "stop-hook" });
     }
     return;
   }

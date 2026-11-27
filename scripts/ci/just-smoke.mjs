@@ -70,6 +70,10 @@ try {
     ["watch", "--feature", "feature name", "--json", "--until", "paused"]);
   assert.deepEqual(invoke(["review-options", "feature name", "--interim", "skip"]),
     ["review-options", "--feature", "feature name", "--interim", "skip"]);
+  assert.deepEqual(invoke(["review-options", "feature name", "--delivery", "next-prompt"]),
+    ["review-options", "--feature", "feature name", "--delivery", "next-prompt"]);
+  assert.deepEqual(invoke(["pair", "feature name", "--auto-delivery"]),
+    ["start-pair", "--feature", "feature name", "--auto-delivery"]);
   assert.deepEqual(invoke(["pair", "feature", "--terminal", "herder"]), ["start-pair", "--feature", "feature", "--terminal", "herder"]);
   console.log("Just recipe argument forwarding passed.");
 } finally {
