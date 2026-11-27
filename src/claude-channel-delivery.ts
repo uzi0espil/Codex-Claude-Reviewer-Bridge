@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import { claudeTranscriptPaths } from "./claude-session.js";
 import { FeaturePair } from "./types.js";
 
@@ -23,11 +24,12 @@ export async function channelReceiptRecorded(pair: FeaturePair, transcriptPath?:
   for (const filename of candidates) {
     try {
       const handle = await fs.open(filename, "r");
+      const stream = handle.createReadStream();
+      const lines = createInterface({ input: stream, crlfDelay: Infinity });
       try {
-        const { size } = await handle.stat();
-        const buffer = Buffer.alloc(Math.min(size, 512 * 1024));
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, size - buffer.length);
-        for (const line of buffer.toString("utf8", 0, bytesRead).split("\n")) {
+        // Large tool results after the inbound event can bury its receipt far
+        // before the tail by the time the next Stop runs.
+        for await (const line of lines) {
           if (!line.includes(attempt.receiptId)) continue;
           let record;
           try { record = JSON.parse(line); } catch { continue; }
@@ -38,6 +40,8 @@ export async function channelReceiptRecorded(pair: FeaturePair, transcriptPath?:
               content.split("\n", 1)[0].includes(attribute)) return true;
         }
       } finally {
+        lines.close();
+        stream.destroy();
         await handle.close();
       }
     } catch { /* An unreadable transcript cannot acknowledge delivery. */ }

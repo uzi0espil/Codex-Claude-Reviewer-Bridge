@@ -417,6 +417,7 @@ test("isolated broker: MCP standby/resume, durable restart, quota failure, and o
   fs.appendFileSync(channelTranscript, JSON.stringify({
     type: "user", sessionId: "claude-test", isMeta: true, origin: { kind: "channel", server: "review-bridge-channel" }, message: { content }
   }) + "\n");
+  fs.appendFileSync(channelTranscript, JSON.stringify({ type: "tool-result", content: "x".repeat(768 * 1024) }) + "\n");
   assert.equal((await hook("prompt", { prompt: "Check real receipt" })).value.additionalContext, undefined);
   assert.equal((await status()).queuedClaudeContext, undefined);
   const receipts = (await call("/watch", { after: receiptCursor })).value.events;
