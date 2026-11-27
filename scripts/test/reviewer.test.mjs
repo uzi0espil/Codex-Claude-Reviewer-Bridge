@@ -19,6 +19,7 @@ import {
   policyCodexArguments,
   powershellQuote,
   readSessionReport,
+  watch,
   shellQuote,
   systemBootTime,
   terminalLaunchSpec,
@@ -142,6 +143,26 @@ test("reads the live session report from the broker with optional full content",
     positionals: [],
     passthrough: []
   });
+});
+
+test("watch resumes at its last cursor and exits on a future matching transition", async () => {
+  const cursors = [];
+  const lines = [];
+  const request = async (route, { feature, after }) => {
+    assert.equal(route, "/watch");
+    assert.equal(feature, "Feature One");
+    cursors.push(after);
+    if (after === undefined) return { cursor: 5, snapshot: { feature, status: "waiting-user" } };
+    if (cursors.length === 2) throw new TypeError("fetch failed");
+    return { cursor: 8, events: [
+      { type: "broker-restarted", sequence: 6 },
+      { type: "paused", sequence: 7 },
+      { type: "cancelled", sequence: 8 }
+    ] };
+  };
+  await watch({ feature: "Feature One", json: true, until: "paused" }, request, (line) => lines.push(JSON.parse(line)));
+  assert.deepEqual(cursors, [undefined, 5, 5]);
+  assert.deepEqual(lines.map((line) => line.type), ["snapshot", "broker-restarted", "paused"]);
 });
 
 test("quotes Bash, PowerShell, and TOML literals without interpolation", () => {

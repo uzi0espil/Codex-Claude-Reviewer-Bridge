@@ -9,7 +9,7 @@ import { AppServerClient, CompletedTurn, StartedTurn } from "./app-server.js";
 import { AppServerProxy } from "./app-server-proxy.js";
 import { endpointPath, featureKey, logPath, reviewerRoot, runtimeDirectory } from "./paths.js";
 import { StateStore } from "./store.js";
-import { AutoReviewDecision, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair } from "./types.js";
+import { AutoReviewDecision, BridgeMode, ClaudeHookInput, EndpointFile, FeaturePair, PairTransition } from "./types.js";
 import { buildPulledReviewPrompt, buildReviewContextSeed, buildReviewPrompt, reviewContextSnapshot } from "./review-prompt.js";
 import { autoRoundLimitError, autoRoundLimitForMode, modeAfterUserDecision, reviewTurnCompletion } from "./mode-policy.js";
 import { buildPublishedFeedback } from "./published-feedback.js";
@@ -42,6 +42,7 @@ type Waiter = { resolve: (release: Release) => void; response: ServerResponse; o
 
 const store = new StateStore();
 const waiters = new Map<string, Waiter>();
+const watchResponses = new Set<ServerResponse>();
 const reviewTransitions = new Map<string, Promise<void>>();
 const questionTransitions = new Map<string, Promise<void>>();
 const pulledReviewTransitions = new Map<string, Promise<void>>();
@@ -441,7 +442,7 @@ function scheduleReview(pair: FeaturePair, pendingId: string, supersededTurnId?:
           value.status = "failed";
           value.mode = "off";
           value.pending = undefined;
-        });
+        }, { type: "review-finished", checkpointId: pendingId, outcome: "start-failed" });
         release(pendingId, { kind: "allow" });
         log(`Fail-open release for ${pair.feature}`);
         notifyUser("review-failed", pair.displayName);
@@ -467,10 +468,14 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
   if (!pair?.pending) return;
   const pendingId = pair.pending.id;
   const completion = reviewTurnCompletion(turn.status, turn.text);
+  const finished = (outcome: string): PairTransition => ({
+    type: "review-finished", checkpointId: pendingId, decision: pair.pending?.autoDecision, outcome
+  });
   if (completion === "completed" && pair.mode === "auto") {
     try {
       const history = standby.history(pair);
       if (history.length > (pair.pending.contextSequence ?? 0)) {
+        store.update(pair.feature, () => {}, finished("stale"));
         standby.enter(pair.feature, "recovery-failed");
         standby.resume(pair.feature);
         return;
@@ -481,6 +486,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
         store.update(pair.feature, (value) => { value.standby = undefined; });
       }
     } catch {
+      store.update(pair.feature, () => {}, finished("capture-gap"));
       standby.enter(pair.feature, "capture-gap");
       return;
     }
@@ -503,7 +509,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
       value.autoRound = 0;
       value.status = "idle";
       value.pending = undefined;
-    });
+    }, finished("interrupted"));
     release(pendingId, { kind: "allow" });
     log(`Released interrupted review ${pendingId} for ${pair.feature}; mode is ${modeAfterUserDecision(pair.mode)}.`);
     return;
@@ -524,7 +530,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
       value.status = "failed";
       value.mode = "off";
       value.pending = undefined;
-    });
+    }, finished("failed"));
     release(pendingId, { kind: "allow" });
     notifyUser("review-failed", pair.displayName);
     return;
@@ -542,7 +548,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
       value.status = "waiting-claude";
       value.lastCodexResponse = turn.text;
       value.pending = undefined;
-    });
+    }, finished("deferred"));
     release(pendingId, { kind: "allow" });
     log(`Deferred interim checkpoint ${pendingId} for ${pair.feature} in ${report?.durationMs ?? 0}ms.`);
     return;
@@ -557,7 +563,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
       value.status = "waiting-user";
       value.lastCodexResponse = turn.text;
       if (value.pending) value.pending.codexResponse = turn.text;
-    });
+    }, finished("waiting-user"), { type: "paused", checkpointId: pendingId, reason: "manual-publication" });
     notifyUser(pair.mode === "once" ? "review-ready-once" : "review-ready-manual", pair.displayName);
     return;
   }
@@ -576,7 +582,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
       value.autoRound = 0;
       value.lastCodexResponse = turn.text;
       value.pending = undefined;
-    });
+    }, finished("passed"));
     log(`Completed ${pair.feature} checkpoint ${pendingId} as pass in ${report?.durationMs ?? 0}ms.`);
     release(pendingId, { kind: "allow", systemMessage });
     return;
@@ -600,7 +606,9 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
         value.pending.codexResponse = continuation;
         value.pending.deliveryKind = "continuation";
       }
-    });
+    }, finished(delivery.outcome), ...(delivery.clearPending ? [] : [{
+      type: "paused" as const, checkpointId: pendingId, reason: "continuation-awaiting-user"
+    }]));
     log(`Completed ${pair.feature} checkpoint ${pendingId} as pass_continue (${delivery.outcome}) in ${report?.durationMs ?? 0}ms.`);
     if (delivery.clearPending) release(pendingId, { kind: "continue", text: continuation });
     else notifyUser("auto-continuation-awaiting-user", pair.displayName);
@@ -620,9 +628,14 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
       value.status = delivery.status;
       value.autoRound += 1;
       value.lastCodexResponse = resolution.feedback;
-      if (delivery.queueForNextPrompt) value.queuedClaudeContext = feedback;
+      if (delivery.queueForNextPrompt) {
+        value.queuedClaudeContext = feedback;
+        value.queuedClaudeCheckpointId = pendingId;
+      }
       if (delivery.clearPending) value.pending = undefined;
-    });
+    }, finished(delivery.outcome), ...(delivery.queueForNextPrompt ? [{
+      type: "feedback-queued" as const, checkpointId: pendingId, delivery: "next-prompt" as const
+    }] : []));
     log(`Completed ${pair.feature} checkpoint ${pendingId} as revise (${delivery.outcome}) in ${report?.durationMs ?? 0}ms.`);
     if (!delivery.queueForNextPrompt) release(pendingId, { kind: "feedback", text: feedback });
     else notifyUser("auto-revision-queued", pair.displayName);
@@ -639,7 +652,7 @@ async function finishReview(turn: CompletedTurn): Promise<void> {
     value.status = "waiting-user";
     value.lastCodexResponse = resolution.response;
     if (value.pending) value.pending.codexResponse = resolution.response;
-  });
+  }, finished("waiting-user"), { type: "paused", checkpointId: pendingId, reason: resolution.reason });
   log(`Completed ${pair.feature} checkpoint ${pendingId} awaiting user in ${report?.durationMs ?? 0}ms.`);
   const notificationKind: AttentionEventKind = resolution.reason === "needs-user"
     ? "auto-needs-user"
@@ -685,7 +698,14 @@ async function handleTurnCompleted(turn: CompletedTurn): Promise<void> {
   activeCodexThreads.delete(turn.threadId);
   const owner = store.all().find((pair) => pair.pending?.codexTurnId === turn.turnId
     || pair.activeQuestionAdvisory?.codexTurnId === turn.turnId || pair.pulledReview?.codexTurnId === turn.turnId);
-  if (owner && turn.status === "failed" && await standby.exhausted(owner.feature, turn.error)) return;
+  if (owner?.mode === "auto" && turn.status === "failed" && isUsageLimit(turn.error)) {
+    if (owner.pending?.codexTurnId === turn.turnId) {
+      store.update(owner.feature, () => {}, {
+        type: "review-finished", checkpointId: owner.pending.id, decision: owner.pending.autoDecision, outcome: "usage-limit"
+      });
+    }
+    if (await standby.exhausted(owner.feature, turn.error)) return;
+  }
   await finishReview(turn);
   finishQuestionAdvisory(turn);
   finishPulledReview(turn);
@@ -732,6 +752,8 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
   catch { backlog = { captureGap: true }; }
   return {
     ...pair,
+    events: undefined,
+    skipInterimReviews: pair.skipInterimReviews ?? false,
     reviewerConnected: appProxy?.connected(pair.feature) ?? false,
     activity: pair.activity ?? "active",
     backlog,
@@ -783,11 +805,63 @@ function publicPair(pair: FeaturePair): Record<string, unknown> {
   };
 }
 
+function watchPair(pair: FeaturePair, res: ServerResponse, after: number | undefined): void {
+  const read = () => {
+    const events = pair.events ?? [];
+    const cursor = events.at(-1)?.sequence ?? 0;
+    if (after === undefined) {
+      return { cursor, snapshot: { feature: pair.feature, mode: pair.mode, activity: pair.activity ?? "active",
+        status: pair.status, checkpointId: pair.pending?.id, standbyReason: pair.standby?.reason,
+        nextRetryAt: pair.standby?.nextRetryAt, feedbackQueued: Boolean(pair.queuedClaudeContext || pair.explicitClaudeMessage) } };
+    }
+    if (after > cursor || after < cursor - events.length) {
+      return { cursor, error: "Watch cursor is outside the retained event history. Start a new watch for a fresh snapshot." };
+    }
+    return { cursor, events: events.filter((event) => event.sequence > after) };
+  };
+  const initial = read();
+  if (initial.error) return send(res, 409, initial);
+  if (initial.snapshot || initial.events?.length) return send(res, 200, initial);
+  const cleanup = () => {
+    clearTimeout(timer);
+    unsubscribe();
+    watchResponses.delete(res);
+    res.off("close", cleanup);
+  };
+  const complete = () => {
+    cleanup();
+    const result = read();
+    send(res, result.error ? 409 : 200, result);
+  };
+  const unsubscribe = store.subscribe(pair.feature, complete);
+  const timer = setTimeout(complete, 15_000);
+  watchResponses.add(res);
+  res.once("close", cleanup);
+}
+
 async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: string): Promise<void> {
   if (req.url === "/health" && req.method === "GET") return send(res, 200, { ok: true, appServerUrl });
   if (req.headers.authorization !== `Bearer ${token}`) return send(res, 401, { error: "unauthorized" });
   const body = await readJson(req);
   const feature = body.feature ? featureKey(String(body.feature)) : undefined;
+
+  if ((req.url === "/watch" || req.url === "/pair/review-options") && req.method === "POST") {
+    const pair = feature && store.get(feature);
+    if (!pair) return send(res, 404, { error: "unknown feature" });
+    if (req.url === "/watch") {
+      const after = body.after;
+      if (after !== undefined && (!Number.isSafeInteger(after) || after < 0)) {
+        return send(res, 400, { error: "after must be a nonnegative integer" });
+      }
+      return watchPair(pair, res, after);
+    }
+    if (typeof body.skipInterimReviews !== "boolean") {
+      return send(res, 400, { error: "skipInterimReviews must be a boolean" });
+    }
+    return send(res, 200, publicPair(store.update(pair.feature, (value) => {
+      value.skipInterimReviews = body.skipInterimReviews;
+    })));
+  }
 
   if (req.url === "/shutdown" && req.method === "POST") {
     send(res, 200, { ok: true });
@@ -957,11 +1031,14 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
         if (value.pending) release(value.pending.id, { kind: "allow" });
         value.pending = undefined;
         value.queuedClaudeContext = undefined;
+        value.queuedClaudeCheckpointId = undefined;
         value.explicitClaudeMessage = undefined;
         value.questionAdvisoryQueue = undefined;
         value.activeQuestionAdvisory = undefined;
       }
-    });
+    }, ...(mode === "off" && existing?.pending ? [{
+      type: "cancelled" as const, checkpointId: existing.pending.id, reason: "mode-off"
+    }] : []));
     standby.cancelTimer(feature);
     if (advisoryTurnId && pair.codexThreadId) {
       await interruptReview(pair.codexThreadId, advisoryTurnId);
@@ -1044,6 +1121,8 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const text = continuationDelivery ? buildAutoContinuation(review) : buildPublishedFeedback(review);
     const pendingId = existing.pending?.id;
     const delivery = pendingId && waiters.has(pendingId) ? "stop-hook" : "next-prompt";
+    const events: PairTransition[] = [{ type: "published", checkpointId: pendingId, delivery }];
+    if (delivery === "next-prompt") events.push({ type: "feedback-queued", checkpointId: pendingId, delivery });
     if (pendingId) {
       sessionReports.update(feature, pendingId, {
         status: "published",
@@ -1056,8 +1135,11 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       if (!continuationDelivery) value.autoRound = 0;
       value.status = "waiting-claude";
       value.pending = undefined;
-      if (delivery === "next-prompt") value.queuedClaudeContext = text;
-    });
+      if (delivery === "next-prompt") {
+        value.queuedClaudeContext = text;
+        value.queuedClaudeCheckpointId = pendingId;
+      }
+    }, ...events);
     if (pendingId) release(pendingId, continuationDelivery ? { kind: "continue", text } : { kind: "feedback", text });
     return send(res, 200, { ...publicPair(pair), delivery });
   }
@@ -1069,16 +1151,18 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     if (publishError) return send(res, 409, { error: publishError });
     const review = String(body.feedback).trim();
     const publishedAt = new Date().toISOString();
+    const messageId = randomUUID();
     const pair = store.update(feature, (value) => {
       value.status = "waiting-claude";
       value.explicitClaudeMessage = {
-        id: randomUUID(), feedback: review, publishedAt,
+        id: messageId, feedback: review, publishedAt,
         codexThreadId: String(body.codexThreadId)
       };
       value.lastCodexResponse = review;
       value.lastForcedPublishAt = publishedAt;
       value.lastForcedPublishThreadId = String(body.codexThreadId);
-    });
+    }, { type: "published", messageId, delivery: "next-prompt" },
+    { type: "feedback-queued", messageId, delivery: "next-prompt" });
     log(`Forced unheld publication queued for ${feature} from Codex thread ${String(body.codexThreadId)}.`);
     return send(res, 200, { ...publicPair(pair), delivery: "next-prompt", forced: true,
       message: "Queued for Claude's next user prompt. Newer checkpoints will not discard this message; review mode and round limits are unchanged." });
@@ -1090,7 +1174,8 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     if (!existing.explicitClaudeMessage || body.messageId !== existing.explicitClaudeMessage.id) {
       return send(res, 409, { error: "messageId must match the currently queued explicit message" });
     }
-    const pair = store.update(feature, (value) => { value.explicitClaudeMessage = undefined; });
+    const pair = store.update(feature, (value) => { value.explicitClaudeMessage = undefined; },
+      { type: "cancelled", messageId: existing.explicitClaudeMessage.id, reason: "message-discarded" });
     return send(res, 200, { ...publicPair(pair), discardedExplicitMessageId: body.messageId });
   }
   if (req.url === "/cancel" && req.method === "POST") {
@@ -1111,7 +1196,7 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       value.autoRound = 0;
       value.status = "idle";
       value.pending = undefined;
-    });
+    }, { type: "cancelled", checkpointId: pendingId });
     if (pendingId) release(pendingId, { kind: "allow" });
     return send(res, 200, publicPair(pair));
   }
@@ -1139,12 +1224,18 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       "This message was explicitly queued by the user. Newer handoffs may have occurred; assess it against the latest work and recognize anything already resolved.",
       "", buildPublishedFeedback(explicit.feedback)
     ].join("\n") : undefined].filter(Boolean).join("\n\n") || undefined;
+    const delivered: PairTransition[] = [];
+    if (current.queuedClaudeContext) delivered.push({
+      type: "feedback-delivered", checkpointId: current.queuedClaudeCheckpointId, delivery: "next-prompt"
+    });
+    if (explicit) delivered.push({ type: "feedback-delivered", messageId: explicit.id, delivery: "next-prompt" });
     if (context) store.update(pair.feature, (value) => {
       value.queuedClaudeContext = undefined;
+      value.queuedClaudeCheckpointId = undefined;
       if (explicit) value.explicitClaudeMessage = undefined;
       // Delivery can coincide with a newer held checkpoint. Preserve its status.
       if (!value.pending) value.status = value.mode === "manual" ? "waiting-claude" : "idle";
-    });
+    }, ...delivered);
     return send(res, 200, { additionalContext: context, sessionTitle: pair.displayName });
   }
   if (req.url === "/hook/session" && req.method === "POST") {
@@ -1196,8 +1287,9 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     const input = body.input as ClaudeHookInput;
     const pair = store.get(String(body.feature));
     if (!pair || !input.last_assistant_message) return send(res, 200, { kind: "allow" });
+    const backgroundTasks = normalizeBackgroundTasks(input.background_tasks);
     standby.capture(pair, { kind: "handoff", content: input.last_assistant_message,
-      sessionId: input.session_id, backgroundTasks: normalizeBackgroundTasks(input.background_tasks) });
+      sessionId: input.session_id, backgroundTasks });
     if (reviewsSuspended(pair)) {
       store.update(pair.feature, (value) => { recordClaudeSession(value, input.session_id, true); });
       if (pair.activity === "catching-up") standby.dispatch(pair.feature);
@@ -1214,8 +1306,30 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     }
     const superseded = pair.pending;
     const supersededQueuedFeedback = Boolean(pair.queuedClaudeContext);
+    const skipped = pair.mode === "auto" && pair.skipInterimReviews && backgroundTasks.length > 0;
+    if (skipped) {
+      if (superseded) {
+        sessionReports.update(pair.feature, superseded.id, {
+          status: "superseded", resolvedAt: new Date().toISOString(), note: "Superseded by a skipped interim Stop."
+        });
+      }
+      const events: PairTransition[] = [{ type: "interim-skipped" }];
+      if (superseded) events.unshift({ type: "checkpoint-superseded", checkpointId: superseded.id });
+      store.update(pair.feature, (value) => {
+        recordClaudeSession(value, input.session_id, true);
+        value.status = "waiting-claude";
+        value.pending = undefined;
+        value.queuedClaudeContext = undefined;
+        value.queuedClaudeCheckpointId = undefined;
+        value.questionAdvisoryQueue = undefined;
+      }, ...events);
+      if (superseded) release(superseded.id, { kind: "allow" });
+      if (superseded?.codexTurnId && !superseded.codexResponse && pair.codexThreadId) {
+        void interruptReview(pair.codexThreadId, superseded.codexTurnId);
+      }
+      return send(res, 200, { kind: "allow" });
+    }
     const pendingId = store.newPendingId();
-    const backgroundTasks = normalizeBackgroundTasks(input.background_tasks);
     const checkpoint = createCheckpoint(
       pair,
       pendingId,
@@ -1237,10 +1351,11 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
       value.checkpointSequence = checkpoint.sequence;
       value.pending = checkpoint;
       value.queuedClaudeContext = undefined;
+      value.queuedClaudeCheckpointId = undefined;
       value.questionAdvisoryQueue = undefined;
       value.lastCodexResponse = undefined;
       value.capturedClaudeMessage = undefined;
-    });
+    }, ...(superseded ? [{ type: "checkpoint-superseded" as const, checkpointId: superseded.id }] : []));
     sessionReports.start(current, checkpoint);
     if (superseded) {
       release(superseded.id, { kind: "allow" });
@@ -1269,6 +1384,9 @@ async function route(req: IncomingMessage, res: ServerResponse, appServerUrl: st
     );
     const released = await releasePromise;
     streamedResponse.finish(released);
+    if (released.kind === "feedback" || released.kind === "continue") {
+      store.update(pair.feature, () => {}, { type: "feedback-delivered", checkpointId: pendingId, delivery: "stop-hook" });
+    }
     return;
   }
   return send(res, 404, { error: "not found" });
@@ -1286,7 +1404,8 @@ export async function main(testClient?: AppServerClient): Promise<void> {
     appServerUrl = appProxy.url;
   } else appServerUrl = await startAppServer();
   for (const pair of store.all()) {
-    if (pair.mode === "auto" && pair.pending) standby.enter(pair.feature, "recovery-failed");
+    store.update(pair.feature, () => {}, { type: "broker-restarted" });
+    if (pair.mode === "auto" && (pair.pending || pair.activity === "catching-up")) standby.enter(pair.feature, "broker-restart");
     standby.armRetry(pair);
   }
   const server = http.createServer((req, res) => {
@@ -1325,6 +1444,7 @@ export async function main(testClient?: AppServerClient): Promise<void> {
     log("Bridge shutting down.");
     if (process.env.HC_TERMINAL_ID) console.log("Shared review bridge stopping.");
     standby.close();
+    for (const response of watchResponses) response.destroy();
     for (const pendingId of [...waiters.keys()]) release(pendingId, { kind: "allow" });
     try {
       const endpoint = JSON.parse(fs.readFileSync(endpointPath, "utf8")) as EndpointFile;

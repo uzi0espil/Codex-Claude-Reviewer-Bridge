@@ -71,6 +71,7 @@ export class StandbyController {
       value.status = "idle";
       value.pending = undefined;
       value.queuedClaudeContext = undefined;
+      value.queuedClaudeCheckpointId = undefined;
       value.activeQuestionAdvisory = undefined;
       value.questionAdvisoryQueue = undefined;
       value.pulledReview = undefined;
@@ -209,7 +210,7 @@ export class StandbyController {
       value.activity = "active";
       value.recoveryNeeded = false;
     });
-    if (handoff) this.host.review(pair, handoff);
+    if (handoff && !(pair.skipInterimReviews && handoff.backgroundTasks?.length)) this.host.review(pair, handoff);
     else {
       this.host.notify("recovered", pair.displayName);
       this.store.update(feature, (value) => { value.standby = undefined; });

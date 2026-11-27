@@ -55,7 +55,9 @@ function runNpm(script) {
     case "pairs":
       return runReviewer(["pairs"]);
     case "report":
-      return runReviewer(["report", "--feature", args[0], ...args.slice(1)]);
+    case "watch":
+    case "review-options":
+      return runReviewer([recipe, "--feature", args[0], ...args.slice(1)]);
     case "stop":
       return runReviewer(["stop"]);
     case "update":
@@ -142,6 +144,16 @@ pairs:
 # Print the live checkpoint report for the current server session.
 [script("node")]
 report feature *options:
+    {{ runner }}
+
+# Follow pair transitions across broker restarts.
+[script("node")]
+watch feature *options:
+    {{ runner }}
+
+# Set the pair's interim review behavior with --interim skip or review.
+[script("node")]
+review-options feature *options:
     {{ runner }}
 
 # Gracefully stop the local review bridge server.

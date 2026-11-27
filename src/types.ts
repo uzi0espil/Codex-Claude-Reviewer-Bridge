@@ -63,6 +63,27 @@ export interface PulledReview {
 
 export type AutoReviewDecision = "pass" | "pass_continue" | "revise" | "needs_user";
 
+export type StandbyReason = "user-requested" | "usage-limit" | "capture-gap" | "recovery-failed" | "broker-restart";
+
+export interface PairTransition {
+  type: "broker-restarted" | "checkpoint-created" | "checkpoint-superseded" | "interim-skipped"
+    | "review-started" | "review-finished" | "paused" | "published" | "cancelled"
+    | "feedback-queued" | "feedback-delivered" | "standby-entered" | "standby-left" | "standby-retry-scheduled";
+  checkpointId?: string;
+  messageId?: string;
+  decision?: AutoReviewDecision;
+  reason?: string;
+  outcome?: string;
+  delivery?: "next-prompt" | "stop-hook";
+  nextRetryAt?: string;
+}
+
+export interface PairEvent extends PairTransition {
+  sequence: number;
+  at: string;
+  feature: string;
+}
+
 export interface ClaudeQuestionOption {
   label: string;
   description?: string;
@@ -84,9 +105,11 @@ export interface QuestionAdvisory {
 }
 
 export interface FeaturePair {
+  events?: PairEvent[];
+  skipInterimReviews?: boolean;
   activity?: "active" | "standby" | "catching-up";
   standby?: {
-    reason: "user-requested" | "usage-limit" | "capture-gap" | "recovery-failed";
+    reason: StandbyReason;
     enteredAt: string;
     generation: number;
     attempts: number;
@@ -121,6 +144,7 @@ export interface FeaturePair {
   workstreamContextThreadId?: string;
   pending?: PendingReview;
   queuedClaudeContext?: string;
+  queuedClaudeCheckpointId?: string;
   explicitClaudeMessage?: {
     id: string;
     feedback: string;

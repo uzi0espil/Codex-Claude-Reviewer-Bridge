@@ -1,13 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { BridgeState, DefaultBridgeMode, FeaturePair } from "./types.js";
+import { BridgeState, DefaultBridgeMode, FeaturePair, PairTransition } from "./types.js";
 import { featureKey, runtimeDirectory, statePath } from "./paths.js";
 
 const emptyState = (): BridgeState => ({ version: 1, pairs: {} });
 
 export class StateStore {
   private state: BridgeState;
+  private listeners = new Map<string, Set<() => void>>();
 
   constructor(private readonly filename = statePath) {
     fs.mkdirSync(path.dirname(filename), { recursive: true });
@@ -20,7 +21,6 @@ export class StateStore {
     if (parsed.version !== 1 || !parsed.pairs) throw new Error("Unsupported bridge state format.");
     for (const pair of Object.values(parsed.pairs)) {
       pair.activity ??= "active";
-      if (pair.activity === "catching-up") pair.activity = "standby";
       // Legacy state hashed only the policy. Dropping that marker forces one
       // seed of the combined protocol and policy into the existing thread.
       delete (pair as FeaturePair & { reviewPolicySha256?: string }).reviewPolicySha256;
@@ -81,13 +81,49 @@ export class StateStore {
     return pair;
   }
 
-  update(feature: string, mutate: (pair: FeaturePair) => void): FeaturePair {
+  update(feature: string, mutate: (pair: FeaturePair) => void, ...events: PairTransition[]): FeaturePair {
     const pair = this.get(feature);
     if (!pair) throw new Error(`Unknown feature '${feature}'. Launch a paired session first.`);
+    const previousCheckpoint = pair.pending?.id;
+    const previousTurn = pair.pending?.codexTurnId;
+    const previousActivity = pair.activity;
+    const previousStandby = pair.standby && { ...pair.standby };
     mutate(pair);
     pair.updatedAt = new Date().toISOString();
+    if (pair.pending && pair.pending.id !== previousCheckpoint) {
+      events.push({ type: "checkpoint-created", checkpointId: pair.pending.id });
+    }
+    if (pair.pending?.codexTurnId && pair.pending.codexTurnId !== previousTurn) {
+      events.push({ type: "review-started", checkpointId: pair.pending.id });
+    }
+    if (pair.activity === "standby" && (previousActivity !== "standby" || pair.standby?.reason !== previousStandby?.reason)) {
+      events.push({ type: "standby-entered", reason: pair.standby?.reason, checkpointId: previousCheckpoint });
+    }
+    if (previousActivity === "standby" && pair.activity !== "standby") {
+      events.push({ type: "standby-left", reason: previousStandby?.reason });
+    }
+    if (pair.standby?.nextRetryAt && pair.standby.nextRetryAt !== previousStandby?.nextRetryAt) {
+      events.push({ type: "standby-retry-scheduled", reason: pair.standby.reason, nextRetryAt: pair.standby.nextRetryAt });
+    }
+    if (events.length) {
+      const sequence = pair.events?.at(-1)?.sequence ?? 0;
+      pair.events = [...(pair.events ?? []), ...events.map((event, index) => ({
+        ...event, feature: pair.feature, sequence: sequence + index + 1, at: pair.updatedAt
+      }))].slice(-256);
+    }
     this.save();
+    if (events.length) for (const listener of this.listeners.get(pair.feature) ?? []) listener();
     return pair;
+  }
+
+  subscribe(feature: string, listener: () => void): () => void {
+    const listeners = this.listeners.get(feature) ?? new Set();
+    this.listeners.set(feature, listeners);
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+      if (!listeners.size) this.listeners.delete(feature);
+    };
   }
 
   newPendingId(): string {
