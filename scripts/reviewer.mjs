@@ -7,7 +7,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -20,9 +20,9 @@ const startupLockPath = path.join(runtimeDirectory, "startup.lock");
 
 const optionNames = new Set([
   "project-root", "project-name", "destination", "template-repository", "feature",
-  "profile", "prompt", "session", "ref", "terminal", "worktree", "until", "interim"
+  "profile", "prompt", "session", "ref", "terminal", "worktree", "until", "interim", "delivery"
 ]);
-const booleanNames = new Set(["skip-playwright", "device-auth", "resume", "last", "full", "with-worktree", "wt", "json"]);
+const booleanNames = new Set(["skip-playwright", "device-auth", "resume", "last", "full", "with-worktree", "wt", "json", "auto-delivery"]);
 
 export function parseArguments(values) {
   const options = {};
@@ -61,11 +61,11 @@ export function validateCommandArguments(command, options, passthrough) {
     "default-mode": [],
     notifications: [],
     terminal: [],
-    "start-pair": ["feature", "profile", "project-root", "terminal", "worktree", "with-worktree", "wt"],
-    "start-coder": ["feature", "project-root", "worktree"],
+    "start-pair": ["feature", "profile", "project-root", "terminal", "worktree", "with-worktree", "wt", "auto-delivery"],
+    "start-coder": ["feature", "project-root", "worktree", "auto-delivery"],
     "start-reviewer": ["prompt", "feature", "profile", "resume", "last", "session", "project-root", "worktree"],
     ensure: [], pairs: [], stop: [], update: ["ref"], report: ["feature", "full"],
-    watch: ["feature", "json", "until"], "review-options": ["feature", "interim"]
+    watch: ["feature", "json", "until"], "review-options": ["feature", "interim", "delivery"]
   };
   if (!Object.hasOwn(allowed, command)) throw new Error(`Unknown command: ${command}`);
   for (const name of Object.keys(options)) {
@@ -257,7 +257,7 @@ async function report(options) {
 const watchStates = [
   "broker-restarted", "checkpoint-created", "checkpoint-superseded", "interim-skipped",
   "review-started", "review-finished", "paused", "published", "cancelled",
-  "feedback-queued", "feedback-delivered", "standby-entered", "standby-left", "standby-retry-scheduled"
+  "feedback-queued", "feedback-dispatch-claimed", "feedback-delivered", "standby-entered", "standby-left", "standby-retry-scheduled"
 ];
 
 export async function watch(options, request = bridgeRequest, write = (line) => console.log(line)) {
@@ -295,10 +295,16 @@ export async function watch(options, request = bridgeRequest, write = (line) => 
 
 async function reviewOptions(options) {
   const feature = requireOption(options, "feature");
-  const interim = requireOption(options, "interim");
-  if (interim !== "skip" && interim !== "review") throw new Error("--interim expects skip or review.");
-  const pair = await bridgeRequest("/pair/review-options", { feature, skipInterimReviews: interim === "skip" });
-  console.log(`${pair.displayName}: interim Stops will ${pair.skipInterimReviews ? "skip review in auto mode" : "use the default review workflow"}.`);
+  const { interim, delivery } = options;
+  if (interim === undefined && delivery === undefined) throw new Error("Specify --interim or --delivery.");
+  if (interim !== undefined && interim !== "skip" && interim !== "review") throw new Error("--interim expects skip or review.");
+  if (delivery !== undefined && delivery !== "next-prompt") throw new Error("--delivery expects next-prompt.");
+  const pair = await bridgeRequest("/pair/review-options", { feature, delivery,
+    skipInterimReviews: interim === undefined ? undefined : interim === "skip" });
+  if (interim !== undefined) {
+    console.log(`${pair.displayName}: interim Stops will ${pair.skipInterimReviews ? "skip review in auto mode" : "use the default review workflow"}.`);
+  }
+  if (delivery !== undefined) console.log(`${pair.displayName}: queued feedback will use the next-prompt path.`);
 }
 
 /** Estimated wall-clock boot time; wall-clock adjustments also shift this estimate. */
@@ -760,7 +766,13 @@ async function startCoder(options, passthrough) {
   const feature = requireOption(options, "feature");
   const repositoryRoot = resolveProjectRoot(options["project-root"]);
   const worktreeName = options.worktree ? String(options.worktree) : undefined;
-  const pair = await bridgeRequest("/pair/claude", { feature, projectRoot: repositoryRoot, worktreeName });
+  const launchToken = options["auto-delivery"] ? randomBytes(32).toString("hex") : undefined;
+  if (launchToken && passthrough.some((arg) => /^(-p$|--(?:print|bare|resume|continue|session-id)(?:=|$))/.test(arg))) {
+    throw new Error("--auto-delivery requires the paired interactive Claude session and its bridge-owned session ID.");
+  }
+  const pair = await bridgeRequest("/pair/claude", {
+    feature, projectRoot: repositoryRoot, worktreeName, launch: true, channelToken: launchToken
+  });
   const settings = path.join(reviewerRoot, "claude-bridge.settings.json");
   if (!fs.existsSync(settings)) throw new Error(`Claude hook settings are missing; run '${platformExample("setup")}'.`);
   const args = ["--name", pair.displayName, "--settings", settings];
@@ -779,7 +791,28 @@ async function startCoder(options, passthrough) {
     // Native reports take over after startup; trust/login dialogs need attention first.
     reportStatus("claude-code", "blocked");
   }
-  run("claude", args, { cwd: pair.worktreePending ? repositoryRoot : pair.projectRoot, env: { ...process.env, REVIEW_BRIDGE_FEATURE: pair.feature } });
+  let bindingFile;
+  try {
+    if (launchToken) {
+      if (!pair.autoDeliveryEnabled || !pair.claudeSessionId) throw new Error("Restart the bridge to enable Claude channel delivery.");
+      const channel = path.join(reviewerRoot, "dist", "claude-channel.js");
+      if (!fs.existsSync(channel)) throw new Error("Build the bridge before enabling Claude channel delivery.");
+      bindingFile = path.join(runtimeDirectory, `channel-${randomUUID()}.json`);
+      fs.writeFileSync(bindingFile, JSON.stringify({ feature: pair.feature, sessionId: pair.claudeSessionId, launchToken }), {
+        flag: "wx", mode: 0o600
+      });
+      args.unshift("--mcp-config", JSON.stringify({ mcpServers: { "review-bridge-channel": {
+        command: process.execPath, args: [channel, bindingFile]
+      } } }), "--dangerously-load-development-channels", "server:review-bridge-channel");
+    }
+    run("claude", args, { cwd: pair.worktreePending ? repositoryRoot : pair.projectRoot, env: { ...process.env, REVIEW_BRIDGE_FEATURE: pair.feature } });
+  } finally {
+    if (bindingFile) fs.rmSync(bindingFile, { force: true });
+    if (launchToken) {
+      await bridgeRequest("/channel/unbind", { feature: pair.feature, sessionId: pair.claudeSessionId, launchToken },
+        AbortSignal.timeout(2_000)).catch(() => {});
+    }
+  }
 }
 
 async function waitForPairRoot(feature, repositoryRoot, worktreeName, timeoutMs = 300_000) {
@@ -848,6 +881,7 @@ function pairChildArguments(kind, options, passthrough) {
   if (options["project-root"]) values.push("--project-root", String(options["project-root"]));
   if (options.worktree) values.push("--worktree", String(options.worktree));
   if (kind === "start-reviewer" && options.profile) values.push("--profile", String(options.profile));
+  if (kind === "start-coder" && options["auto-delivery"]) values.push("--auto-delivery");
   if (kind === "start-coder" && passthrough.length) values.push("--", ...passthrough);
   return values;
 }
@@ -1046,7 +1080,8 @@ function usage() {
   console.log("Worktrees: start-pair --with-worktree (alias --wt) reuses --feature as the worktree name; --worktree <name> overrides it.");
   console.log("Folder/tool access: folders <list|add|remove> [path ...]; tools --project-root <registered folder>; permissions");
   console.log("Terminals: create/setup/start-pair --terminal <auto|herdr|print> (herder is an alias); terminal [auto|herdr|print] shows or saves the instance default. Herdr uses hc on PATH.");
-  console.log("Pair monitoring: watch --feature <name> [--json] [--until <state>]; review-options --feature <name> --interim <skip|review>");
+  console.log("Pair monitoring: watch --feature <name> [--json] [--until <state>]; review-options --feature <name> [--interim <skip|review>] [--delivery next-prompt]");
+  console.log("Automatic queued revisions (preview): start-pair --feature <name> --auto-delivery.");
   console.log(`Usage: reviewer <command> [options] [-- tool arguments]\n\nCommands:\n  create          Clone and initialize an isolated reviewer\n  setup           Install, test, bind, and scan this reviewer\n  login           Authenticate its isolated Codex home\n  policy          Create or refresh the private review policy\n  tools           Detect and curate private application review tools\n  default-mode    Set the mode inherited by new workstreams\n  notifications   Enable or disable desktop notifications\n  start-pair      Open paired Claude and Codex terminals [--worktree <name>]\n  start-coder     Run the paired Claude session\n  start-reviewer  Run the paired or standalone Codex session\n  ensure          Ensure the background bridge is running\n  pairs           List feature pairs and reviewer connection states\n  report          Print the live checkpoint report [--full]\n  stop            Gracefully stop the background bridge\n  update          Fast-forward and reconfigure this reviewer`);
 }
 

@@ -152,6 +152,21 @@ test("isolated broker: MCP standby/resume, durable restart, quota failure, and o
   socket!.send(JSON.stringify({ method: "item/completed", params: { turnId: reviewing.pending.codexTurnId, item: { type: "agentMessage", text: "Fix the blue value." } } }));
   socket!.send(JSON.stringify({ method: "turn/completed", params: { threadId: "thread-test", turn: { id: reviewing.pending.codexTurnId, status: "completed" } } }));
   await waitFor(status, (value) => Boolean(value.queuedClaudeContext));
+  const launchToken = "ab".repeat(32);
+  const binding = { launchToken, sessionId: "claude-test" };
+  assert.equal((await call("/pair/claude", { projectRoot: root, channelToken: launchToken })).value.autoDeliveryEnabled, true);
+  assert.equal((await call("/channel/claim", { ...binding, sessionId: "other-session" })).status, 403);
+  assert.equal((await call("/channel/claim", { ...binding, launchToken: "cd".repeat(32) })).status, 403);
+  assert.deepEqual((await call("/channel/claim", binding)).value, {});
+  await hook("session", {});
+  const claim = (await call("/channel/claim", binding)).value;
+  assert.equal(claim.checkpointId, reviewing.pending.id);
+  assert.match(claim.feedback, /Fix the blue value/);
+  assert.ok(claim.receiptId);
+  assert.deepEqual((await call("/channel/claim", binding)).value, {});
+  assert.equal((await hook("prompt", { prompt: "A prompt racing a channel send." })).value.additionalContext, undefined);
+  assert.equal((await status()).autoDeliveryAwaitingReceipt, true);
+  assert.equal((await call("/pair/review-options", { delivery: "next-prompt" })).value.autoDeliveryAwaitingReceipt, false);
   const prompt = await hook("prompt", { prompt: "Please apply the review." });
   assert.match(prompt.value.additionalContext, /Fix the blue value/);
 
@@ -373,6 +388,41 @@ test("isolated broker: MCP standby/resume, durable restart, quota failure, and o
   ]);
   assert.equal(deliveryEvents.at(-1).checkpointId, afterRestart.pending.id);
   assert.equal(deliveryEvents.at(-1).delivery, "next-prompt");
+
+  // A queued revision is acknowledged only by the matching Claude transcript event.
+  await call("/mode", { mode: "auto", roundLimit: 3 });
+  await call("/pair/claude", { projectRoot: root, channelToken: launchToken });
+  await hook("session", {});
+  await command("standby");
+  await hook("stop", { last_assistant_message: "Channel receipt fixture" });
+  await command("resume");
+  const receiptReview = await waitFor(status, (value) => Boolean(value.pending?.codexTurnId));
+  await call("/auto-decision", { checkpointId: receiptReview.pending.id, decision: "revise" });
+  finish(receiptReview.pending.codexTurnId, "Revision for receipt test.");
+  await waitFor(status, (value) => Boolean(value.queuedClaudeContext));
+  const receiptCursor = (await call("/watch")).value.cursor;
+  const pendingReceipt = (await call("/channel/claim", binding)).value;
+  const pendingBroker = once(broker!, "exit");
+  await call("/shutdown");
+  await pendingBroker;
+  await start();
+  assert.deepEqual((await call("/channel/claim", binding)).value, {});
+  const channelTranscript = path.join(project, "claude-test.jsonl");
+  const content = `<channel source="review-bridge-channel" receipt_id="${pendingReceipt.receiptId}">\nRevision\n</channel>`;
+  fs.writeFileSync(channelTranscript, JSON.stringify({
+    type: "user", sessionId: "claude-test", isMeta: true, origin: { kind: "human" }, message: { content }
+  }) + "\n");
+  assert.equal((await hook("prompt", { prompt: "Check fake receipt" })).value.additionalContext, undefined);
+  assert.equal((await status()).autoDeliveryAwaitingReceipt, true);
+  fs.appendFileSync(channelTranscript, JSON.stringify({
+    type: "user", sessionId: "claude-test", isMeta: true, origin: { kind: "channel", server: "review-bridge-channel" }, message: { content }
+  }) + "\n");
+  fs.appendFileSync(channelTranscript, JSON.stringify({ type: "tool-result", content: "x".repeat(768 * 1024) }) + "\n");
+  assert.equal((await hook("prompt", { prompt: "Check real receipt" })).value.additionalContext, undefined);
+  assert.equal((await status()).queuedClaudeContext, undefined);
+  const receipts = (await call("/watch", { after: receiptCursor })).value.events;
+  assert.deepEqual(receipts.map((event: any) => event.type), ["feedback-dispatch-claimed", "broker-restarted", "feedback-delivered"]);
+  assert.equal(receipts.at(-1).delivery, "claude-channel");
 
   // Discard is available on standby; mode-off explicitly reports removal.
   const toDiscard = await command("force_publish", { codexThreadId: "thread-test", feedback: "Discard this only." });

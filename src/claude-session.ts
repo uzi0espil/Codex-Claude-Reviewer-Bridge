@@ -6,6 +6,17 @@ import { FeaturePair } from "./types.js";
 
 export const claudeSessionLifecycleVersion = 2;
 
+export function claudeTranscriptPaths(
+  pair: FeaturePair,
+  configDirectory = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude")
+): string[] {
+  const sessionId = pair.claudeSessionId;
+  if (!sessionId || !/^[a-zA-Z0-9-]+$/.test(sessionId)) return [];
+  const roots = new Set([pair.projectRoot, pair.repositoryRoot ?? pair.projectRoot]);
+  return [...roots].map((root) => path.join(configDirectory, "projects",
+    root.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`));
+}
+
 // Hooks can fail while Claude continues and persists its conversation. In a
 // managed worktree Claude may store that transcript under the original repo.
 export async function hasPersistedClaudeConversation(
@@ -13,11 +24,7 @@ export async function hasPersistedClaudeConversation(
   configDirectory = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude")
 ): Promise<boolean> {
   const sessionId = pair.claudeSessionId;
-  if (!sessionId || !/^[a-zA-Z0-9-]+$/.test(sessionId)) return false;
-  const roots = new Set([pair.projectRoot, pair.repositoryRoot ?? pair.projectRoot]);
-  for (const root of roots) {
-    const project = root.replace(/[^a-zA-Z0-9]/g, "-");
-    const filename = path.join(configDirectory, "projects", project, `${sessionId}.jsonl`);
+  for (const filename of claudeTranscriptPaths(pair, configDirectory)) {
     let handle;
     try {
       handle = await fs.promises.open(filename, "r");

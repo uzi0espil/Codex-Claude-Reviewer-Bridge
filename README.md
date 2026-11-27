@@ -301,6 +301,11 @@ review with the captured interim handoffs as context. This delays findings on
 completed parallel work until the final Stop. Use `--interim review` to restore
 the default.
 
+Start a pair with `just pair api-retry --auto-delivery` to try queued automatic
+revisions through Claude Code Channels. Confirm the local development channel
+at Claude startup. This preview option works with an organization that enables
+Channels. See [automatic delivery](docs/review-workflows.md#automatic-delivery-of-queued-revisions).
+
 Interrupting an active Codex checkpoint releases Claude without publishing the
 partial review. Manual and automatic modes remain armed; once mode is consumed
 as it would be by an explicit cancellation. Unexpected reviewer failures still

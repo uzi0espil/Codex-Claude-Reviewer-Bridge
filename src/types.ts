@@ -68,13 +68,13 @@ export type StandbyReason = "user-requested" | "usage-limit" | "capture-gap" | "
 export interface PairTransition {
   type: "broker-restarted" | "checkpoint-created" | "checkpoint-superseded" | "interim-skipped"
     | "review-started" | "review-finished" | "paused" | "published" | "cancelled"
-    | "feedback-queued" | "feedback-delivered" | "standby-entered" | "standby-left" | "standby-retry-scheduled";
+    | "feedback-queued" | "feedback-dispatch-claimed" | "feedback-delivered" | "standby-entered" | "standby-left" | "standby-retry-scheduled";
   checkpointId?: string;
   messageId?: string;
   decision?: AutoReviewDecision;
   reason?: string;
   outcome?: string;
-  delivery?: "next-prompt" | "stop-hook";
+  delivery?: "next-prompt" | "stop-hook" | "claude-channel";
   nextRetryAt?: string;
 }
 
@@ -145,6 +145,9 @@ export interface FeaturePair {
   pending?: PendingReview;
   queuedClaudeContext?: string;
   queuedClaudeCheckpointId?: string;
+  queuedClaudeRevisionSessionId?: string;
+  claudeChannel?: { sessionId: string; tokenHash: string; ready: boolean };
+  claudeChannelAttempt?: { checkpointId: string; sessionId: string; receiptId: string };
   explicitClaudeMessage?: {
     id: string;
     feedback: string;

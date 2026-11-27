@@ -194,6 +194,28 @@ work may therefore wait for the final Stop. Manual and usage-limit standby
 still follow their existing resume rules. Use `--interim review` to restore
 the default.
 
+### Automatic delivery of queued revisions
+
+Launch or reopen a pair with `just pair <feature> --auto-delivery` and confirm
+the local development channel in Claude Code at startup. Claude Code Channels
+are in research preview and Team and Enterprise organizations must enable them.
+The option applies to that Claude launch and defaults to off.
+
+In auto mode, the channel can start a new Claude turn for a queued revision
+after the bridge observes the session is ready. It sends the revision as a
+Claude event without typing into the composer. Held Stops keep their existing
+direct delivery. Manual publications and unheld continuations keep their
+existing user delivery workflow.
+
+The watch feed shows `feedback-dispatch-claimed` when the broker reserves an
+automatic send and `feedback-delivered` with `delivery: claude-channel` when
+the bridge finds the matching Claude event in the session transcript. A claim
+survives broker restart and prevents automatic replay. If a claim remains
+unconfirmed, check the Claude transcript. To return remaining feedback to the
+manual prompt path, run `just review-options <feature> --delivery next-prompt`.
+The broker checks the transcript once more before releasing the claim. Readiness
+is based on Claude hooks, so a human turn can still race a channel event.
+
 ### Watch pair transitions
 
 `just watch <feature>` prints a snapshot and follows transitions for an

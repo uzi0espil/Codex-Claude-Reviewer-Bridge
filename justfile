@@ -151,7 +151,7 @@ report feature *options:
 watch feature *options:
     {{ runner }}
 
-# Set the pair's interim review behavior with --interim skip or review.
+# Set interim review behavior or return queued feedback to next-prompt delivery.
 [script("node")]
 review-options feature *options:
     {{ runner }}

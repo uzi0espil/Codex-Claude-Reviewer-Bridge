@@ -89,6 +89,11 @@ export class StateStore {
     const previousActivity = pair.activity;
     const previousStandby = pair.standby && { ...pair.standby };
     mutate(pair);
+    if (!pair.queuedClaudeContext) pair.queuedClaudeRevisionSessionId = undefined;
+    if (pair.claudeChannelAttempt && (!pair.queuedClaudeContext ||
+        pair.claudeChannelAttempt.checkpointId !== pair.queuedClaudeCheckpointId)) {
+      pair.claudeChannelAttempt = undefined;
+    }
     pair.updatedAt = new Date().toISOString();
     if (pair.pending && pair.pending.id !== previousCheckpoint) {
       events.push({ type: "checkpoint-created", checkpointId: pair.pending.id });
