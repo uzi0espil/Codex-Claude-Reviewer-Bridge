@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +9,7 @@ import test from "node:test";
 import { discoverReviewTools } from "../review-tools-discovery.js";
 import {
   doctorReviewTools,
+  executeReviewTool,
   loadReviewToolsManifest,
   probeReviewTools,
   recipeCommand,
@@ -95,6 +98,157 @@ test("renders typed inputs and a language-neutral staged command", () => {
     assert.equal(spec.args.includes(`${stage}/tools/benchmark/results/card.json`), true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+const stagedGitRecipe = {
+  id: "git_history_check",
+  title: "Staged Git history",
+  description: "Inspect the current files against an explicit base commit.",
+  runner: {
+    kind: "compose_stage_exec",
+    files: ["compose.yml"],
+    service: "runner",
+    sourceDirectory: ".",
+    workdir: "{stage}",
+    gitHistory: { baseInputs: ["base"] },
+    command: "sh",
+    args: ["./check.sh"],
+    artifacts: ["report.txt"]
+  },
+  inputs: [{ name: "base", description: "Base commit ID.", type: "string", required: true }]
+};
+
+test("staged Git history requires the repository root and explicit commit inputs", () => {
+  assert.throws(() => reviewToolRecipeSchema.parse({
+    ...stagedGitRecipe,
+    runner: { ...stagedGitRecipe.runner, sourceDirectory: "frontend" }
+  }), /requires sourceDirectory/);
+  assert.throws(() => reviewToolRecipeSchema.parse({
+    ...stagedGitRecipe,
+    inputs: []
+  }), /must name a string input/);
+
+  const root = fixture();
+  try {
+    const recipe = reviewToolRecipeSchema.parse(stagedGitRecipe);
+    assert.throws(() => recipeCommand(recipe, { base: "HEAD~1" }, root, "/tmp/stage"), /full hexadecimal commit ID/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("stages Git history in Compose without discarding working files", {
+  skip: process.env.REVIEW_TOOLS_TEST_COMPOSE !== "1",
+  timeout: 180_000
+}, async () => {
+  const root = fixture();
+  const main = path.join(root, "main repo");
+  const linked = path.join(root, "linked repo");
+  fs.mkdirSync(main);
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", [
+    "-c", "user.name=Review Tools Test", "-c", "user.email=review-tools@example.invalid", "-c", "core.autocrlf=false", ...args
+  ], { cwd, encoding: "utf8" }).trim();
+  const project = `bridge-git-${randomUUID()}`;
+  const compose = (...args: string[]) => execFileSync("docker", ["compose", "-f", path.join(main, "compose.yml"), ...args], {
+    cwd: main, encoding: "utf8", timeout: 90_000
+  });
+  const recipe = reviewToolRecipeSchema.parse(stagedGitRecipe);
+  const runner = new SingleReviewToolRunner();
+  const results: Array<Awaited<ReturnType<typeof executeReviewTool>>> = [];
+  try {
+    git(main, "init", "-b", "main", "--object-format=sha1");
+    fs.writeFileSync(path.join(main, "compose.yml"), `name: ${project}
+services:
+  runner:
+    image: node:22
+    user: "1000:1000"
+    command: [sleep, infinity]
+  broken:
+    image: node:22
+    user: "1000:1000"
+    environment:
+      PATH: /tmp/bridge-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    entrypoint: [sh, -ec]
+    command:
+      - |
+        mkdir -p /tmp/bridge-bin
+        printf '%s\\n' '#!/bin/sh' 'if [ "$$1" = index-pack ]; then exit 71; fi' 'exec /usr/bin/git "$$@"' >/tmp/bridge-bin/git
+        chmod +x /tmp/bridge-bin/git
+        exec sleep infinity
+`);
+    fs.writeFileSync(path.join(main, "check.sh"), `set -eu
+test -d .git
+test ! -e .git/host-only
+test ! -e nested/.git
+test "$(cat edited.txt)" = dirty
+test ! -e deleted.txt
+test "$(cat new.txt)" = untracked
+git diff --name-only HEAD | sort > report.txt
+git ls-files --others --exclude-standard new.txt >> report.txt
+git rev-parse HEAD "$1" >> report.txt
+git merge-base HEAD "$1" >> report.txt
+`);
+    fs.writeFileSync(path.join(main, "edited.txt"), "original\n");
+    fs.writeFileSync(path.join(main, "deleted.txt"), "delete me\n");
+    git(main, "add", ".");
+    git(main, "commit", "-m", "Common ancestor");
+    const ancestor = git(main, "rev-parse", "HEAD");
+    git(main, "worktree", "add", "-b", "feature", linked);
+    fs.writeFileSync(path.join(main, "base.txt"), "divergent base\n");
+    git(main, "add", "base.txt");
+    git(main, "commit", "-m", "Advance main");
+    const base = git(main, "rev-parse", "HEAD");
+    fs.writeFileSync(path.join(linked, "feature.txt"), "feature\n");
+    git(linked, "add", "feature.txt");
+    git(linked, "commit", "-m", "Advance feature");
+    fs.writeFileSync(path.join(main, ".git", "host-only"), "must never reach the stage\n");
+    compose("up", "-d", "--wait");
+
+    for (const checkout of [linked, main]) {
+      fs.mkdirSync(path.join(checkout, "nested"));
+      fs.writeFileSync(path.join(checkout, "nested", ".git"), "gitdir: inaccessible\n");
+      fs.writeFileSync(path.join(checkout, "edited.txt"), "dirty\n");
+      fs.writeFileSync(path.join(checkout, "new.txt"), "untracked\n");
+      fs.unlinkSync(path.join(checkout, "deleted.txt"));
+      const head = git(checkout, "rev-parse", "HEAD");
+      const result = await executeReviewTool(runner, recipe, { base }, checkout);
+      results.push(result);
+      assert.equal(result.success, true, JSON.stringify(result));
+      assert.equal(result.collectedFiles?.[0]?.text, ["deleted.txt", "edited.txt", "new.txt", head, base, checkout === linked ? ancestor : base, ""].join("\n"));
+      assert.equal(git(checkout, "rev-parse", "HEAD"), head);
+    }
+
+    fs.rmSync(path.join(linked, "nested", ".git"));
+    const legacy = reviewToolRecipeSchema.parse({
+      ...stagedGitRecipe,
+      runner: { ...stagedGitRecipe.runner, gitHistory: undefined, command: "test", args: ["-f", ".git"], artifacts: [] },
+      inputs: []
+    });
+    const legacyResult = await executeReviewTool(runner, legacy, {}, linked);
+    results.push(legacyResult);
+    assert.equal(legacyResult.success, true, JSON.stringify(legacyResult));
+    assert.equal(legacyResult.gitHistory, undefined);
+
+    const broken = reviewToolRecipeSchema.parse({
+      ...stagedGitRecipe,
+      runner: { ...stagedGitRecipe.runner, service: "broken" }
+    });
+    const failed = await executeReviewTool(runner, broken, { base }, linked);
+    results.push(failed);
+    assert.equal(failed.failureStage, "git_history", JSON.stringify(failed));
+    assert.equal(failed.gitHistory?.steps.at(-1)?.exitCode, 71);
+    assert.equal(failed.execution, undefined);
+    assert.equal(failed.cleanup?.exitCode, 0);
+    assert.ok(failed.stagingRoot);
+    compose("exec", "-T", "broken", "test", "!", "-e", path.posix.dirname(failed.stagingRoot));
+  } finally {
+    try {
+      if (fs.existsSync(path.join(main, "compose.yml"))) compose("down", "--volumes");
+    } finally {
+      for (const { artifactRoot } of results) if (artifactRoot) fs.rmSync(artifactRoot, { recursive: true, force: true });
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 

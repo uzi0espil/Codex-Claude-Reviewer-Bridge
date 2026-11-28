@@ -347,6 +347,11 @@ artifacts into ignored reviewer runtime storage, and attempts cleanup. Manifest
 approval is standing authorization for those exact capabilities, not for an
 arbitrary shell or implementation changes.
 
+Staged recipes that opt into Git history copy the repository-root files and a
+self-contained object pack for `HEAD` and explicitly requested base commits.
+The staged repository uses a fresh index and detached `HEAD`. This lets linked
+worktrees supply history without sharing host Git metadata with the service.
+
 The manifest records runner authorization independently from readiness. Static mode performs no runtime command
 and is the backward-compatible default. Trusted mode records the user's explicit
 acceptance of runtime prerequisites after structural validation. Per-tool probe

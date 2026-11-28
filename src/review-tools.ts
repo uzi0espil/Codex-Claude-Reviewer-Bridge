@@ -1,10 +1,14 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { z } from "zod";
 import { reviewerRoot, runtimeDirectory } from "./paths.js";
+import { samePath } from "./worktree.js";
+
+const gitObjectId = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 
 const annotationSchema = z.object({
   readOnlyHint: z.boolean().default(false),
@@ -107,6 +111,7 @@ const runnerSchema = z.discriminatedUnion("kind", [
     workdir: z.string().min(1).max(500),
     command: z.string().min(1).max(500),
     artifacts: z.array(z.string().min(1).max(1_000)).max(50).default([]),
+    gitHistory: z.strictObject({ baseInputs: z.array(z.string()).max(10).default([]) }).optional(),
     ...commonRunner
   })
 ]);
@@ -189,6 +194,16 @@ export const reviewToolRecipeSchema = z.object({
     }
   }
   const inputNames = new Set(recipe.inputs.map(({ name }) => name));
+  if (recipe.runner.kind === "compose_stage_exec" && recipe.runner.gitHistory) {
+    if (recipe.runner.sourceDirectory !== ".") {
+      context.addIssue({ code: "custom", path: ["runner", "sourceDirectory"], message: "Staged Git history requires sourceDirectory '.' (the repository root)." });
+    }
+    for (const [index, name] of recipe.runner.gitHistory.baseInputs.entries()) {
+      if (!recipe.inputs.some((input) => input.name === name && input.type === "string")) {
+        context.addIssue({ code: "custom", path: ["runner", "gitHistory", "baseInputs", index], message: `Git history base '${name}' must name a string input.` });
+      }
+    }
+  }
   const templates = [
     ...recipe.runner.args,
     ...(recipe.runner.kind === "compose_stage_exec" ? [recipe.runner.workdir, ...recipe.runner.artifacts] : [])
@@ -306,6 +321,7 @@ export interface CommandSpec {
   args: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  stdinPath?: string;
   timeoutMs: number;
   label: string;
 }
@@ -326,12 +342,14 @@ export interface CommandResult {
 
 export interface ReviewToolExecutionResult {
   success: boolean;
-  failureStage?: "prepare" | "copy_source" | "execute" | "artifact_copy" | "cleanup";
+  failureStage?: "prepare" | "git_history" | "copy_source" | "execute" | "artifact_copy" | "cleanup";
   toolId: string;
   runId?: string;
   stagingRoot?: string;
   artifactRoot?: string;
   prepare?: CommandResult;
+  gitHistory?: { steps: CommandResult[]; error?: string };
+  archiveSource?: CommandResult;
   copySource?: CommandResult;
   execution?: CommandResult;
   artifactCopies?: Array<{ requestedPath: string; localPath: string; result: CommandResult }>;
@@ -501,6 +519,11 @@ export function doctorReviewTools(
     if (recipe.runner.kind === "compose_stage_exec") {
       const safe = validatedRepositoryPath(projectRoot, recipe.runner.sourceDirectory, "staged source directory");
       if (!fs.existsSync(path.resolve(projectRoot, ...safe.split("/")))) issues.push(`Staged source directory does not exist: ${safe}`);
+      if (recipe.runner.gitHistory) {
+        for (const prerequisite of ["git", "tar"]) {
+          if (!isExecutableAvailable(prerequisite, cwd)) issues.push(`Staged Git history requires '${prerequisite}' on the host PATH.`);
+        }
+      }
       executable = `${executable} -> ${recipe.runner.service}:${recipe.runner.command}`;
     } else if (recipe.runner.kind === "compose_exec") {
       executable = `${executable} -> ${recipe.runner.service}:${recipe.runner.command}`;
@@ -614,8 +637,13 @@ function resolveRepositoryDirectory(projectRoot: string, relativeDirectory: stri
   return absolute;
 }
 
+export function fixedArgumentIssue(argument: string): string | undefined {
+  if (/[\0\r\n]/.test(argument)) return "Fixed command arguments cannot contain control characters. Use a one-line argument or a repository script.";
+}
+
 function validatedFixedArgument(argument: string): string {
-  if (/[\0\r\n]/.test(argument)) throw new Error("Fixed command arguments cannot contain control characters.");
+  const issue = fixedArgumentIssue(argument);
+  if (issue) throw new Error(issue);
   return argument;
 }
 
@@ -703,6 +731,14 @@ function normalizedInputValues(recipe: ReviewToolRecipe, raw: Record<string, unk
       values[input.name] = value;
     } else {
       values[input.name] = value;
+    }
+  }
+  if (recipe.runner.kind === "compose_stage_exec" && recipe.runner.gitHistory) {
+    for (const name of recipe.runner.gitHistory.baseInputs) {
+      const value = values[name];
+      if (value !== undefined && (typeof value !== "string" || !gitObjectId.test(value))) {
+        throw new Error(`Git history input '${name}' must be a full hexadecimal commit ID.`);
+      }
     }
   }
   return values;
@@ -827,13 +863,19 @@ export function recipeCommand(
 
 export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
   const started = performance.now();
-  const child = spawn(spec.command, spec.args, {
-    cwd: spec.cwd,
-    env: spec.env ?? process.env,
-    shell: false,
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
+  const stdin = spec.stdinPath === undefined ? "ignore" : fs.openSync(spec.stdinPath, "r");
+  let child;
+  try {
+    child = spawn(spec.command, spec.args, {
+      cwd: spec.cwd,
+      env: spec.env ?? process.env,
+      shell: false,
+      windowsHide: true,
+      stdio: [stdin, "pipe", "pipe"]
+    });
+  } finally {
+    if (typeof stdin === "number") fs.closeSync(stdin);
+  }
   let stdout = "";
   let stderr = "";
   let stdoutBytes = 0;
@@ -849,12 +891,12 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
     const accepted = chunk.subarray(0, available);
     return { text: current + accepted.toString("utf8"), bytes: currentBytes + accepted.length };
   };
-  child.stdout.on("data", (chunk: Buffer) => {
+  child.stdout!.on("data", (chunk: Buffer) => {
     const next = append(stdout, stdoutBytes, chunk);
     stdout = next.text;
     stdoutBytes = next.bytes;
   });
-  child.stderr.on("data", (chunk: Buffer) => {
+  child.stderr!.on("data", (chunk: Buffer) => {
     const next = append(stderr, stderrBytes, chunk);
     stderr = next.text;
     stderrBytes = next.bytes;
@@ -1007,6 +1049,69 @@ function collectArtifactFiles(artifactRoot: string): NonNullable<ReviewToolExecu
   return collected;
 }
 
+async function stageGitHistory(
+  projectRoot: string,
+  stagingRoot: string,
+  scratch: string,
+  bases: string[],
+  composeSpec: (args: string[], timeoutMs: number, label: string) => CommandSpec,
+  service: string,
+  toolId: string
+): Promise<NonNullable<ReviewToolExecutionResult["gitHistory"]>> {
+  const steps: CommandResult[] = [];
+  const gitEnvironment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^GIT_/i.test(name)));
+  const run = async (spec: CommandSpec) => {
+    const result = await runCommand(spec);
+    steps.push(result);
+    if (!commandSucceeded(result)) throw new Error(`Git history setup failed at ${result.label}.`);
+    return result.stdout.trim();
+  };
+  const hostGit = (label: string, args: string[], stdinPath?: string) => run({
+    command: "git", args: ["-c", "protocol.allow=never", ...args], cwd: projectRoot,
+    env: { ...gitEnvironment, GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1" },
+    timeoutMs: label === "pack" ? 300_000 : 30_000, label: `${toolId}:git_${label}`, stdinPath
+  });
+  // Only PATH from the service is needed. Repository overrides or Git config
+  // inherited from the service must not redirect writes outside the stage.
+  const containerGit = (label: string, args: string[], stdinPath?: string) => run({
+    ...composeSpec([
+      "exec", "-T", "-w", stagingRoot, service, "sh", "-c",
+      'exec env -i "PATH=$PATH" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git "$@"', "git", ...args
+    ], 300_000, `${toolId}:git_${label}`),
+    stdinPath
+  });
+
+  try {
+    const details = await hostGit("inspect", ["rev-parse", "--show-object-format", "--is-shallow-repository", "--show-toplevel", "HEAD^{commit}"]);
+    const [format, shallow, topLevel, head] = details.split(/\r?\n/);
+    if (!topLevel || !samePath(projectRoot, topLevel) || !head || !gitObjectId.test(head) || (format !== "sha1" && format !== "sha256")) {
+      throw new Error("Staged Git history requires a Git repository root with a committed HEAD and a supported object format.");
+    }
+    if (shallow === "true") throw new Error("Staged Git history requires a non-shallow checkout. Fetch the missing history on the host.");
+
+    const revisions = new Set([head, ...bases.map((base) => base.toLowerCase())]);
+    for (const base of revisions) {
+      if (base === head) continue;
+      if (base.length !== head.length || await hostGit("verify_base", ["cat-file", "-t", base]) !== "commit") {
+        throw new Error(`Git history base '${base}' is not a commit ID in the bound repository.`);
+      }
+    }
+    const revisionsFile = path.join(scratch, "revisions");
+    fs.writeFileSync(revisionsFile, `${[...revisions].join("\n")}\n`);
+    const packPrefix = path.join(scratch, "history");
+    const packHash = await hostGit("pack", ["pack-objects", "--revs", "--no-sparse", packPrefix], revisionsFile);
+    if (!gitObjectId.test(packHash)) throw new Error("Git did not produce a valid pack name.");
+
+    await containerGit("init", ["init", "--quiet", "--template=", `--object-format=${format}`]);
+    await containerGit("import", ["index-pack", "--stdin"], `${packPrefix}-${packHash}.pack`);
+    await containerGit("set_head", ["update-ref", "--no-deref", "HEAD", head]);
+    await containerGit("read_index", ["read-tree", "HEAD"]);
+    return { steps };
+  } catch (error) {
+    return { steps, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function executeReviewTool(
   singleRunner: SingleReviewToolRunner,
   recipe: ReviewToolRecipe,
@@ -1022,6 +1127,8 @@ export async function executeReviewTool(
 
   const stageRunner = recipe.runner;
   const values = normalizedInputValues(recipe, rawInputs, projectRoot);
+  const history = stageRunner.gitHistory;
+  const bases = history?.baseInputs.flatMap((name) => typeof values[name] === "string" ? [values[name]] : []) ?? [];
   const runId = crypto.randomUUID();
   const stagingRoot = `/tmp/review-tools/${runId}/repo`;
   const artifactRoot = path.join(validationRoot, "artifacts", runId);
@@ -1043,13 +1150,15 @@ export async function executeReviewTool(
     timeoutMs,
     label
   });
-  const prepareSpec = internalSpec(["exec", "-T", stageRunner.service, "mkdir", "-p", path.posix.dirname(stagedSource)], 120_000, `${recipe.id}:prepare`);
+  const prepareDirectory = history ? stagingRoot : path.posix.dirname(stagedSource);
+  const prepareSpec = internalSpec(["exec", "-T", stageRunner.service, "mkdir", "-p", prepareDirectory], 120_000, `${recipe.id}:prepare`);
   const copySourceSpec = internalSpec(["cp", sourceDirectory, `${stageRunner.service}:${stagedSource}`], 300_000, `${recipe.id}:copy_source`);
   const executeSpec = recipeCommand(recipe, rawInputs, projectRoot, stagingRoot);
   const cleanupSpec = internalSpec(["exec", "-T", stageRunner.service, "rm", "-rf", `/tmp/review-tools/${runId}`], 120_000, `${recipe.id}:cleanup`);
   const artifacts = stageRunner.artifacts.map((template) => {
     const requestedPath = validatedRepositoryPath(projectRoot, renderTemplate(template, values, stagingRoot), "artifact path");
-    if (requestedPath !== sourceDirectory && !requestedPath.startsWith(`${sourceDirectory}/`)) {
+    const relative = path.posix.relative(sourceDirectory, requestedPath);
+    if (relative === ".." || relative.startsWith("../")) {
       throw new Error(`Artifact path must stay under '${sourceDirectory}': ${requestedPath}`);
     }
     const localPath = path.join(artifactRoot, ...requestedPath.split("/"));
@@ -1063,13 +1172,42 @@ export async function executeReviewTool(
   return singleRunner.runExclusive(recipe.id, async () => {
     fs.mkdirSync(artifactRoot, { recursive: true });
     let prepare!: CommandResult;
+    let gitHistory: ReviewToolExecutionResult["gitHistory"];
+    let archiveSource: CommandResult | undefined;
     let copySource: CommandResult | undefined;
     let execution: CommandResult | undefined;
     const artifactCopies: NonNullable<ReviewToolExecutionResult["artifactCopies"]> = [];
     let cleanup!: CommandResult;
     try {
       prepare = await runCommand(prepareSpec);
-      if (commandSucceeded(prepare)) copySource = await runCommand(copySourceSpec);
+      if (commandSucceeded(prepare) && history) {
+        const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "review-history-"));
+        try {
+          gitHistory = await stageGitHistory(projectRoot, stagingRoot, scratch, bases, internalSpec, stageRunner.service, recipe.id);
+          if (!gitHistory.error) {
+            const archive = path.join(scratch, "source.tar");
+            const scratchRelative = path.relative(fs.realpathSync(hostSource), fs.realpathSync(scratch));
+            const excludes = ["--exclude=.[gG][iI][tT]"];
+            if (scratchRelative !== ".." && !scratchRelative.startsWith(`..${path.sep}`) && !path.isAbsolute(scratchRelative)) {
+              excludes.push(`--exclude=./${scratchRelative.replaceAll("\\", "/")}`);
+            }
+            archiveSource = await runCommand({
+              command: "tar", args: ["-cf", archive, ...excludes, "."], cwd: hostSource,
+              timeoutMs: 300_000, label: `${recipe.id}:archive_source`
+            });
+            if (commandSucceeded(archiveSource)) {
+              copySource = await runCommand({
+                ...internalSpec(["exec", "-T", "-w", stagingRoot, stageRunner.service, "tar", "-xof", "-"], 300_000, `${recipe.id}:copy_source`),
+                stdinPath: archive
+              });
+            }
+          }
+        } finally {
+          fs.rmSync(scratch, { recursive: true, force: true });
+        }
+      } else if (commandSucceeded(prepare)) {
+        copySource = await runCommand(copySourceSpec);
+      }
       if (commandSucceeded(copySource)) execution = await runCommand(executeSpec);
       if (execution) {
         for (const artifact of artifacts) {
@@ -1082,15 +1220,17 @@ export async function executeReviewTool(
     }
     const failureStage = !commandSucceeded(prepare)
       ? "prepare"
-      : !commandSucceeded(copySource)
-        ? "copy_source"
-        : !commandSucceeded(execution)
-          ? "execute"
-          : artifactCopies.some(({ result }) => !commandSucceeded(result))
-            ? "artifact_copy"
-            : !commandSucceeded(cleanup)
-              ? "cleanup"
-              : undefined;
+      : gitHistory?.error
+        ? "git_history"
+        : !commandSucceeded(copySource)
+          ? "copy_source"
+          : !commandSucceeded(execution)
+            ? "execute"
+            : artifactCopies.some(({ result }) => !commandSucceeded(result))
+              ? "artifact_copy"
+              : !commandSucceeded(cleanup)
+                ? "cleanup"
+                : undefined;
     return {
       success: failureStage === undefined,
       failureStage,
@@ -1099,6 +1239,8 @@ export async function executeReviewTool(
       stagingRoot,
       artifactRoot,
       prepare,
+      gitHistory,
+      archiveSource,
       copySource,
       execution,
       artifactCopies,

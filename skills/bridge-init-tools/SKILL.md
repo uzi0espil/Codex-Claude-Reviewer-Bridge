@@ -76,6 +76,10 @@ staged Compose execution. For Compose, distinguish:
 - staged execution, which copies an approved source subtree to a scratch
   directory inside the service and retrieves only declared artifacts.
 
+When a staged check depends on Git, declare `gitHistory` for the repository root
+and list the inputs that supply comparison commits. Include the history scope
+and host and service prerequisites in the preview.
+
 For every existing-service execution tool, declare its worktree provenance.
 Use `worktree.mode: bind` with the exact repository and container paths the
 command depends on, or `worktree.mode: none` only for a genuinely runtime-only

@@ -134,6 +134,18 @@ failures always remain `missing`, regardless of readiness mode.
   approved source subtree into it, executes there, retrieves declared artifacts
   into the reviewer's ignored runtime directory, and attempts cleanup.
 
+A staged recipe that needs local Git history can declare
+`"gitHistory": { "baseInputs": ["base_sha"] }` with `"sourceDirectory": "."`.
+Use an empty `baseInputs` list when the recipe needs only `HEAD`. Each listed
+name must identify a string input. Supplied values must be full commit object
+IDs available locally, including commits on divergent branches. The stage
+contains detached `HEAD` and history reachable from it and the requested bases.
+The index starts at `HEAD` and the files include worktree edits, deletions, and
+untracked files. The stage omits source Git metadata such as branch names,
+remotes, hooks, and the host's distinction between staged and unstaged edits.
+This mode requires Git and tar on the host, a non-shallow checkout, and Git,
+tar, and a POSIX shell in the service. Missing history is a setup failure.
+
 Every new `compose_exec` proposal also declares worktree provenance. Use a bind
 claim when the command reads repository content:
 
@@ -208,8 +220,9 @@ Call `review_tools_validate_manifest` before asking for approval. It does not
 execute application commands. It verifies
 the detection revision, coverage, runner policy, paths, host executables,
 Compose files, statically declared services and bind provenance, readiness
-structure, path-input scope, and logical argv previews. It returns a concise
-summary and a proposal SHA-256 instead of echoing the full JSON. Use
+structure, path-input scope, and fixed arguments. Use a one-line argument or a
+repository script when a fixed argument contains a line break. Preflight
+returns a concise summary and a proposal SHA-256 instead of echoing the full JSON. Use
 `review_tools_proposal_details` for selected drill-downs. After explicit user
 approval, `review_tools_write_manifest` accepts the proposal handle, mechanically
 accepts its previewed gaps, reruns preflight, and writes that exact proposal.

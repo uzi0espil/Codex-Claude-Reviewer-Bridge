@@ -7,6 +7,7 @@ import { discoverReviewTools, type ReviewToolDiscovery } from "./review-tools-di
 import {
   currentReviewToolsManifestSchema,
   doctorReviewTools,
+  fixedArgumentIssue,
   loadBoundProjectRoot,
   reviewToolsManifestSchema,
   reviewToolsManifestProposalSchema,
@@ -103,6 +104,7 @@ export type ReviewToolsProposalSummary = {
     runner: ReviewToolsManifestProposal["tools"][number]["runner"]["kind"];
     readiness: string;
     worktree: string;
+    gitHistory?: { baseInputs: string[] };
     command: string;
     inputs: Array<{ name: string; type: string; required: boolean }>;
   }>;
@@ -416,6 +418,12 @@ export function preflightReviewToolsManifest(
 ): ReviewToolsPreflightResult {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const validateArguments = (args: string[], label: string) => {
+    for (const [index, argument] of args.entries()) {
+      const issue = fixedArgumentIssue(argument);
+      if (issue) errors.push(`${label} args[${index}]: ${issue}`);
+    }
+  };
   const parsed = reviewToolsManifestProposalSchema.safeParse(proposedManifest);
   if (!parsed.success) {
     return {
@@ -492,7 +500,9 @@ export function preflightReviewToolsManifest(
       errors.push(`Tool '${recipe.id}' uses ${recipe.runner.kind}, but runner policy '${policy}' is disallowed.`);
     }
     errors.push(...validateComposeWorktree(recipe, projectRoot));
+    validateArguments(recipe.runner.args, `Tool '${recipe.id}'`);
     if (recipe.readiness?.mode === "probe") {
+      validateArguments(recipe.readiness.runner.args, `Readiness probe for '${recipe.id}'`);
       const probePolicy = runnerPolicyKey(recipe.readiness.runner.kind);
       if (manifest.runnerPolicy[probePolicy] !== "allowed") {
         errors.push(`Readiness probe for '${recipe.id}' uses ${recipe.readiness.runner.kind}, but runner policy '${probePolicy}' is disallowed.`);
@@ -602,6 +612,7 @@ export function summarizeReviewToolsPreflight(preflight: ReviewToolsPreflightRes
             ? `bind:${tool.runner.worktree.paths.map(({ repositoryPath }) => repositoryPath).join(",")}`
             : tool.runner.worktree.mode
           : tool.runner.kind === "compose_stage_exec" ? `staged:${tool.runner.sourceDirectory}` : "host",
+        ...(tool.runner.kind === "compose_stage_exec" && tool.runner.gitHistory ? { gitHistory: tool.runner.gitHistory } : {}),
         command: compactCommand(previewsById.get(tool.id)?.command ?? []),
         inputs: tool.inputs.map(({ name, type, required }) => ({ name, type, required }))
       };
