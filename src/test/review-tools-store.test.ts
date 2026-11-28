@@ -559,6 +559,18 @@ test("preflight rejects stale detection, disallowed runners, missing services, a
       }]
     }, root, detectionPath, (command) => command !== "definitely-missing");
     assert.equal(missingHost.valid, false);
+    const multiline = preflightReviewToolsManifest({
+      ...base,
+      runnerPolicy: { ...base.runnerPolicy, composeStageExec: "allowed" },
+      tools: [{
+        id: "shell_check", title: "Shell check", description: "Run staged checks.",
+        runner: { kind: "compose_stage_exec", files: ["compose.yml"], service: "backend", sourceDirectory: ".", workdir: "{stage}", command: "sh", args: ["-c", "true\r\ntrue"] },
+        readiness: { mode: "probe", runner: { kind: "host", command: "git", args: ["--version\0"] } }
+      }]
+    }, root, detectionPath, () => true);
+    assert.equal(multiline.writable, false);
+    assert.match(multiline.errors.join("\n"), /Tool 'shell_check' args\[1\].*one-line argument or a repository script/);
+    assert.match(multiline.errors.join("\n"), /Readiness probe for 'shell_check' args\[0\].*control characters/);
     assert.match(missingHost.errors.join("\n"), /Executable is unavailable on the host PATH/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

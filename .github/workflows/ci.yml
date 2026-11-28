@@ -31,6 +31,10 @@ jobs:
       - run: just reviewer -- help
       - run: npm run check
       - run: npm test
+      - name: Test staged Git history with Compose
+        env:
+          REVIEW_TOOLS_TEST_COMPOSE: '1'
+        run: node --test --test-name-pattern 'stages Git history' dist/test/review-tools.test.js
       - run: npm run test:just
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
